@@ -1,0 +1,72 @@
+[project]
+name = "simstack4"
+version = "0.1.0"
+description = "Simultaneous stacking code for astrophysical sources, accounting for bias from clustered sources"
+authors = [
+    {name = "Marco Viero", email = "marco.viero@gmail.com"}
+]
+dependencies = [
+    "numpy>=1.21.2",
+    "matplotlib>=3.5.1", 
+    "pandas>=1.4.1",
+    "astropy>=5.0.2",
+    "lmfit>=1.0.3",
+    "scikit-learn>=1.0.2",
+    "emcee>=3.1.1",
+    "corner>=2.2.1",
+    "scipy",
+    "configparser",
+]
+readme = "README.md"
+requires-python = ">=3.13"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "black",
+    "flake8",
+    "mypy",
+    "pre-commit",
+]
+notebooks = [
+    "jupyter",
+    "jupyterlab",
+    "ipykernel",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "black",
+    "flake8", 
+    "mypy",
+    "pre-commit",
+    "jupyter",
+    "jupyterlab",
+    "ipykernel",
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py313']
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
