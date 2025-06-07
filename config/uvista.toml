@@ -1,0 +1,108 @@
+# Simstack4 Configuration File
+# This replaces the INI format from simstack3 with more user-friendly TOML
+
+[binning]
+stack_all_z_at_once = true    # Stack all redshifts together (optimal but memory intensive)
+add_foreground = true         # Add foreground layer of all 1's
+crop_circles = true           # Draw circles around sources and flatten
+
+[error_estimator]
+write_simmaps = false         # Write simulated images at each wavelength
+randomize = false             # For null-testing: shuffle (x,y) when building layers
+
+[error_estimator.bootstrap]
+enabled = true                # Use bootstrap method for error estimation
+iterations = 150              # Number of bootstrap iterations
+initial_seed = 1              # Seed for random shuffling (ensures consistency across bands)
+
+cosmology = "Planck18"        # Options: "Planck15", "Planck18"
+
+[output]
+folder = "$PICKLESPATH/simstack/stacked_flux_densities"  # Environment variables supported
+shortname = "uVista_DR2"      # Name for output folder
+
+[catalog]
+path = "$CATSPATH/uVista"     # Path to catalog directory
+file = "UVISTA_DR2_master_v2.1_USE.csv"  # Catalog filename
+
+[catalog.astrometry]
+ra = "ra"                     # Column name for right ascension
+dec = "dec"                   # Column name for declination
+
+[catalog.classification]
+split_type = "uvj"            # Options: "labels", "uvj", "nuvrj"
+
+[catalog.classification.redshift]
+id = "z_peak"                 # Column name for redshift
+bins = [0.01, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]  # Redshift bin edges
+
+[catalog.classification.stellar_mass]
+id = "lmass"                  # Column name for stellar mass
+bins = [8.5, 9.5, 10.0, 10.5, 11.0, 12.0]  # Stellar mass bin edges
+
+[catalog.classification.split_params]
+id = "sfg"                    # Label for this split
+[catalog.classification.split_params.bins]
+"U-V" = "rf_U_V"             # Column name for U-V color
+"V-J" = "rf_V_J"             # Column name for V-J color
+
+# Map configurations - each section defines a new map
+[maps.mips_24]
+wavelength = 24.0             # Wavelength in microns
+color_correction = 1.25       # Color correction factor
+path_map = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_sci_10.cutout.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_unc_10.cutout.fits"
+
+[maps.mips_24.beam]
+fwhm = 6.32                   # FWHM in arcsec
+area = 1.550e-09              # Solid angle (1.0 if already in Jy/beam)
+
+[maps.pacs_green]
+wavelength = 100.0
+color_correction = 1.0
+path_map = "$MAPSPATH/cosmos/cutouts/pacs_green_sci.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/pacs_green_unc.fits"
+
+[maps.pacs_green.beam]
+fwhm = 7.04
+area = 1.0
+
+[maps.pacs_red]
+wavelength = 160.0
+color_correction = 1.0
+path_map = "$MAPSPATH/cosmos/cutouts/pacs_red_sci.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/pacs_red_unc.fits"
+
+[maps.pacs_red.beam]
+fwhm = 11.18
+area = 1.0
+
+[maps.spire_psw]
+wavelength = 250.0
+color_correction = 1.02
+path_map = "$MAPSPATH/cosmos/cutouts/spire_psw_sci.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/spire_psw_unc.fits"
+
+[maps.spire_psw.beam]
+fwhm = 18.15
+area = 1.0
+
+[maps.spire_pmw]
+wavelength = 350.0
+color_correction = 1.05
+path_map = "$MAPSPATH/cosmos/cutouts/spire_pmw_sci.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/spire_pmw_unc.fits"
+
+[maps.spire_pmw.beam]
+fwhm = 25.15
+area = 1.0
+
+[maps.spire_plw]
+wavelength = 500.0
+color_correction = 1.25
+path_map = "$MAPSPATH/cosmos/cutouts/spire_plw_sci.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/spire_plw_unc.fits"
+
+[maps.spire_plw.beam]
+fwhm = 36.60
+area = 1.0

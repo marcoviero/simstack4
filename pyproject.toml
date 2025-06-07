@@ -3,11 +3,11 @@ name = "simstack4"
 version = "0.1.0"
 description = "Simultaneous stacking code for astrophysical sources, accounting for bias from clustered sources"
 authors = [
-    {name = "Marco Viero", email = "marco.viero@gmail.com"}
+    {name = "Marco Viero", email = "your.email@example.com"}
 ]
 dependencies = [
     "numpy>=1.21.2",
-    "matplotlib>=3.5.1", 
+    "matplotlib>=3.5.1",
     "pandas>=1.4.1",
     "astropy>=5.0.2",
     "lmfit>=1.0.3",
@@ -15,7 +15,10 @@ dependencies = [
     "emcee>=3.1.1",
     "corner>=2.2.1",
     "scipy",
-    "configparser",
+    "tomli>=2.0.0; python_version<'3.11'",  # TOML support for older Python
+    "pydantic>=2.0.0",  # For data validation
+    "polars>=0.20.0",   # Fast dataframe library (alternative to pandas)
+    # "vaex>=4.17.0",   # Commented out - doesn't support Python 3.13 yet
 ]
 readme = "README.md"
 requires-python = ">=3.13"
@@ -33,7 +36,7 @@ dev = [
     "pytest>=7.0",
     "pytest-cov",
     "black",
-    "flake8",
+    "ruff",  # Modern, fast linter (replaces flake8)
     "mypy",
     "pre-commit",
 ]
@@ -42,6 +45,14 @@ notebooks = [
     "jupyterlab",
     "ipykernel",
 ]
+# Separate optional dependency for large datasets when Python 3.13 support improves
+large-data = [
+    "polars>=0.20.0",
+    # "vaex>=4.17.0",  # Will add back when Python 3.13 support is available
+]
+
+[project.scripts]
+simstack4 = "simstack4.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -52,7 +63,7 @@ dev-dependencies = [
     "pytest>=7.0",
     "pytest-cov",
     "black",
-    "flake8", 
+    "ruff",
     "mypy",
     "pre-commit",
     "jupyter",
@@ -64,9 +75,26 @@ dev-dependencies = [
 line-length = 88
 target-version = ['py313']
 
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+]
+
 [tool.mypy]
 python_version = "3.13"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
-
+ignore_missing_imports = true

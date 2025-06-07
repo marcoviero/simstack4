@@ -1,0 +1,50 @@
+
+# Test configuration for catalog loading
+[binning]
+stack_all_z_at_once = true
+add_foreground = true
+crop_circles = true
+
+[error_estimator]
+write_simmaps = false
+randomize = false
+
+[error_estimator.bootstrap]
+enabled = true
+iterations = 10  # Small number for testing
+initial_seed = 1
+
+cosmology = "Planck18"
+
+[output]
+folder = "./test_output"
+shortname = "test_run"
+
+[catalog]
+path = "./test_data"
+file = "test_catalog.csv"
+
+[catalog.astrometry]
+ra = "ra"
+dec = "dec"
+
+[catalog.classification]
+split_type = "uvj"
+
+[catalog.classification.redshift]
+id = "z_peak"
+bins = [0.01, 0.5, 1.0, 1.5, 2.0, 3.0, 6.0]
+
+[catalog.classification.stellar_mass]
+id = "lmass"
+bins = [8.5, 9.5, 10.0, 10.5, 11.0, 12.0]
+
+[catalog.classification.split_params]
+id = "sfg"
+
+[catalog.classification.split_params.bins]
+"U-V" = "rf_U_V"
+"V-J" = "rf_V_J"
+
+# No maps section for catalog-only testing
+[maps]
