@@ -5,14 +5,16 @@ This module handles loading, validation, and processing of astronomical catalogs
 Supports both pandas and polars for different performance needs.
 """
 
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Union, Tuple
 import warnings
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 
 # Try to import both pandas and polars
 try:
     import pandas as pd
+
     HAS_PANDAS = True
 except ImportError:
     HAS_PANDAS = False
@@ -20,17 +22,18 @@ except ImportError:
 
 try:
     import polars as pl
+
     HAS_POLARS = True
 except ImportError:
     HAS_POLARS = False
     pl = None
 
-from astropy.table import Table
 from astropy.io import fits
+from astropy.table import Table
 
 from .config import CatalogConfig
-from .populations import PopulationManager
 from .exceptions.simstack_exceptions import CatalogError, ValidationError
+from .populations import PopulationManager
 from .utils import setup_logging
 
 logger = setup_logging()
@@ -74,7 +77,9 @@ class SkyCatalogs:
         elif backend == "polars":
             if not HAS_POLARS:
                 if HAS_PANDAS:
-                    warnings.warn("Polars not available, falling back to pandas")
+                    warnings.warn(
+                        "Polars not available, falling back to pandas", stacklevel=2
+                    )
                     return "pandas"
                 else:
                     raise CatalogError("Polars not available and no fallback")
@@ -100,11 +105,11 @@ class SkyCatalogs:
         # Determine file format
         suffix = catalog_path.suffix.lower()
 
-        if suffix == '.csv':
+        if suffix == ".csv":
             self._load_csv(catalog_path)
-        elif suffix in ['.fits', '.fit']:
+        elif suffix in [".fits", ".fit"]:
             self._load_fits(catalog_path)
-        elif suffix in ['.txt', '.dat']:
+        elif suffix in [".txt", ".dat"]:
             self._load_text(catalog_path)
         else:
             raise CatalogError(f"Unsupported file format: {suffix}")
@@ -121,11 +126,13 @@ class SkyCatalogs:
                 self.catalog_df = pl.read_csv(
                     catalog_path,
                     try_parse_dates=True,
-                    null_values=["", "NULL", "null", "NaN", "nan"]
+                    null_values=["", "NULL", "null", "NaN", "nan"],
                 )
                 logger.debug("Loaded CSV with polars")
             except Exception as e:
-                logger.warning(f"Polars failed to load CSV: {e}, trying pandas")
+                warnings.warn(
+                    f"Polars failed to load CSV: {e}, trying pandas", stacklevel=2
+                )
                 self._load_csv_pandas(catalog_path)
 
         else:  # pandas
@@ -136,14 +143,14 @@ class SkyCatalogs:
         try:
             self.catalog_df = pd.read_csv(
                 catalog_path,
-                na_values=["", "NULL", "null", "NaN", "nan", "999", "-999"]
+                na_values=["", "NULL", "null", "NaN", "nan", "999", "-999"],
             )
             # Convert to polars if that was the intended backend
             if self.backend == "polars" and HAS_POLARS:
                 self.catalog_df = pl.from_pandas(self.catalog_df)
             logger.debug("Loaded CSV with pandas")
         except Exception as e:
-            raise CatalogError(f"Failed to load CSV file: {e}")
+            raise CatalogError(f"Failed to load CSV file: {e}") from e
 
     def _load_fits(self, catalog_path: Path) -> None:
         """Load FITS file using astropy"""
@@ -152,9 +159,9 @@ class SkyCatalogs:
             with fits.open(catalog_path) as hdul:
                 # Find the table HDU (usually HDU 1 for catalogs)
                 table_hdu = None
-                for i, hdu in enumerate(hdul):
-                    if hasattr(hdu, 'data') and hdu.data is not None:
-                        if hasattr(hdu.data, 'dtype') and hdu.data.dtype.names:
+                for _i, hdu in enumerate(hdul):
+                    if hasattr(hdu, "data") and hdu.data is not None:
+                        if hasattr(hdu.data, "dtype") and hdu.data.dtype.names:
                             table_hdu = hdu
                             break
 
@@ -176,7 +183,7 @@ class SkyCatalogs:
             logger.debug("Loaded FITS file")
 
         except Exception as e:
-            raise CatalogError(f"Failed to load FITS file: {e}")
+            raise CatalogError(f"Failed to load FITS file: {e}") from e
 
     def _load_text(self, catalog_path: Path) -> None:
         """Load space/tab-separated text file"""
@@ -185,7 +192,7 @@ class SkyCatalogs:
                 self.catalog_df = pl.read_csv(
                     catalog_path,
                     separator=None,  # Auto-detect separator
-                    try_parse_dates=True
+                    try_parse_dates=True,
                 )
             except Exception as e:
                 logger.warning(f"Polars failed to load text file: {e}, trying pandas")
@@ -197,14 +204,12 @@ class SkyCatalogs:
         """Load text file with pandas"""
         try:
             self.catalog_df = pd.read_csv(
-                catalog_path,
-                sep=None,  # Auto-detect separator
-                engine='python'
+                catalog_path, sep=None, engine="python"  # Auto-detect separator
             )
             if self.backend == "polars" and HAS_POLARS:
                 self.catalog_df = pl.from_pandas(self.catalog_df)
         except Exception as e:
-            raise CatalogError(f"Failed to load text file: {e}")
+            raise CatalogError(f"Failed to load text file: {e}") from e
 
     def _validate_catalog(self) -> None:
         """Validate that catalog has required columns"""
@@ -238,12 +243,17 @@ class SkyCatalogs:
 
         # Check split parameter columns if needed
         if self.config.classification.split_params:
-            for color_name, col_name in self.config.classification.split_params.bins.items():
+            for (
+                color_name,
+                col_name,
+            ) in self.config.classification.split_params.bins.items():
                 if col_name not in columns:
                     missing_cols.append(f"Color column '{col_name}' for {color_name}")
 
         if missing_cols:
-            raise ValidationError(f"Missing required columns: {', '.join(missing_cols)}")
+            raise ValidationError(
+                f"Missing required columns: {', '.join(missing_cols)}"
+            )
 
         logger.debug("Catalog validation passed")
 
@@ -261,7 +271,7 @@ class SkyCatalogs:
 
         logger.info(f"Created {len(self.population_manager)} populations")
 
-    def get_catalog_info(self) -> Dict[str, Any]:
+    def get_catalog_info(self) -> dict[str, Any]:
         """Get information about the loaded catalog"""
         if self.catalog_df is None:
             return {"status": "not_loaded"}
@@ -270,12 +280,18 @@ class SkyCatalogs:
             n_rows, n_cols = self.catalog_df.shape
             columns = self.catalog_df.columns
             # Get basic stats for numeric columns
-            numeric_cols = [col for col in columns
-                          if self.catalog_df[col].dtype in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]]
+            numeric_cols = [
+                col
+                for col in columns
+                if self.catalog_df[col].dtype
+                in [pl.Float32, pl.Float64, pl.Int32, pl.Int64]
+            ]
         else:
             n_rows, n_cols = self.catalog_df.shape
             columns = list(self.catalog_df.columns)
-            numeric_cols = list(self.catalog_df.select_dtypes(include=[np.number]).columns)
+            numeric_cols = list(
+                self.catalog_df.select_dtypes(include=[np.number]).columns
+            )
 
         info = {
             "n_sources": n_rows,
@@ -283,16 +299,18 @@ class SkyCatalogs:
             "columns": columns,
             "numeric_columns": numeric_cols,
             "backend": self.backend,
-            "file_path": str(self.config.full_path)
+            "file_path": str(self.config.full_path),
         }
 
         if self.population_manager:
             info["n_populations"] = len(self.population_manager)
-            info["population_summary"] = self.population_manager.get_population_summary()
+            info[
+                "population_summary"
+            ] = self.population_manager.get_population_summary()
 
         return info
 
-    def get_source_positions(self) -> Tuple[np.ndarray, np.ndarray]:
+    def get_source_positions(self) -> tuple[np.ndarray, np.ndarray]:
         """Get RA and Dec positions as numpy arrays"""
         if self.catalog_df is None:
             raise CatalogError("No catalog loaded")
@@ -309,42 +327,6 @@ class SkyCatalogs:
 
         return ra, dec
 
-    def get_population_data(self, population_id: str) -> Dict[str, np.ndarray]:
-        """Get data for a specific population"""
-        if self.population_manager is None:
-            raise CatalogError("Population manager not initialized")
-
-        indices = self.population_manager.get_population_indices(population_id)
-
-        # Get key columns
-        ra_col = self.config.astrometry["ra"]
-        dec_col = self.config.astrometry["dec"]
-        z_col = self.config.classification.redshift.id
-        mass_col = self.config.classification.stellar_mass.id
-
-        if self.backend == "polars":
-            # Extract data using polars
-            pop_data = self.catalog_df[indices]
-            data = {
-                "ra": pop_data[ra_col].to_numpy(),
-                "dec": pop_data[dec_col].to_numpy(),
-                "redshift": pop_data[z_col].to_numpy(),
-                "stellar_mass": pop_data[mass_col].to_numpy(),
-                "indices": indices
-            }
-        else:
-            # Extract data using pandas
-            pop_data = self.catalog_df.iloc[indices]
-            data = {
-                "ra": pop_data[ra_col].values,
-                "dec": pop_data[dec_col].values,
-                "redshift": pop_data[z_col].values,
-                "stellar_mass": pop_data[mass_col].values,
-                "indices": indices
-            }
-
-        return data
-
     def print_catalog_summary(self) -> None:
         """Print a summary of the catalog"""
         info = self.get_catalog_info()
@@ -355,20 +337,22 @@ class SkyCatalogs:
         print(f"Sources: {info['n_sources']:,}")
         print(f"Columns: {info['n_columns']}")
 
-        if 'n_populations' in info:
+        if "n_populations" in info:
             print(f"Populations: {info['n_populations']}")
 
             # Print population summary
-            if 'population_summary' in info:
-                pop_summary = info['population_summary']
+            if "population_summary" in info:
+                pop_summary = info["population_summary"]
                 if len(pop_summary) > 0:
                     print("\nTop 10 populations by source count:")
                     if self.backend == "polars":
-                        top_pops = pop_summary.sort("n_sources", descending=True).head(10)
+                        top_pops = pop_summary.sort("n_sources", descending=True).head(
+                            10
+                        )
                         for row in top_pops.iter_rows(named=True):
                             print(f"  {row['id_label']}: {row['n_sources']} sources")
                     else:
-                        top_pops = pop_summary.nlargest(10, 'n_sources')
+                        top_pops = pop_summary.nlargest(10, "n_sources")
                         for _, row in top_pops.iterrows():
                             print(f"  {row['id_label']}: {row['n_sources']} sources")
 
