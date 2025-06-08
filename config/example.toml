@@ -12,7 +12,7 @@ randomize = false             # For null-testing: shuffle (x,y) when building la
 
 [error_estimator.bootstrap]
 enabled = true                # Use bootstrap method for error estimation
-iterations = 150              # Number of bootstrap iterations
+iterations = 3              # Number of bootstrap iterations
 initial_seed = 1              # Seed for random shuffling (ensures consistency across bands)
 
 # Top-level simple settings

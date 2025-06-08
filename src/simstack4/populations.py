@@ -5,12 +5,11 @@ This replaces the jpop, lpop, mpop loop system from simstack3 with a more
 flexible and efficient population management system.
 """
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional, Any, Iterator
+
 import numpy as np
 import pandas as pd
-from itertools import product
-from collections import defaultdict
 
 from .config import ClassificationConfig, SplitType
 from .exceptions.simstack_exceptions import PopulationError
@@ -19,9 +18,10 @@ from .exceptions.simstack_exceptions import PopulationError
 @dataclass
 class PopulationBin:
     """Represents a single population bin with its properties"""
+
     id_label: str
-    redshift_range: Tuple[float, float]
-    stellar_mass_range: Tuple[float, float]
+    redshift_range: tuple[float, float]
+    stellar_mass_range: tuple[float, float]
     split_label: str
     split_value: int
     indices: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -44,12 +44,14 @@ class PopulationManager:
 
     def __init__(self, classification_config: ClassificationConfig):
         self.config = classification_config
-        self.populations: Dict[str, PopulationBin] = {}
+        self.populations: dict[str, PopulationBin] = {}
         self.redshift_bins = self._create_bins(classification_config.redshift.bins)
-        self.stellar_mass_bins = self._create_bins(classification_config.stellar_mass.bins)
-        self.split_labels: List[str] = []
+        self.stellar_mass_bins = self._create_bins(
+            classification_config.stellar_mass.bins
+        )
+        self.split_labels: list[str] = []
 
-    def _create_bins(self, bin_edges: List[float]) -> List[Tuple[float, float]]:
+    def _create_bins(self, bin_edges: list[float]) -> list[tuple[float, float]]:
         """Create bin tuples from bin edges"""
         return [(bin_edges[i], bin_edges[i + 1]) for i in range(len(bin_edges) - 1)]
 
@@ -94,7 +96,7 @@ class PopulationManager:
 
         # UVJ quiescent criteria (Whitaker et al. 2011)
         # Quiescent: U-V > 1.3 and V-J < 1.6 and U-V > 0.88 * V-J + 0.59
-        quiescent = ((uv > 1.3) & (vj < 1.6) & (uv > 0.88 * vj + 0.59))
+        quiescent = (uv > 1.3) & (vj < 1.6) & (uv > 0.88 * vj + 0.59)
 
         # 0 = star-forming, 1 = quiescent
         return quiescent.astype(int)
@@ -109,8 +111,13 @@ class PopulationManager:
         # Placeholder for now
         return np.zeros(len(catalog_df), dtype=int)
 
-    def _create_populations(self, catalog_df: pd.DataFrame, z_col: str,
-                            mass_col: str, split_values: np.ndarray) -> None:
+    def _create_populations(
+        self,
+        catalog_df: pd.DataFrame,
+        z_col: str,
+        mass_col: str,
+        split_values: np.ndarray,
+    ) -> None:
         """Create population bins for all combinations"""
         z_vals = catalog_df[z_col].values
         mass_vals = catalog_df[mass_col].values
@@ -120,14 +127,17 @@ class PopulationManager:
         self.split_labels = [f"split_{i}" for i in unique_splits]
 
         # Create all combinations of bins
-        for i, (z_min, z_max) in enumerate(self.redshift_bins):
-            for j, (mass_min, mass_max) in enumerate(self.stellar_mass_bins):
-                for k, split_val in enumerate(unique_splits):
-
+        for z_min, z_max in self.redshift_bins:
+            for mass_min, mass_max in self.stellar_mass_bins:
+                for split_val in unique_splits:
                     # Find sources in this bin
-                    mask = ((z_vals >= z_min) & (z_vals < z_max) &
-                            (mass_vals >= mass_min) & (mass_vals < mass_max) &
-                            (split_values == split_val))
+                    mask = (
+                        (z_vals >= z_min)
+                        & (z_vals < z_max)
+                        & (mass_vals >= mass_min)
+                        & (mass_vals < mass_max)
+                        & (split_values == split_val)
+                    )
 
                     indices = np.where(mask)[0]
 
@@ -151,7 +161,7 @@ class PopulationManager:
                             split_value=split_val,
                             indices=indices,
                             median_redshift=median_z,
-                            median_stellar_mass=median_mass
+                            median_stellar_mass=median_mass,
                         )
 
                         self.populations[id_label] = pop_bin
@@ -160,15 +170,17 @@ class PopulationManager:
         """Get summary statistics of all populations"""
         data = []
         for pop_bin in self.populations.values():
-            data.append({
-                'id_label': pop_bin.id_label,
-                'n_sources': pop_bin.n_sources,
-                'z_range': f"{pop_bin.redshift_range[0]:.2f}-{pop_bin.redshift_range[1]:.2f}",
-                'mass_range': f"{pop_bin.stellar_mass_range[0]:.1f}-{pop_bin.stellar_mass_range[1]:.1f}",
-                'split_label': pop_bin.split_label,
-                'median_z': pop_bin.median_redshift,
-                'median_mass': pop_bin.median_stellar_mass
-            })
+            data.append(
+                {
+                    "id_label": pop_bin.id_label,
+                    "n_sources": pop_bin.n_sources,
+                    "z_range": f"{pop_bin.redshift_range[0]:.2f}-{pop_bin.redshift_range[1]:.2f}",
+                    "mass_range": f"{pop_bin.stellar_mass_range[0]:.1f}-{pop_bin.stellar_mass_range[1]:.1f}",
+                    "split_label": pop_bin.split_label,
+                    "median_z": pop_bin.median_redshift,
+                    "median_mass": pop_bin.median_stellar_mass,
+                }
+            )
 
         return pd.DataFrame(data)
 
@@ -180,11 +192,11 @@ class PopulationManager:
 
     def iter_populations(self) -> Iterator[PopulationBin]:
         """Iterate over all population bins"""
-        for pop_bin in self.populations.values():
-            yield pop_bin
+        yield from self.populations.values()
 
-    def get_bootstrap_populations(self, bootstrap_fraction: float = 0.8,
-                                  seed: Optional[int] = None) -> 'PopulationManager':
+    def get_bootstrap_populations(
+        self, bootstrap_fraction: float = 0.8, seed: int | None = None
+    ) -> "PopulationManager":
         """
         Create bootstrap version of populations
 
@@ -203,15 +215,17 @@ class PopulationManager:
         bootstrap_manager.stellar_mass_bins = self.stellar_mass_bins
         bootstrap_manager.split_labels = self.split_labels
 
+        # CRITICAL FIX: Copy catalog data reference
+        bootstrap_manager.catalog_df = self.catalog_df
+        bootstrap_manager.config = self.config
+
         for id_label, pop_bin in self.populations.items():
             n_bootstrap = int(pop_bin.n_sources * bootstrap_fraction)
 
             if n_bootstrap > 0:
                 # Randomly select indices
                 bootstrap_indices = np.random.choice(
-                    pop_bin.indices,
-                    size=n_bootstrap,
-                    replace=False
+                    pop_bin.indices, size=n_bootstrap, replace=False
                 )
 
                 # Create bootstrap population bin
@@ -223,7 +237,7 @@ class PopulationManager:
                     split_value=pop_bin.split_value,
                     indices=bootstrap_indices,
                     median_redshift=pop_bin.median_redshift,
-                    median_stellar_mass=pop_bin.median_stellar_mass
+                    median_stellar_mass=pop_bin.median_stellar_mass,
                 )
 
                 bootstrap_manager.populations[bootstrap_bin.id_label] = bootstrap_bin
@@ -236,7 +250,7 @@ class PopulationManager:
     Insert this method inside the PopulationManager class, after the existing methods
     """
 
-    def get_population_data(self, population_id: str) -> Dict[str, np.ndarray]:
+    def get_population_data(self, population_id: str) -> dict[str, np.ndarray]:
         """
         Get catalog data for a specific population
 
@@ -255,7 +269,7 @@ class PopulationManager:
         pop_bin = self.populations[population_id]
         indices = pop_bin.indices
 
-        if not hasattr(self, 'catalog_df') or self.catalog_df is None:
+        if not hasattr(self, "catalog_df") or self.catalog_df is None:
             raise PopulationError("No catalog data loaded")
 
         # Get column names from config
@@ -266,50 +280,58 @@ class PopulationManager:
 
         # Try to get column names from the config
         # This assumes the catalog_df was loaded with the classification config
-        if hasattr(self, 'config'):
-            if hasattr(self.config, 'astrometry'):
-                ra_col = self.config.astrometry.get('ra', 'ra')
-                dec_col = self.config.astrometry.get('dec', 'dec')
-            z_col = self.config.redshift.id if hasattr(self.config, 'redshift') else 'z_peak'
-            mass_col = self.config.stellar_mass.id if hasattr(self.config, 'stellar_mass') else 'lmass'
+        if hasattr(self, "config"):
+            if hasattr(self.config, "astrometry"):
+                ra_col = self.config.astrometry.get("ra", "ra")
+                dec_col = self.config.astrometry.get("dec", "dec")
+            z_col = (
+                self.config.redshift.id
+                if hasattr(self.config, "redshift")
+                else "z_peak"
+            )
+            mass_col = (
+                self.config.stellar_mass.id
+                if hasattr(self.config, "stellar_mass")
+                else "lmass"
+            )
 
         # Fallback to common column names if config not available
         if not ra_col:
-            ra_col = 'ra'
+            ra_col = "ra"
         if not dec_col:
-            dec_col = 'dec'
+            dec_col = "dec"
         if not z_col:
-            z_col = 'z_peak'
+            z_col = "z_peak"
         if not mass_col:
-            mass_col = 'lmass'
+            mass_col = "lmass"
 
         # Extract data using the indices
         try:
-            if hasattr(self.catalog_df, 'iloc'):  # pandas DataFrame
+            if hasattr(self.catalog_df, "iloc"):  # pandas DataFrame
                 subset = self.catalog_df.iloc[indices]
 
                 data = {
-                    'ra': subset[ra_col].values,
-                    'dec': subset[dec_col].values,
-                    'redshift': subset[z_col].values,
-                    'stellar_mass': subset[mass_col].values,
-                    'indices': indices
+                    "ra": subset[ra_col].values,
+                    "dec": subset[dec_col].values,
+                    "redshift": subset[z_col].values,
+                    "stellar_mass": subset[mass_col].values,
+                    "indices": indices,
                 }
             else:
                 # Handle other DataFrame types (like polars)
                 subset = self.catalog_df[indices]
                 data = {
-                    'ra': subset[ra_col].to_numpy(),
-                    'dec': subset[dec_col].to_numpy(),
-                    'redshift': subset[z_col].to_numpy(),
-                    'stellar_mass': subset[mass_col].to_numpy(),
-                    'indices': indices
+                    "ra": subset[ra_col].to_numpy(),
+                    "dec": subset[dec_col].to_numpy(),
+                    "redshift": subset[z_col].to_numpy(),
+                    "stellar_mass": subset[mass_col].to_numpy(),
+                    "indices": indices,
                 }
 
         except KeyError as e:
-            raise PopulationError(f"Required column not found in catalog: {e}")
+            raise PopulationError(f"Required column not found in catalog: {e}") from e
         except Exception as e:
-            raise PopulationError(f"Error extracting population data: {e}")
+            raise PopulationError(f"Error extracting population data: {e}") from e
 
         return data
 
@@ -357,6 +379,7 @@ class PopulationManager:
 
         # Create populations for all combinations of bins
         self._create_populations(catalog_df, z_col, mass_col, split_values)
+
     def __len__(self) -> int:
         """Return number of populations"""
         return len(self.populations)

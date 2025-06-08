@@ -440,23 +440,6 @@ class SimstackAlgorithm:
     ]
     """
 
-    print("Integration fixes created!")
-    print("\nNext steps:")
-    print(
-        "1. Add the get_population_data method to PopulationManager in populations.py"
-    )
-    print("2. Replace the placeholder methods in algorithm.py with the fixed versions")
-    print("3. Update your pyproject.toml with the additional dependencies")
-    print(
-        "4. Test the integration with: uv run python -c 'from src.simstack4.toolbox import SimstackToolbox; print(\"Toolbox ready!\")'"
-    )
-
-    """
-    Fix for the _crop_to_circles method in algorithm.py
-
-    Replace the existing _crop_to_circles method with this corrected version
-    """
-
     def _crop_to_circles(
         self, layer_matrix: np.ndarray, observed_map: np.ndarray, map_name: str
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
