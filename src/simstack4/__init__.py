@@ -53,7 +53,6 @@ from .exceptions.simstack_exceptions import (
     ConfigError,
     CatalogError,
     MapError,
-    StackingError,
     CosmologyError,
     PopulationError,
     ValidationError
@@ -78,7 +77,6 @@ __all__ = [
     "ConfigError",
     "CatalogError",
     "MapError",
-    "StackingError",
     "CosmologyError",
     "PopulationError",
     "ValidationError",

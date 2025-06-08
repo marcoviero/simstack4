@@ -4,7 +4,7 @@
 [binning]
 stack_all_z_at_once = true    # Stack all redshifts together (optimal but memory intensive)
 add_foreground = true         # Add foreground layer of all 1's
-crop_circles = true           # Draw circles around sources and flatten
+crop_circles = false           # Draw circles around sources and flatten
 
 [error_estimator]
 write_simmaps = false         # Write simulated images at each wavelength
@@ -48,36 +48,6 @@ id = "sfg"                    # Label for this split
 "V-J" = "rf_V_J"             # Column name for V-J color
 
 # Map configurations - each section defines a new map
-[maps.mips_24]
-wavelength = 24.0             # Wavelength in microns
-color_correction = 1.25       # Color correction factor
-path_map = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_sci_10.cutout.fits"
-path_noise = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_unc_10.cutout.fits"
-
-[maps.mips_24.beam]
-fwhm = 6.32                   # FWHM in arcsec
-area = 1.550e-09              # Solid angle (1.0 if already in Jy/beam)
-
-[maps.pacs_green]
-wavelength = 100.0
-color_correction = 1.0
-path_map = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS100_20160805_img_avg.fits"
-path_noise = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS100_20160805_img_avg_noise.fits"
-
-[maps.pacs_green.beam]
-fwhm = 7.04
-area = 1.0
-
-[maps.pacs_red]
-wavelength = 160.0
-color_correction = 1.0
-path_map = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS160_20160728_img_avg.fits"
-path_noise = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS160_20160728_img_avg_noise.fits"
-
-[maps.pacs_red.beam]
-fwhm = 11.18
-area = 1.0
-
 [maps.spire_psw]
 wavelength = 250.0
 color_correction = 1.02

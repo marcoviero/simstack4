@@ -1,5 +1,5 @@
 """
-Custom exceptions for Simstack4
+Complete exception classes for Simstack4
 """
 
 
@@ -9,35 +9,65 @@ class SimstackError(Exception):
 
 
 class ConfigError(SimstackError):
-    """Raised when there's an error in configuration"""
+    """Configuration related errors"""
     pass
 
 
 class CatalogError(SimstackError):
-    """Raised when there's an error with catalog data"""
+    """Catalog loading and processing errors"""
+    pass
+
+
+class CatalogValidationError(CatalogError):
+    """Catalog validation specific errors"""
     pass
 
 
 class MapError(SimstackError):
-    """Raised when there's an error with map data"""
+    """Map loading and processing errors"""
     pass
 
 
-class StackingError(SimstackError):
-    """Raised when there's an error during stacking process"""
-    pass
-
-
-class CosmologyError(SimstackError):
-    """Raised when there's an error with cosmological calculations"""
+class MapValidationError(MapError):
+    """Map validation specific errors"""
     pass
 
 
 class PopulationError(SimstackError):
-    """Raised when there's an error with population management"""
+    """Population management errors"""
+    pass
+
+
+class AlgorithmError(SimstackError):
+    """Stacking algorithm errors"""
+    pass
+
+
+class StackingError(SimstackError):
+    """General stacking errors (alias for AlgorithmError)"""
     pass
 
 
 class ValidationError(SimstackError):
-    """Raised when data validation fails"""
+    """General validation errors"""
+    pass
+
+
+class CosmologyError(SimstackError):
+    """Cosmological calculation errors"""
+    pass
+
+
+class ResultsError(SimstackError):
+    """Results processing errors"""
+    pass
+
+
+class PlotError(SimstackError):
+    """Plotting and visualization errors"""
+    pass
+
+
+class ToolboxError(SimstackError):
+    """Toolbox function errors"""
     pass

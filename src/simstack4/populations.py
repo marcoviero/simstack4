@@ -53,33 +53,6 @@ class PopulationManager:
         """Create bin tuples from bin edges"""
         return [(bin_edges[i], bin_edges[i + 1]) for i in range(len(bin_edges) - 1)]
 
-    def classify_catalog(self, catalog_df: pd.DataFrame) -> None:
-        """
-        Classify catalog sources into populations based on configuration
-
-        Args:
-            catalog_df: Catalog dataframe with required columns
-        """
-        # Validate required columns
-        self._validate_catalog_columns(catalog_df)
-
-        # Get column names
-        z_col = self.config.redshift.id
-        mass_col = self.config.stellar_mass.id
-
-        # Classify sources based on split type
-        if self.config.split_type == SplitType.LABELS:
-            split_values = self._classify_by_labels(catalog_df)
-        elif self.config.split_type == SplitType.UVJ:
-            split_values = self._classify_by_uvj(catalog_df)
-        elif self.config.split_type == SplitType.NUVRJ:
-            split_values = self._classify_by_nuvrj(catalog_df)
-        else:
-            raise PopulationError(f"Unknown split type: {self.config.split_type}")
-
-        # Create populations for all combinations of bins
-        self._create_populations(catalog_df, z_col, mass_col, split_values)
-
     def _validate_catalog_columns(self, catalog_df: pd.DataFrame) -> None:
         """Validate that catalog has required columns"""
         required_cols = [self.config.redshift.id, self.config.stellar_mass.id]
@@ -257,6 +230,133 @@ class PopulationManager:
 
         return bootstrap_manager
 
+    """
+    Add this method to your PopulationManager class in populations.py
+
+    Insert this method inside the PopulationManager class, after the existing methods
+    """
+
+    def get_population_data(self, population_id: str) -> Dict[str, np.ndarray]:
+        """
+        Get catalog data for a specific population
+
+        Args:
+            population_id: Population identifier
+
+        Returns:
+            Dictionary with ra, dec, redshift, stellar_mass, and indices arrays
+
+        Raises:
+            PopulationError: If population not found or no catalog loaded
+        """
+        if population_id not in self.populations:
+            raise PopulationError(f"Population {population_id} not found")
+
+        pop_bin = self.populations[population_id]
+        indices = pop_bin.indices
+
+        if not hasattr(self, 'catalog_df') or self.catalog_df is None:
+            raise PopulationError("No catalog data loaded")
+
+        # Get column names from config
+        ra_col = None
+        dec_col = None
+        z_col = None
+        mass_col = None
+
+        # Try to get column names from the config
+        # This assumes the catalog_df was loaded with the classification config
+        if hasattr(self, 'config'):
+            if hasattr(self.config, 'astrometry'):
+                ra_col = self.config.astrometry.get('ra', 'ra')
+                dec_col = self.config.astrometry.get('dec', 'dec')
+            z_col = self.config.redshift.id if hasattr(self.config, 'redshift') else 'z_peak'
+            mass_col = self.config.stellar_mass.id if hasattr(self.config, 'stellar_mass') else 'lmass'
+
+        # Fallback to common column names if config not available
+        if not ra_col:
+            ra_col = 'ra'
+        if not dec_col:
+            dec_col = 'dec'
+        if not z_col:
+            z_col = 'z_peak'
+        if not mass_col:
+            mass_col = 'lmass'
+
+        # Extract data using the indices
+        try:
+            if hasattr(self.catalog_df, 'iloc'):  # pandas DataFrame
+                subset = self.catalog_df.iloc[indices]
+
+                data = {
+                    'ra': subset[ra_col].values,
+                    'dec': subset[dec_col].values,
+                    'redshift': subset[z_col].values,
+                    'stellar_mass': subset[mass_col].values,
+                    'indices': indices
+                }
+            else:
+                # Handle other DataFrame types (like polars)
+                subset = self.catalog_df[indices]
+                data = {
+                    'ra': subset[ra_col].to_numpy(),
+                    'dec': subset[dec_col].to_numpy(),
+                    'redshift': subset[z_col].to_numpy(),
+                    'stellar_mass': subset[mass_col].to_numpy(),
+                    'indices': indices
+                }
+
+        except KeyError as e:
+            raise PopulationError(f"Required column not found in catalog: {e}")
+        except Exception as e:
+            raise PopulationError(f"Error extracting population data: {e}")
+
+        return data
+
+    # Also add this method to store the catalog_df reference
+    def set_catalog_data(self, catalog_df, config=None):
+        """
+        Store reference to catalog DataFrame for population data extraction
+
+        Args:
+            catalog_df: The loaded catalog DataFrame
+            config: Optional config object with column mappings
+        """
+        self.catalog_df = catalog_df
+        if config:
+            self.config = config
+
+    # And modify the classify_catalog method to store the reference
+    def classify_catalog(self, catalog_df: pd.DataFrame) -> None:
+        """
+        Classify catalog sources into populations based on configuration
+        UPDATED to store catalog reference
+
+        Args:
+            catalog_df: Catalog dataframe with required columns
+        """
+        # Store reference to catalog data
+        self.catalog_df = catalog_df
+
+        # Validate required columns
+        self._validate_catalog_columns(catalog_df)
+
+        # Get column names
+        z_col = self.config.redshift.id
+        mass_col = self.config.stellar_mass.id
+
+        # Classify sources based on split type
+        if self.config.split_type == SplitType.LABELS:
+            split_values = self._classify_by_labels(catalog_df)
+        elif self.config.split_type == SplitType.UVJ:
+            split_values = self._classify_by_uvj(catalog_df)
+        elif self.config.split_type == SplitType.NUVRJ:
+            split_values = self._classify_by_nuvrj(catalog_df)
+        else:
+            raise PopulationError(f"Unknown split type: {self.config.split_type}")
+
+        # Create populations for all combinations of bins
+        self._create_populations(catalog_df, z_col, mass_col, split_values)
     def __len__(self) -> int:
         """Return number of populations"""
         return len(self.populations)

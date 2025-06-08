@@ -233,12 +233,12 @@ class SimstackAlgorithm:
 
         return layer_matrix, population_labels
 
+    # Fix for the _get_population_coordinates method in algorithm.py
     def _get_population_coordinates(self, pop_bin: PopulationBin) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Get RA, Dec, and weights for a population
 
-        This is a placeholder - in practice this would interface with the catalog
-        to get actual coordinates using pop_bin.indices
+        This replaces the placeholder in algorithm.py with real catalog integration
 
         Args:
             pop_bin: Population bin object
@@ -246,63 +246,197 @@ class SimstackAlgorithm:
         Returns:
             ra, dec, weights arrays
         """
-        # TODO: This needs to interface with the actual catalog loaded in SkyCatalogs
-        # For now, create dummy data
-        n_sources = pop_bin.n_sources
+        # Get population data from the catalog through the population manager
+        pop_data = self.population_manager.get_population_data(pop_bin.id_label)
 
-        # Create random positions around median redshift position
-        # This is just for demonstration - real implementation would use catalog data
-        ra = np.random.normal(0, 0.1, n_sources)  # Random RA around 0
-        dec = np.random.normal(0, 0.1, n_sources)  # Random Dec around 0
+        ra = pop_data['ra']
+        dec = pop_data['dec']
+        stellar_masses = pop_data['stellar_mass']
 
-        # Use stellar mass as weights (log mass converted to linear)
-        weights = 10**(pop_bin.median_stellar_mass - 10)  # Normalize around 10^10 solar masses
-        weights = np.full(n_sources, weights)
+        # Use stellar mass as weights (convert from log to linear if needed)
+        if np.all(stellar_masses < 20):  # Assume log masses if all < 20
+            weights = 10 ** (stellar_masses - 10)  # Normalize around 10^10 solar masses
+        else:
+            weights = stellar_masses
 
-        logger.warning("Using dummy coordinates - needs catalog integration")
         return ra, dec, weights
 
+    # Fix for the _create_source_layer method in algorithm.py
     def _create_source_layer(self, map_name: str, ra: np.ndarray, dec: np.ndarray,
-                           weights: np.ndarray, map_shape: Tuple[int, int]) -> np.ndarray:
+                             weights: np.ndarray, map_shape: Tuple[int, int]) -> np.ndarray:
         """
         Create a 2D source layer from coordinates and weights
 
-        Args:
-            map_name: Name of the map (for coordinate system)
-            ra: Source right ascensions in degrees
-            dec: Source declinations in degrees
-            weights: Source weights (e.g., stellar mass)
-            map_shape: Shape of the output layer
-
-        Returns:
-            2D source layer array
+        This replaces the simplified version in algorithm.py with the toolbox implementation
         """
-        # Convert world coordinates to pixel coordinates
-        x_pix, y_pix = self.sky_maps.world_to_pixel(map_name, ra, dec)
+        from .toolbox import SimstackToolbox
 
-        # Initialize layer
-        layer = np.zeros(map_shape)
+        map_data = self.sky_maps[map_name]
 
-        # Add sources to layer
-        for x, y, weight in zip(x_pix, y_pix, weights):
-            # Check bounds and add source
-            ix, iy = int(round(x)), int(round(y))
-            if 0 <= ix < map_shape[1] and 0 <= iy < map_shape[0]:
-                layer[iy, ix] += weight
+        # Use toolbox function for better accuracy
+        layer = SimstackToolbox.create_source_layer(
+            ra=ra,
+            dec=dec,
+            weights=weights,
+            wcs=map_data.wcs,
+            shape=map_shape
+        )
 
         return layer
 
-    def _crop_to_circles(self, layer_matrix: np.ndarray, observed_map: np.ndarray,
-                        map_name: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # Fix for the PopulationManager integration in algorithm.py
+    def get_population_data_method(self, population_id: str) -> Dict[str, np.ndarray]:
         """
-        Crop fitting to circular regions around sources
+        Method to add to PopulationManager class to extract catalog data for populations
+
+        Add this method to your populations.py PopulationManager class
+        """
+        if population_id not in self.populations:
+            raise PopulationError(f"Population {population_id} not found")
+
+        pop_bin = self.populations[population_id]
+        indices = pop_bin.indices
+
+        if self.catalog_df is None:
+            raise PopulationError("No catalog data loaded")
+
+        # Extract data using the indices
+        if hasattr(self.catalog_df, 'iloc'):  # pandas
+            subset = self.catalog_df.iloc[indices]
+
+            # Get column names from config
+            ra_col = self.config.astrometry['ra']
+            dec_col = self.config.astrometry['dec']
+            z_col = self.config.redshift.id
+            mass_col = self.config.stellar_mass.id
+
+            data = {
+                'ra': subset[ra_col].values,
+                'dec': subset[dec_col].values,
+                'redshift': subset[z_col].values,
+                'stellar_mass': subset[mass_col].values,
+                'indices': indices
+            }
+        else:  # polars or other
+            # Handle polars case
+            subset = self.catalog_df[indices]
+            # Implementation would depend on polars API
+            pass
+
+        return data
+
+    # Enhanced wrapper integration
+    def enhanced_wrapper_integration():
+        """
+        Code to add to wrapper.py to properly integrate all components
+        """
+
+        def run_complete_pipeline(self):
+            """
+            Run the complete simstack pipeline with all components
+
+            Add this method to SimstackWrapper class
+            """
+            from .algorithm import SimstackAlgorithm
+            from .results import SimstackResults
+            from .cosmology import CosmologyCalculator
+
+            logger = setup_logging()
+
+            try:
+                # Run stacking algorithm
+                logger.info("Running stacking algorithm...")
+                algorithm = SimstackAlgorithm(
+                    config=self.config,
+                    population_manager=self.population_manager,
+                    sky_maps=self.sky_maps
+                )
+
+                stacking_results = algorithm.run_stacking()
+
+                # Process results
+                logger.info("Processing results...")
+                cosmology_calc = CosmologyCalculator(self.config.cosmology)
+
+                results_processor = SimstackResults(
+                    config=self.config,
+                    stacking_results=stacking_results,
+                    population_manager=self.population_manager,
+                    cosmology_calc=cosmology_calc
+                )
+
+                # Save results
+                output_path = Path(self.config.output.folder) / f"{self.config.output.shortname}_results.pkl"
+                results_processor.save_results(output_path, format='pickle')
+
+                # Print summary
+                results_processor.print_results_summary()
+
+                # Store for access
+                self.stacking_results = stacking_results
+                self.processed_results = results_processor
+
+                logger.info(f"Pipeline completed successfully. Results saved to {output_path}")
+
+                return results_processor
+
+            except Exception as e:
+                logger.error(f"Pipeline failed: {e}")
+                raise
+
+    # Add these imports to the top of algorithm.py
+    additional_imports = """
+    from .toolbox import SimstackToolbox
+    from .populations import PopulationManager, PopulationBin
+    """
+
+    # Updated pyproject.toml dependencies
+    updated_dependencies = """
+    dependencies = [
+        "numpy>=1.24.0",
+        "pandas>=2.0.0", 
+        "astropy>=5.3.0",
+        "matplotlib>=3.6.0",
+        "scipy>=1.10.0",
+        "scikit-learn>=1.2.0",
+        "lmfit>=1.2.0",
+        "emcee>=3.1.0",
+        "corner>=2.2.0",
+        "pydantic>=2.5.0",
+        "tomli>=2.0.0; python_version<'3.11'",
+        "polars>=0.20.0",
+        "pyarrow>=14.0.0",
+        "psutil>=5.9.0",  # For memory monitoring
+        "h5py>=3.8.0",    # For HDF5 output
+        "seaborn>=0.12.0", # For enhanced plotting
+    ]
+    """
+
+    print("Integration fixes created!")
+    print("\nNext steps:")
+    print("1. Add the get_population_data method to PopulationManager in populations.py")
+    print("2. Replace the placeholder methods in algorithm.py with the fixed versions")
+    print("3. Update your pyproject.toml with the additional dependencies")
+    print(
+        "4. Test the integration with: uv run python -c 'from src.simstack4.toolbox import SimstackToolbox; print(\"Toolbox ready!\")'")
+
+    """
+    Fix for the _crop_to_circles method in algorithm.py
+
+    Replace the existing _crop_to_circles method with this corrected version
+    """
+
+    def _crop_to_circles(self, layer_matrix: np.ndarray, observed_map: np.ndarray,
+                         map_name: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Crop fitting to circular regions around sources (FIXED VERSION)
 
         This reduces the number of pixels used in fitting, focusing on regions
         where sources are expected to contribute signal.
 
         Args:
-            layer_matrix: Population layer matrix
-            observed_map: Observed map data
+            layer_matrix: Population layer matrix (n_populations, n_pixels)
+            observed_map: Observed map data (2D array)
             map_name: Name of the map
 
         Returns:
@@ -313,37 +447,125 @@ class SimstackAlgorithm:
         # Create mask for pixels within circles around sources
         mask = np.zeros(observed_map.shape, dtype=bool)
 
-        # Get beam radius in pixels (2 x FWHM for conservative circle)
-        circle_radius_pix = 2 * map_data.beam_fwhm_pixels
+        # Get beam radius in pixels (use more conservative radius)
+        circle_radius_pix = max(3.0, map_data.beam_fwhm_pixels)  # At least 3 pixels
+
+        logger.debug(f"Using circle radius: {circle_radius_pix:.1f} pixels")
+
+        # Track number of sources added
+        n_sources_added = 0
 
         # Add circles around all sources from all populations
         for pop_bin in self.population_manager.iter_populations():
             if pop_bin.n_sources == 0:
                 continue
 
-            ra, dec, _ = self._get_population_coordinates(pop_bin)
-            x_pix, y_pix = self.sky_maps.world_to_pixel(map_name, ra, dec)
+            try:
+                # Get population data
+                pop_data = self.population_manager.get_population_data(pop_bin.id_label)
+                ra = pop_data['ra']
+                dec = pop_data['dec']
 
-            # Add circles
-            for x, y in zip(x_pix, y_pix):
-                self._add_circle_to_mask(mask, x, y, circle_radius_pix)
+                # Convert to pixel coordinates
+                x_pix, y_pix = self.sky_maps.world_to_pixel(map_name, ra, dec)
 
-        # Apply mask
-        valid_pixels = mask.ravel() & ~np.isnan(observed_map.ravel())
+                # Add circles for sources that fall within the map
+                for x, y in zip(x_pix, y_pix):
+                    ix, iy = int(np.round(x)), int(np.round(y))
 
-        cropped_layers = layer_matrix[:, valid_pixels]
-        cropped_observed = observed_map.ravel()[valid_pixels]
+                    # Check if source is within map bounds
+                    if (0 <= ix < observed_map.shape[1] and
+                            0 <= iy < observed_map.shape[0]):
+                        # Add circle around this source
+                        self._add_circle_to_mask(mask, x, y, circle_radius_pix)
+                        n_sources_added += 1
 
-        logger.debug(f"Cropped to {np.sum(valid_pixels)} pixels from {len(valid_pixels)}")
+            except Exception as e:
+                logger.warning(f"Error processing population {pop_bin.id_label}: {e}")
+                continue
 
-        return cropped_layers, cropped_observed, valid_pixels
+        logger.debug(f"Added circles for {n_sources_added} sources")
+
+        # Apply mask and get valid pixels
+        valid_pixels_2d = mask & ~np.isnan(observed_map)
+        n_valid_pixels = np.sum(valid_pixels_2d)
+
+        logger.debug(f"Valid pixels after cropping: {n_valid_pixels}")
+
+        # Check if we have enough pixels for the fit
+        n_populations = layer_matrix.shape[0]
+        if n_valid_pixels < n_populations:
+            logger.warning(f"Too few pixels ({n_valid_pixels}) for {n_populations} populations")
+            logger.warning("Expanding circle radius and using more pixels")
+
+            # Expand circles or use more conservative approach
+            expanded_radius = max(circle_radius_pix * 2, 10.0)
+            mask_expanded = np.zeros(observed_map.shape, dtype=bool)
+
+            # Re-add circles with larger radius
+            for pop_bin in self.population_manager.iter_populations():
+                if pop_bin.n_sources == 0:
+                    continue
+
+                try:
+                    pop_data = self.population_manager.get_population_data(pop_bin.id_label)
+                    ra = pop_data['ra']
+                    dec = pop_data['dec']
+                    x_pix, y_pix = self.sky_maps.world_to_pixel(map_name, ra, dec)
+
+                    for x, y in zip(x_pix, y_pix):
+                        ix, iy = int(np.round(x)), int(np.round(y))
+                        if (0 <= ix < observed_map.shape[1] and
+                                0 <= iy < observed_map.shape[0]):
+                            self._add_circle_to_mask(mask_expanded, x, y, expanded_radius)
+
+                except Exception:
+                    continue
+
+            # Use expanded mask
+            valid_pixels_2d = mask_expanded & ~np.isnan(observed_map)
+            n_valid_pixels = np.sum(valid_pixels_2d)
+            logger.debug(f"Valid pixels after expansion: {n_valid_pixels}")
+
+            # If still not enough, fall back to using all pixels
+            if n_valid_pixels < n_populations:
+                logger.warning("Still insufficient pixels, using all valid pixels")
+                valid_pixels_2d = ~np.isnan(observed_map)
+                n_valid_pixels = np.sum(valid_pixels_2d)
+
+        # Convert to flat indices
+        flat_indices = np.where(valid_pixels_2d.ravel())[0]
+
+        # Extract the data
+        cropped_observed = observed_map.ravel()[flat_indices]
+        cropped_layers = layer_matrix[:, flat_indices]
+
+        logger.debug(f"Final cropping: {len(cropped_observed)} pixels, {cropped_layers.shape[0]} populations")
+
+        return cropped_layers, cropped_observed, flat_indices
 
     def _add_circle_to_mask(self, mask: np.ndarray, center_x: float, center_y: float,
-                           radius: float) -> None:
-        """Add a circular region to the mask"""
-        y_indices, x_indices = np.ogrid[:mask.shape[0], :mask.shape[1]]
-        distances = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
-        mask[distances <= radius] = True
+                            radius: float) -> None:
+        """Add a circular region to the mask (IMPROVED VERSION)"""
+
+        # Get mask dimensions
+        ny, nx = mask.shape
+
+        # Create coordinate grids centered on the circle
+        y_min = max(0, int(center_y - radius))
+        y_max = min(ny, int(center_y + radius) + 1)
+        x_min = max(0, int(center_x - radius))
+        x_max = min(nx, int(center_x + radius) + 1)
+
+        # Create coordinate grids for the region
+        y_coords, x_coords = np.ogrid[y_min:y_max, x_min:x_max]
+
+        # Calculate distances from center
+        distances = np.sqrt((x_coords - center_x) ** 2 + (y_coords - center_y) ** 2)
+
+        # Set mask where distance <= radius
+        circle_mask = distances <= radius
+        mask[y_min:y_max, x_min:x_max][circle_mask] = True
 
     def _solve_linear_system(self, layer_matrix: np.ndarray, observed_vector: np.ndarray,
                            map_data: MapData) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
@@ -391,27 +613,40 @@ class SimstackAlgorithm:
                 flux_densities, residuals, rank, singular_values = linalg.lstsq(
                     layer_matrix.T, observed_vector
                 )
-
+                
             # Calculate uncertainties
-            if len(residuals) > 0 and n_pixels > n_populations:
-                # Standard approach: use residuals
-                mse = residuals[0] / (n_pixels - n_populations)
-
-                # Covariance matrix
+            if n_pixels > n_populations:
+                # Overdetermined system - can estimate proper errors
                 try:
-                    if map_data.noise is not None:
-                        # Use noise weights
-                        weighted_layers = layer_matrix * np.sqrt(weights)
-                        covariance = linalg.inv(weighted_layers @ weighted_layers.T)
+                    # Check if residuals is array or scalar
+                    if hasattr(residuals, '__len__') and len(residuals) > 0:
+                        mse = residuals[0] / (n_pixels - n_populations)
+                    elif np.isfinite(residuals):
+                        mse = residuals / (n_pixels - n_populations)
                     else:
-                        covariance = linalg.inv(layer_matrix @ layer_matrix.T) * mse
+                        # Calculate residuals manually
+                        model_prediction = layer_matrix.T @ flux_densities
+                        mse = np.sum((observed_vector - model_prediction) ** 2) / (n_pixels - n_populations)
 
-                    flux_errors = np.sqrt(np.diag(covariance))
-                except linalg.LinAlgError:
-                    logger.warning("Could not compute covariance matrix, using scaled errors")
-                    flux_errors = np.abs(flux_densities) * 0.1  # 10% errors as fallback
+                    # Covariance matrix
+                    try:
+                        if map_data.noise is not None:
+                            # Use noise weights
+                            weighted_layers = layer_matrix * np.sqrt(weights)
+                            covariance = linalg.inv(weighted_layers @ weighted_layers.T)
+                        else:
+                            covariance = linalg.inv(layer_matrix @ layer_matrix.T) * mse
+
+                        flux_errors = np.sqrt(np.diag(covariance))
+                    except linalg.LinAlgError:
+                        logger.warning("Could not compute covariance matrix, using scaled errors")
+                        flux_errors = np.abs(flux_densities) * 0.1  # 10% errors as fallback
+
+                except Exception as e:
+                    logger.warning(f"Error estimation failed: {e}")
+                    flux_errors = np.abs(flux_densities) * 0.1
             else:
-                # Fallback error estimate
+                # Underdetermined system - use fallback errors
                 flux_errors = np.abs(flux_densities) * 0.1
 
             # Calculate fit statistics
@@ -438,6 +673,7 @@ class SimstackAlgorithm:
 
         except Exception as e:
             logger.error(f"Linear system solution failed: {e}")
+            pdb.set_trace()
             # Return zeros as fallback
             return (np.zeros(n_populations), np.ones(n_populations),
                    {"chi_squared": np.inf, "degrees_of_freedom": 1, "reduced_chi_squared": np.inf})

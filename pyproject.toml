@@ -15,10 +15,14 @@ dependencies = [
     "emcee>=3.1.1",
     "corner>=2.2.1",
     "scipy",
-    "tomli>=2.0.0; python_version<'3.11'",  # TOML support for older Python
-    "pydantic>=2.0.0",  # For data validation
-    "polars>=0.20.0",   # Fast dataframe library (alternative to pandas)
+    "tomli>=2.0.0; python_version<'3.11'", # TOML support for older Python
+    "pydantic>=2.0.0", # For data validation
+    "polars>=0.20.0", # Fast dataframe library (alternative to pandas)
     # "vaex>=4.17.0",   # Commented out - doesn't support Python 3.13 yet
+    "psutil>=7.0.0",
+    "h5py>=3.14.0",
+    "seaborn>=0.13.2",
+    "pyarrow>=20.0.0",
 ]
 readme = "README.md"
 requires-python = ">=3.13"
