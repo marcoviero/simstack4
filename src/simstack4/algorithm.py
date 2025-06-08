@@ -257,9 +257,7 @@ class SimstackAlgorithm:
         self, pop_bin: PopulationBin
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Get RA, Dec, and weights for a population
-
-        This replaces the placeholder in algorithm.py with real catalog integration
+        Get RA, Dec, and weights for a population (ENHANCED for COSMOS)
 
         Args:
             pop_bin: Population bin object
@@ -274,11 +272,17 @@ class SimstackAlgorithm:
         dec = pop_data["dec"]
         stellar_masses = pop_data["stellar_mass"]
 
-        # Use stellar mass as weights (convert from log to linear if needed)
-        if np.all(stellar_masses < 20):  # Assume log masses if all < 20
+        # For COSMOS catalogs, stellar masses are typically in log units
+        # Check if masses are in log scale (typical COSMOS range is 8-12)
+        if np.all((stellar_masses > 7) & (stellar_masses < 15)):  # log masses
+            # Convert to linear scale and normalize
             weights = 10 ** (stellar_masses - 10)  # Normalize around 10^10 solar masses
         else:
-            weights = stellar_masses
+            # Already in linear scale
+            weights = stellar_masses / 1e10  # Normalize to 10^10 solar masses
+
+        # Ensure positive weights
+        weights = np.maximum(weights, 1e-6)
 
         return ra, dec, weights
 

@@ -32,6 +32,7 @@ from astropy.io import fits
 from astropy.table import Table
 
 from .config import CatalogConfig
+from .cosmos import create_cosmos_sky_catalog
 from .exceptions.simstack_exceptions import CatalogError, ValidationError
 from .populations import PopulationManager
 from .utils import setup_logging
@@ -93,8 +94,10 @@ class SkyCatalogs:
         else:
             raise CatalogError(f"Unknown backend: {backend}")
 
+    # In sky_catalogs.py, add Parquet support to the load_catalog method:
+
     def load_catalog(self) -> None:
-        """Load catalog from file"""
+        """Load catalog from file (MODIFIED to support COSMOS and Parquet)"""
         catalog_path = self.config.full_path
 
         if not catalog_path.exists():
@@ -102,10 +105,18 @@ class SkyCatalogs:
 
         logger.info(f"Loading catalog: {catalog_path}")
 
-        # Determine file format
+        # Check if this is a COSMOS catalog
+        if "COSMOS" in catalog_path.name.upper():
+            logger.info("Detected COSMOS catalog, using specialized loader")
+            self.load_cosmos_catalog()
+            return
+
+        # Original file format detection code with Parquet support
         suffix = catalog_path.suffix.lower()
 
-        if suffix == ".csv":
+        if suffix == ".parquet":
+            self._load_parquet(catalog_path)
+        elif suffix == ".csv":
             self._load_csv(catalog_path)
         elif suffix in [".fits", ".fit"]:
             self._load_fits(catalog_path)
@@ -118,6 +129,92 @@ class SkyCatalogs:
         self._create_population_manager()
 
         logger.info(f"Catalog loaded successfully: {len(self.catalog_df)} sources")
+
+    def _load_parquet(self, catalog_path: Path) -> None:
+        """Load Parquet file with appropriate backend"""
+        try:
+            if self.backend == "polars":
+                self.catalog_df = pl.read_parquet(catalog_path)
+                logger.debug("Loaded Parquet with polars")
+            else:
+                self.catalog_df = pd.read_parquet(catalog_path)
+                # Convert to polars if that was the intended backend
+                if self.backend == "polars" and HAS_POLARS:
+                    self.catalog_df = pl.from_pandas(self.catalog_df)
+                logger.debug("Loaded Parquet with pandas")
+        except Exception as e:
+            raise CatalogError(f"Failed to load Parquet file: {e}") from e
+
+    def load_cosmos_catalog(self, **kwargs) -> None:
+        """
+        Load COSMOS catalog - SIMPLIFIED for pre-processed clean catalog
+
+        Args:
+            **kwargs: Arguments passed to catalog loader (mostly ignored now)
+        """
+        catalog_path = self.config.full_path
+
+        if not catalog_path.exists():
+            raise CatalogError(f"COSMOS catalog file not found: {catalog_path}")
+
+        logger.info(f"Loading pre-processed COSMOS catalog: {catalog_path}")
+
+        # Load the clean catalog directly (no need for special COSMOS processing)
+        suffix = catalog_path.suffix.lower()
+
+        if suffix == ".parquet":
+            self._load_parquet(catalog_path)
+        elif suffix in [".fits", ".fit"]:
+            self._load_fits(catalog_path)
+        elif suffix == ".csv":
+            self._load_csv(catalog_path)
+        else:
+            raise CatalogError(f"Unsupported COSMOS catalog format: {suffix}")
+
+        logger.info(f"COSMOS catalog loaded: {len(self.catalog_df)} sources")
+
+        # Validate that we have the essential columns
+        essential_cols = ["ra", "dec", "zfinal", "mass_med"]
+        missing_cols = []
+
+        if self.backend == "polars":
+            available_cols = self.catalog_df.columns
+        else:
+            available_cols = list(self.catalog_df.columns)
+
+        for col in essential_cols:
+            if col not in available_cols:
+                missing_cols.append(col)
+
+        if missing_cols:
+            raise ValidationError(
+                f"COSMOS catalog missing essential columns: {missing_cols}"
+            )
+
+        # Check if UVJ classification is already done
+        if "UVJ_class" in available_cols:
+            if self.backend == "polars":
+                n_q = self.catalog_df.filter(pl.col("UVJ_class") == 1).height
+                n_sf = len(self.catalog_df) - n_q
+            else:
+                n_sf = np.sum(self.catalog_df["UVJ_class"] == 0)
+                n_q = np.sum(self.catalog_df["UVJ_class"] == 1)
+
+            logger.info(
+                f"✓ UVJ classification found: {n_sf} star-forming, {n_q} quiescent"
+            )
+        else:
+            logger.warning(
+                "No UVJ_class column found - will use split_type from config"
+            )
+
+        # Standard catalog validation and population creation
+        self._validate_catalog()
+        self._create_population_manager()
+
+        logger.info(
+            f"✓ COSMOS catalog processing complete: {len(self.population_manager)} populations"
+        )
 
     def _load_csv(self, catalog_path: Path) -> None:
         """Load CSV file with appropriate backend"""
@@ -371,3 +468,20 @@ def load_catalog(catalog_config: CatalogConfig, backend: str = "auto") -> SkyCat
     catalogs = SkyCatalogs(catalog_config, backend=backend)
     catalogs.load_catalog()
     return catalogs
+
+
+def load_cosmos_catalog_direct(
+    catalog_path: Path, backend: str = "auto", **kwargs
+) -> SkyCatalogs:
+    """
+    Convenience function to load COSMOS catalog directly with optimized backend
+
+    Args:
+        catalog_path: Path to COSMOSweb_master.fits file
+        backend: Data backend ("auto", "polars", "pandas") - auto defaults to polars for large files
+        **kwargs: Additional arguments for COSMOS loader
+
+    Returns:
+        Loaded SkyCatalogs instance with COSMOS data
+    """
+    return create_cosmos_sky_catalog(catalog_path, backend=backend, **kwargs)

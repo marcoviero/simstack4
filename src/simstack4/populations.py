@@ -13,6 +13,9 @@ import pandas as pd
 
 from .config import ClassificationConfig, SplitType
 from .exceptions.simstack_exceptions import PopulationError
+from .utils import setup_logging
+
+logger = setup_logging()
 
 
 @dataclass
@@ -80,19 +83,38 @@ class PopulationManager:
 
         return catalog_df[label_col].values
 
-    def _classify_by_uvj(self, catalog_df: pd.DataFrame) -> np.ndarray:
-        """Classify sources using UVJ criteria"""
+    def _classify_by_uvj(self, catalog_df) -> np.ndarray:
+        """Classify sources using UVJ criteria (ENHANCED VERSION with backend support)"""
         if not self.config.split_params:
             raise PopulationError("split_params required for UVJ classification")
 
+        # Check if we already have a UVJ_class column (from COSMOS processing)
+        if hasattr(catalog_df, "columns"):  # pandas
+            columns = catalog_df.columns
+        else:  # polars
+            columns = catalog_df.columns
+
+        if "UVJ_class" in columns:
+            logger.debug("Using existing UVJ_class column")
+            if hasattr(catalog_df, "values"):  # pandas
+                return catalog_df["UVJ_class"].values
+            else:  # polars
+                return catalog_df["UVJ_class"].to_numpy()
+
+        # Otherwise, calculate UVJ classification from colors
         uv_col = self.config.split_params.bins.get("U-V")
         vj_col = self.config.split_params.bins.get("V-J")
 
         if not uv_col or not vj_col:
             raise PopulationError("U-V and V-J columns required for UVJ classification")
 
-        uv = catalog_df[uv_col].values
-        vj = catalog_df[vj_col].values
+        # Handle both pandas and polars
+        if hasattr(catalog_df, "values"):  # pandas
+            uv = catalog_df[uv_col].values
+            vj = catalog_df[vj_col].values
+        else:  # polars
+            uv = catalog_df[uv_col].to_numpy()
+            vj = catalog_df[vj_col].to_numpy()
 
         # UVJ quiescent criteria (Whitaker et al. 2011)
         # Quiescent: U-V > 1.3 and V-J < 1.6 and U-V > 0.88 * V-J + 0.59
@@ -110,6 +132,50 @@ class PopulationManager:
         # Implementation would depend on specific criteria
         # Placeholder for now
         return np.zeros(len(catalog_df), dtype=int)
+
+    def classify_catalog(self, catalog_df) -> None:
+        """
+        Classify catalog sources into populations based on configuration
+        UPDATED to handle both pandas and polars backends and store catalog reference
+
+        Args:
+            catalog_df: Catalog dataframe with required columns (pandas or polars)
+        """
+        # Convert polars to pandas for population management (temporary solution)
+        if hasattr(catalog_df, "to_pandas"):  # polars DataFrame
+            logger.debug(
+                "Converting Polars DataFrame to pandas for population classification"
+            )
+            pandas_df = catalog_df.to_pandas()
+            self.catalog_df = pandas_df  # Store pandas version for population manager
+
+            # Also keep reference to original for potential future use
+            self._original_catalog_df = catalog_df
+            self._catalog_backend = "polars"
+        else:  # pandas DataFrame
+            pandas_df = catalog_df
+            self.catalog_df = catalog_df
+            self._catalog_backend = "pandas"
+
+        # Validate required columns
+        self._validate_catalog_columns(pandas_df)
+
+        # Get column names
+        z_col = self.config.redshift.id
+        mass_col = self.config.stellar_mass.id
+
+        # Classify sources based on split type
+        if self.config.split_type == SplitType.LABELS:
+            split_values = self._classify_by_labels(pandas_df)
+        elif self.config.split_type == SplitType.UVJ:
+            split_values = self._classify_by_uvj(pandas_df)
+        elif self.config.split_type == SplitType.NUVRJ:
+            split_values = self._classify_by_nuvrj(pandas_df)
+        else:
+            raise PopulationError(f"Unknown split type: {self.config.split_type}")
+
+        # Create populations for all combinations of bins
+        self._create_popu
 
     def _create_populations(
         self,
@@ -335,6 +401,63 @@ class PopulationManager:
 
         return data
 
+    def get_population_data_optimized(
+        self, population_id: str
+    ) -> dict[str, np.ndarray]:
+        """
+        Get catalog data for a specific population (optimized for different backends)
+
+        Args:
+            population_id: Population identifier
+
+        Returns:
+            Dictionary with ra, dec, redshift, stellar_mass, and indices arrays
+        """
+        if population_id not in self.populations:
+            raise PopulationError(f"Population {population_id} not found")
+
+        pop_bin = self.populations[population_id]
+        indices = pop_bin.indices
+
+        if not hasattr(self, "catalog_df") or self.catalog_df is None:
+            raise PopulationError("No catalog data loaded")
+
+        # Get column names from config with fallbacks
+        if hasattr(self.config, "astrometry"):
+            ra_col = getattr(self.config.astrometry, "ra", "ra")
+            dec_col = getattr(self.config.astrometry, "dec", "dec")
+        else:
+            ra_col = "ra"
+            dec_col = "dec"
+
+        z_col = (
+            self.config.redshift.id if hasattr(self.config, "redshift") else "z_best"
+        )
+        mass_col = (
+            self.config.stellar_mass.id
+            if hasattr(self.config, "stellar_mass")
+            else "log10_stellarmass"
+        )
+
+        # Extract data using the indices (always use pandas version stored in self.catalog_df)
+        try:
+            subset = self.catalog_df.iloc[indices]
+
+            data = {
+                "ra": subset[ra_col].values,
+                "dec": subset[dec_col].values,
+                "redshift": subset[z_col].values,
+                "stellar_mass": subset[mass_col].values,
+                "indices": indices,
+            }
+
+        except KeyError as e:
+            raise PopulationError(f"Required column not found in catalog: {e}") from e
+        except Exception as e:
+            raise PopulationError(f"Error extracting population data: {e}") from e
+
+        return data
+
     # Also add this method to store the catalog_df reference
     def set_catalog_data(self, catalog_df, config=None):
         """
@@ -349,19 +472,32 @@ class PopulationManager:
             self.config = config
 
     # And modify the classify_catalog method to store the reference
-    def classify_catalog(self, catalog_df: pd.DataFrame) -> None:
+    def classify_catalog(self, catalog_df) -> None:
         """
         Classify catalog sources into populations based on configuration
-        UPDATED to store catalog reference
+        UPDATED to handle both pandas and polars backends and store catalog reference
 
         Args:
-            catalog_df: Catalog dataframe with required columns
+            catalog_df: Catalog dataframe with required columns (pandas or polars)
         """
-        # Store reference to catalog data
-        self.catalog_df = catalog_df
+        # Convert polars to pandas for population management (temporary solution)
+        if hasattr(catalog_df, "to_pandas"):  # polars DataFrame
+            logger.debug(
+                "Converting Polars DataFrame to pandas for population classification"
+            )
+            pandas_df = catalog_df.to_pandas()
+            self.catalog_df = pandas_df  # Store pandas version for population manager
+
+            # Also keep reference to original for potential future use
+            self._original_catalog_df = catalog_df
+            self._catalog_backend = "polars"
+        else:  # pandas DataFrame
+            pandas_df = catalog_df
+            self.catalog_df = catalog_df
+            self._catalog_backend = "pandas"
 
         # Validate required columns
-        self._validate_catalog_columns(catalog_df)
+        self._validate_catalog_columns(pandas_df)
 
         # Get column names
         z_col = self.config.redshift.id
@@ -369,16 +505,41 @@ class PopulationManager:
 
         # Classify sources based on split type
         if self.config.split_type == SplitType.LABELS:
-            split_values = self._classify_by_labels(catalog_df)
+            split_values = self._classify_by_labels(pandas_df)
         elif self.config.split_type == SplitType.UVJ:
-            split_values = self._classify_by_uvj(catalog_df)
+            split_values = self._classify_by_uvj(pandas_df)
         elif self.config.split_type == SplitType.NUVRJ:
-            split_values = self._classify_by_nuvrj(catalog_df)
+            split_values = self._classify_by_nuvrj(pandas_df)
         else:
             raise PopulationError(f"Unknown split type: {self.config.split_type}")
 
         # Create populations for all combinations of bins
-        self._create_populations(catalog_df, z_col, mass_col, split_values)
+        self._create_populations(pandas_df, z_col, mass_col, split_values)
+
+    def get_population_type_summary(self) -> dict[str, dict]:
+        """
+        Get summary of populations by type (star-forming vs quiescent)
+
+        Returns:
+            Dictionary with statistics for each population type
+        """
+        if not hasattr(self, "catalog_df") or self.catalog_df is None:
+            return {}
+
+        summary = {
+            "star_forming": {"populations": [], "total_sources": 0},
+            "quiescent": {"populations": [], "total_sources": 0},
+        }
+
+        for pop_id, pop_bin in self.populations.items():
+            if pop_bin.split_value == 0:  # star-forming
+                summary["star_forming"]["populations"].append(pop_id)
+                summary["star_forming"]["total_sources"] += pop_bin.n_sources
+            elif pop_bin.split_value == 1:  # quiescent
+                summary["quiescent"]["populations"].append(pop_id)
+                summary["quiescent"]["total_sources"] += pop_bin.n_sources
+
+        return summary
 
     def __len__(self) -> int:
         """Return number of populations"""
