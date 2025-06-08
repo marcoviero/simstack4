@@ -4,7 +4,7 @@
 [binning]
 stack_all_z_at_once = true    # Stack all redshifts together (optimal but memory intensive)
 add_foreground = true         # Add foreground layer of all 1's
-crop_circles = false           # Draw circles around sources and flatten
+crop_circles = true           # Draw circles around sources and flatten
 
 [error_estimator]
 write_simmaps = false         # Write simulated images at each wavelength

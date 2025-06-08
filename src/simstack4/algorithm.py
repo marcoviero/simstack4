@@ -6,19 +6,23 @@ multiple population layers to observed maps, replacing the nested loop
 structure from simstack3 with a more efficient matrix-based approach.
 """
 
-from typing import Dict, List, Tuple, Optional, Any
-import numpy as np
-from dataclasses import dataclass, field
 import time
-from scipy import linalg
-from sklearn.linear_model import LinearRegression
-import warnings
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
-from .populations import PopulationManager, PopulationBin
-from .sky_maps import SkyMaps, MapData
-from .config import SimstackConfig, BinningConfig
-from .exceptions.simstack_exceptions import AlgorithmError, ValidationError
-from .utils import setup_logging, memory_usage_gb
+import numpy as np
+from scipy import linalg
+
+from .config import SimstackConfig
+from .exceptions.simstack_exceptions import (
+    AlgorithmError,
+    PopulationError,
+    ValidationError,
+)
+from .populations import PopulationBin, PopulationManager
+from .sky_maps import MapData, SkyMaps
+from .utils import memory_usage_gb, setup_logging
 
 logger = setup_logging()
 
@@ -26,14 +30,15 @@ logger = setup_logging()
 @dataclass
 class StackingResults:
     """Container for stacking results"""
-    flux_densities: Dict[str, np.ndarray]  # [map_name][population_index]
-    flux_errors: Dict[str, np.ndarray]
-    population_labels: List[str]
-    map_names: List[str]
-    n_sources: Dict[str, int]  # sources per population
-    chi_squared: Dict[str, float]  # chi2 per map
-    degrees_of_freedom: Dict[str, int]
-    reduced_chi_squared: Dict[str, float]
+
+    flux_densities: dict[str, np.ndarray]  # [map_name][population_index]
+    flux_errors: dict[str, np.ndarray]
+    population_labels: list[str]
+    map_names: list[str]
+    n_sources: dict[str, int]  # sources per population
+    chi_squared: dict[str, float]  # chi2 per map
+    degrees_of_freedom: dict[str, int]
+    reduced_chi_squared: dict[str, float]
     execution_time: float
     memory_used_gb: float
 
@@ -43,7 +48,9 @@ class StackingResults:
             if map_name in self.chi_squared and map_name in self.degrees_of_freedom:
                 dof = self.degrees_of_freedom[map_name]
                 if dof > 0:
-                    self.reduced_chi_squared[map_name] = self.chi_squared[map_name] / dof
+                    self.reduced_chi_squared[map_name] = (
+                        self.chi_squared[map_name] / dof
+                    )
 
 
 class SimstackAlgorithm:
@@ -54,8 +61,12 @@ class SimstackAlgorithm:
     that replaces the nested population loops from simstack3.
     """
 
-    def __init__(self, config: SimstackConfig, population_manager: PopulationManager,
-                 sky_maps: SkyMaps):
+    def __init__(
+        self,
+        config: SimstackConfig,
+        population_manager: PopulationManager,
+        sky_maps: SkyMaps,
+    ):
         """
         Initialize stacking algorithm
 
@@ -67,14 +78,14 @@ class SimstackAlgorithm:
         self.config = config
         self.population_manager = population_manager
         self.sky_maps = sky_maps
-        self.results: Optional[StackingResults] = None
+        self.results: StackingResults | None = None
 
         # Algorithm settings
         self.crop_circles = config.binning.crop_circles
         self.add_foreground = config.binning.add_foreground
         self.stack_all_z = config.binning.stack_all_z_at_once
 
-        logger.info(f"SimstackAlgorithm initialized:")
+        logger.info("SimstackAlgorithm initialized:")
         logger.info(f"  - {len(population_manager)} populations")
         logger.info(f"  - {len(sky_maps)} maps")
         logger.info(f"  - Crop circles: {self.crop_circles}")
@@ -114,7 +125,7 @@ class SimstackAlgorithm:
 
         except Exception as e:
             logger.error(f"Stacking failed: {e}")
-            raise AlgorithmError(f"Stacking algorithm failed: {e}")
+            raise AlgorithmError(f"Stacking algorithm failed: {e}") from e
 
     def _validate_inputs(self) -> None:
         """Validate that inputs are compatible for stacking"""
@@ -126,7 +137,7 @@ class SimstackAlgorithm:
 
         # Check memory requirements
         n_populations = len(self.population_manager)
-        n_maps = len(self.sky_maps)
+        # n_maps = len(self.sky_maps)
 
         # Get typical map size
         first_map = next(iter(self.sky_maps.maps.values()))
@@ -136,11 +147,15 @@ class SimstackAlgorithm:
         layer_memory_gb = (n_populations * map_pixels * 8) / 1e9  # 8 bytes per float64
 
         if layer_memory_gb > 8.0:  # More than 8GB
-            logger.warning(f"Large memory requirement estimated: {layer_memory_gb:.1f}GB")
+            logger.warning(
+                f"Large memory requirement estimated: {layer_memory_gb:.1f}GB"
+            )
             if not self.stack_all_z:
-                logger.info("Consider setting stack_all_z_at_once=False for memory efficiency")
+                logger.info(
+                    "Consider setting stack_all_z_at_once=False for memory efficiency"
+                )
 
-    def _stack_single_map(self, map_name: str) -> Dict[str, Any]:
+    def _stack_single_map(self, map_name: str) -> dict[str, Any]:
         """
         Stack a single map using simultaneous fitting
 
@@ -185,10 +200,12 @@ class SimstackAlgorithm:
             "flux_errors": flux_errors,
             "population_labels": population_labels,
             "fit_statistics": fit_stats,
-            "n_valid_pixels": len(observed_vector)
+            "n_valid_pixels": len(observed_vector),
         }
 
-    def _create_layer_matrix(self, map_name: str, map_data: MapData) -> Tuple[np.ndarray, List[str]]:
+    def _create_layer_matrix(
+        self, map_name: str, map_data: MapData
+    ) -> tuple[np.ndarray, list[str]]:
         """
         Create the matrix of convolved population layers
 
@@ -222,7 +239,9 @@ class SimstackAlgorithm:
             ra, dec, weights = self._get_population_coordinates(pop_bin)
 
             # Create source layer
-            source_layer = self._create_source_layer(map_name, ra, dec, weights, map_shape)
+            source_layer = self._create_source_layer(
+                map_name, ra, dec, weights, map_shape
+            )
 
             # Convolve with PSF
             convolved_layer = self.sky_maps.convolve_with_psf(source_layer, map_name)
@@ -234,7 +253,9 @@ class SimstackAlgorithm:
         return layer_matrix, population_labels
 
     # Fix for the _get_population_coordinates method in algorithm.py
-    def _get_population_coordinates(self, pop_bin: PopulationBin) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _get_population_coordinates(
+        self, pop_bin: PopulationBin
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Get RA, Dec, and weights for a population
 
@@ -249,9 +270,9 @@ class SimstackAlgorithm:
         # Get population data from the catalog through the population manager
         pop_data = self.population_manager.get_population_data(pop_bin.id_label)
 
-        ra = pop_data['ra']
-        dec = pop_data['dec']
-        stellar_masses = pop_data['stellar_mass']
+        ra = pop_data["ra"]
+        dec = pop_data["dec"]
+        stellar_masses = pop_data["stellar_mass"]
 
         # Use stellar mass as weights (convert from log to linear if needed)
         if np.all(stellar_masses < 20):  # Assume log masses if all < 20
@@ -262,8 +283,14 @@ class SimstackAlgorithm:
         return ra, dec, weights
 
     # Fix for the _create_source_layer method in algorithm.py
-    def _create_source_layer(self, map_name: str, ra: np.ndarray, dec: np.ndarray,
-                             weights: np.ndarray, map_shape: Tuple[int, int]) -> np.ndarray:
+    def _create_source_layer(
+        self,
+        map_name: str,
+        ra: np.ndarray,
+        dec: np.ndarray,
+        weights: np.ndarray,
+        map_shape: tuple[int, int],
+    ) -> np.ndarray:
         """
         Create a 2D source layer from coordinates and weights
 
@@ -275,17 +302,13 @@ class SimstackAlgorithm:
 
         # Use toolbox function for better accuracy
         layer = SimstackToolbox.create_source_layer(
-            ra=ra,
-            dec=dec,
-            weights=weights,
-            wcs=map_data.wcs,
-            shape=map_shape
+            ra=ra, dec=dec, weights=weights, wcs=map_data.wcs, shape=map_shape
         )
 
         return layer
 
     # Fix for the PopulationManager integration in algorithm.py
-    def get_population_data_method(self, population_id: str) -> Dict[str, np.ndarray]:
+    def get_population_data_method(self, population_id: str) -> dict[str, np.ndarray]:
         """
         Method to add to PopulationManager class to extract catalog data for populations
 
@@ -301,21 +324,21 @@ class SimstackAlgorithm:
             raise PopulationError("No catalog data loaded")
 
         # Extract data using the indices
-        if hasattr(self.catalog_df, 'iloc'):  # pandas
+        if hasattr(self.catalog_df, "iloc"):  # pandas
             subset = self.catalog_df.iloc[indices]
 
             # Get column names from config
-            ra_col = self.config.astrometry['ra']
-            dec_col = self.config.astrometry['dec']
+            ra_col = self.config.astrometry["ra"]
+            dec_col = self.config.astrometry["dec"]
             z_col = self.config.redshift.id
             mass_col = self.config.stellar_mass.id
 
             data = {
-                'ra': subset[ra_col].values,
-                'dec': subset[dec_col].values,
-                'redshift': subset[z_col].values,
-                'stellar_mass': subset[mass_col].values,
-                'indices': indices
+                "ra": subset[ra_col].values,
+                "dec": subset[dec_col].values,
+                "redshift": subset[z_col].values,
+                "stellar_mass": subset[mass_col].values,
+                "indices": indices,
             }
         else:  # polars or other
             # Handle polars case
@@ -338,8 +361,8 @@ class SimstackAlgorithm:
             Add this method to SimstackWrapper class
             """
             from .algorithm import SimstackAlgorithm
-            from .results import SimstackResults
             from .cosmology import CosmologyCalculator
+            from .results import SimstackResults
 
             logger = setup_logging()
 
@@ -349,7 +372,7 @@ class SimstackAlgorithm:
                 algorithm = SimstackAlgorithm(
                     config=self.config,
                     population_manager=self.population_manager,
-                    sky_maps=self.sky_maps
+                    sky_maps=self.sky_maps,
                 )
 
                 stacking_results = algorithm.run_stacking()
@@ -362,12 +385,15 @@ class SimstackAlgorithm:
                     config=self.config,
                     stacking_results=stacking_results,
                     population_manager=self.population_manager,
-                    cosmology_calc=cosmology_calc
+                    cosmology_calc=cosmology_calc,
                 )
 
                 # Save results
-                output_path = Path(self.config.output.folder) / f"{self.config.output.shortname}_results.pkl"
-                results_processor.save_results(output_path, format='pickle')
+                output_path = (
+                    Path(self.config.output.folder)
+                    / f"{self.config.output.shortname}_results.pkl"
+                )
+                results_processor.save_results(output_path, format="pickle")
 
                 # Print summary
                 results_processor.print_results_summary()
@@ -376,7 +402,9 @@ class SimstackAlgorithm:
                 self.stacking_results = stacking_results
                 self.processed_results = results_processor
 
-                logger.info(f"Pipeline completed successfully. Results saved to {output_path}")
+                logger.info(
+                    f"Pipeline completed successfully. Results saved to {output_path}"
+                )
 
                 return results_processor
 
@@ -394,7 +422,7 @@ class SimstackAlgorithm:
     updated_dependencies = """
     dependencies = [
         "numpy>=1.24.0",
-        "pandas>=2.0.0", 
+        "pandas>=2.0.0",
         "astropy>=5.3.0",
         "matplotlib>=3.6.0",
         "scipy>=1.10.0",
@@ -414,11 +442,14 @@ class SimstackAlgorithm:
 
     print("Integration fixes created!")
     print("\nNext steps:")
-    print("1. Add the get_population_data method to PopulationManager in populations.py")
+    print(
+        "1. Add the get_population_data method to PopulationManager in populations.py"
+    )
     print("2. Replace the placeholder methods in algorithm.py with the fixed versions")
     print("3. Update your pyproject.toml with the additional dependencies")
     print(
-        "4. Test the integration with: uv run python -c 'from src.simstack4.toolbox import SimstackToolbox; print(\"Toolbox ready!\")'")
+        "4. Test the integration with: uv run python -c 'from src.simstack4.toolbox import SimstackToolbox; print(\"Toolbox ready!\")'"
+    )
 
     """
     Fix for the _crop_to_circles method in algorithm.py
@@ -426,8 +457,9 @@ class SimstackAlgorithm:
     Replace the existing _crop_to_circles method with this corrected version
     """
 
-    def _crop_to_circles(self, layer_matrix: np.ndarray, observed_map: np.ndarray,
-                         map_name: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _crop_to_circles(
+        self, layer_matrix: np.ndarray, observed_map: np.ndarray, map_name: str
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Crop fitting to circular regions around sources (FIXED VERSION)
 
@@ -463,19 +495,21 @@ class SimstackAlgorithm:
             try:
                 # Get population data
                 pop_data = self.population_manager.get_population_data(pop_bin.id_label)
-                ra = pop_data['ra']
-                dec = pop_data['dec']
+                ra = pop_data["ra"]
+                dec = pop_data["dec"]
 
                 # Convert to pixel coordinates
                 x_pix, y_pix = self.sky_maps.world_to_pixel(map_name, ra, dec)
 
                 # Add circles for sources that fall within the map
-                for x, y in zip(x_pix, y_pix):
+                for x, y in zip(x_pix, y_pix, strict=True):
                     ix, iy = int(np.round(x)), int(np.round(y))
 
                     # Check if source is within map bounds
-                    if (0 <= ix < observed_map.shape[1] and
-                            0 <= iy < observed_map.shape[0]):
+                    if (
+                        0 <= ix < observed_map.shape[1]
+                        and 0 <= iy < observed_map.shape[0]
+                    ):
                         # Add circle around this source
                         self._add_circle_to_mask(mask, x, y, circle_radius_pix)
                         n_sources_added += 1
@@ -495,7 +529,9 @@ class SimstackAlgorithm:
         # Check if we have enough pixels for the fit
         n_populations = layer_matrix.shape[0]
         if n_valid_pixels < n_populations:
-            logger.warning(f"Too few pixels ({n_valid_pixels}) for {n_populations} populations")
+            logger.warning(
+                f"Too few pixels ({n_valid_pixels}) for {n_populations} populations"
+            )
             logger.warning("Expanding circle radius and using more pixels")
 
             # Expand circles or use more conservative approach
@@ -508,16 +544,22 @@ class SimstackAlgorithm:
                     continue
 
                 try:
-                    pop_data = self.population_manager.get_population_data(pop_bin.id_label)
-                    ra = pop_data['ra']
-                    dec = pop_data['dec']
+                    pop_data = self.population_manager.get_population_data(
+                        pop_bin.id_label
+                    )
+                    ra = pop_data["ra"]
+                    dec = pop_data["dec"]
                     x_pix, y_pix = self.sky_maps.world_to_pixel(map_name, ra, dec)
 
-                    for x, y in zip(x_pix, y_pix):
+                    for x, y in zip(x_pix, y_pix, strict=True):
                         ix, iy = int(np.round(x)), int(np.round(y))
-                        if (0 <= ix < observed_map.shape[1] and
-                                0 <= iy < observed_map.shape[0]):
-                            self._add_circle_to_mask(mask_expanded, x, y, expanded_radius)
+                        if (
+                            0 <= ix < observed_map.shape[1]
+                            and 0 <= iy < observed_map.shape[0]
+                        ):
+                            self._add_circle_to_mask(
+                                mask_expanded, x, y, expanded_radius
+                            )
 
                 except Exception:
                     continue
@@ -540,12 +582,15 @@ class SimstackAlgorithm:
         cropped_observed = observed_map.ravel()[flat_indices]
         cropped_layers = layer_matrix[:, flat_indices]
 
-        logger.debug(f"Final cropping: {len(cropped_observed)} pixels, {cropped_layers.shape[0]} populations")
+        logger.debug(
+            f"Final cropping: {len(cropped_observed)} pixels, {cropped_layers.shape[0]} populations"
+        )
 
         return cropped_layers, cropped_observed, flat_indices
 
-    def _add_circle_to_mask(self, mask: np.ndarray, center_x: float, center_y: float,
-                            radius: float) -> None:
+    def _add_circle_to_mask(
+        self, mask: np.ndarray, center_x: float, center_y: float, radius: float
+    ) -> None:
         """Add a circular region to the mask (IMPROVED VERSION)"""
 
         # Get mask dimensions
@@ -567,8 +612,9 @@ class SimstackAlgorithm:
         circle_mask = distances <= radius
         mask[y_min:y_max, x_min:x_max][circle_mask] = True
 
-    def _solve_linear_system(self, layer_matrix: np.ndarray, observed_vector: np.ndarray,
-                           map_data: MapData) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+    def _solve_linear_system(
+        self, layer_matrix: np.ndarray, observed_vector: np.ndarray, map_data: MapData
+    ) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
         """
         Solve the linear system to get flux densities
 
@@ -592,13 +638,27 @@ class SimstackAlgorithm:
 
         # Check for degenerate cases
         if n_pixels < n_populations:
-            logger.warning(f"Underdetermined system: {n_pixels} pixels, {n_populations} populations")
+            logger.warning(
+                f"Underdetermined system: {n_pixels} pixels, {n_populations} populations"
+            )
 
         try:
             # Use weighted least squares if we have noise information
             if map_data.noise is not None:
-                weights = 1.0 / (map_data.noise.ravel()[~np.isnan(observed_vector)]**2)
-                weights = weights[:len(observed_vector)]  # Match lengths
+                # Get noise values for the same pixels as observed_vector
+                # The valid_mask should be passed in or reconstructed
+                noise_flat = map_data.noise.ravel()
+
+                # Apply the same mask that was used to create observed_vector
+                if hasattr(self, "_last_valid_mask"):
+                    noise_values = noise_flat[self._last_valid_mask]
+                else:
+                    # Fallback: assume observed_vector came from ~isnan mask
+                    valid_pixels = ~np.isnan(map_data.data.ravel())
+                    noise_values = noise_flat[valid_pixels][: len(observed_vector)]
+
+                # Create weights, avoiding division by zero
+                weights = 1.0 / np.maximum(noise_values**2, 1e-20)
 
                 # Weight the system
                 weighted_layers = layer_matrix * np.sqrt(weights)
@@ -613,20 +673,22 @@ class SimstackAlgorithm:
                 flux_densities, residuals, rank, singular_values = linalg.lstsq(
                     layer_matrix.T, observed_vector
                 )
-                
+
             # Calculate uncertainties
             if n_pixels > n_populations:
                 # Overdetermined system - can estimate proper errors
                 try:
                     # Check if residuals is array or scalar
-                    if hasattr(residuals, '__len__') and len(residuals) > 0:
+                    if hasattr(residuals, "__len__") and len(residuals) > 0:
                         mse = residuals[0] / (n_pixels - n_populations)
                     elif np.isfinite(residuals):
                         mse = residuals / (n_pixels - n_populations)
                     else:
                         # Calculate residuals manually
                         model_prediction = layer_matrix.T @ flux_densities
-                        mse = np.sum((observed_vector - model_prediction) ** 2) / (n_pixels - n_populations)
+                        mse = np.sum((observed_vector - model_prediction) ** 2) / (
+                            n_pixels - n_populations
+                        )
 
                     # Covariance matrix
                     try:
@@ -639,8 +701,12 @@ class SimstackAlgorithm:
 
                         flux_errors = np.sqrt(np.diag(covariance))
                     except linalg.LinAlgError:
-                        logger.warning("Could not compute covariance matrix, using scaled errors")
-                        flux_errors = np.abs(flux_densities) * 0.1  # 10% errors as fallback
+                        logger.warning(
+                            "Could not compute covariance matrix, using scaled errors"
+                        )
+                        flux_errors = (
+                            np.abs(flux_densities) * 0.1
+                        )  # 10% errors as fallback
 
                 except Exception as e:
                     logger.warning(f"Error estimation failed: {e}")
@@ -651,12 +717,21 @@ class SimstackAlgorithm:
 
             # Calculate fit statistics
             model_prediction = layer_matrix.T @ flux_densities
-            chi_squared = np.sum((observed_vector - model_prediction)**2)
+            chi_squared = np.sum((observed_vector - model_prediction) ** 2)
 
             if map_data.noise is not None:
+                noise_flat = map_data.noise.ravel()
+                valid_pixels = ~np.isnan(map_data.data.ravel())
+
                 # Proper chi-squared with noise weights
-                noise_vector = map_data.noise.ravel()[~np.isnan(observed_vector)][:len(observed_vector)]
-                chi_squared = np.sum(((observed_vector - model_prediction) / noise_vector)**2)
+                noise_vector = noise_flat[valid_pixels][: len(observed_vector)]
+
+                # Avoid division by zero in noise
+                noise_vector = np.maximum(noise_vector, 1e-20)  # Small floor value
+
+                chi_squared = np.sum(
+                    ((observed_vector - model_prediction) / noise_vector) ** 2
+                )
 
             dof = max(1, n_pixels - n_populations)
             reduced_chi_squared = chi_squared / dof
@@ -666,20 +741,29 @@ class SimstackAlgorithm:
                 "degrees_of_freedom": dof,
                 "reduced_chi_squared": reduced_chi_squared,
                 "rank": rank,
-                "condition_number": np.max(singular_values) / np.min(singular_values) if len(singular_values) > 0 else np.inf
+                "condition_number": np.max(singular_values) / np.min(singular_values)
+                if len(singular_values) > 0
+                else np.inf,
             }
 
             return flux_densities, flux_errors, fit_stats
 
         except Exception as e:
             logger.error(f"Linear system solution failed: {e}")
-            pdb.set_trace()
             # Return zeros as fallback
-            return (np.zeros(n_populations), np.ones(n_populations),
-                   {"chi_squared": np.inf, "degrees_of_freedom": 1, "reduced_chi_squared": np.inf})
+            return (
+                np.zeros(n_populations),
+                np.ones(n_populations),
+                {
+                    "chi_squared": np.inf,
+                    "degrees_of_freedom": 1,
+                    "reduced_chi_squared": np.inf,
+                },
+            )
 
-    def _compile_results(self, results_dict: Dict[str, Dict], start_time: float,
-                        start_memory: float) -> StackingResults:
+    def _compile_results(
+        self, results_dict: dict[str, dict], start_time: float, start_memory: float
+    ) -> StackingResults:
         """Compile results from all maps into final StackingResults object"""
         map_names = list(results_dict.keys())
 
@@ -696,7 +780,9 @@ class SimstackAlgorithm:
             flux_densities[map_name] = map_results["flux_densities"]
             flux_errors[map_name] = map_results["flux_errors"]
             chi_squared[map_name] = map_results["fit_statistics"]["chi_squared"]
-            degrees_of_freedom[map_name] = map_results["fit_statistics"]["degrees_of_freedom"]
+            degrees_of_freedom[map_name] = map_results["fit_statistics"][
+                "degrees_of_freedom"
+            ]
 
         # Count sources per population
         n_sources = {}
@@ -718,7 +804,7 @@ class SimstackAlgorithm:
             degrees_of_freedom=degrees_of_freedom,
             reduced_chi_squared={},  # Will be calculated in __post_init__
             execution_time=execution_time,
-            memory_used_gb=memory_used
+            memory_used_gb=memory_used,
         )
 
     def print_results_summary(self) -> None:
@@ -737,7 +823,10 @@ class SimstackAlgorithm:
         print()
 
         print("Flux Densities (Jy):")
-        print(f"{'Population':<30} " + " ".join(f"{name:<12}" for name in results.map_names))
+        print(
+            f"{'Population':<30} "
+            + " ".join(f"{name:<12}" for name in results.map_names)
+        )
         print("-" * (30 + 13 * len(results.map_names)))
 
         for i, pop_label in enumerate(results.population_labels):
@@ -753,12 +842,15 @@ class SimstackAlgorithm:
         for map_name in results.map_names:
             chi2 = results.chi_squared[map_name]
             dof = results.degrees_of_freedom[map_name]
-            reduced_chi2 = results.reduced_chi_squared.get(map_name, chi2/dof)
-            print(f"{map_name}: χ² = {chi2:.1f}, DoF = {dof}, χ²_red = {reduced_chi2:.2f}")
+            reduced_chi2 = results.reduced_chi_squared.get(map_name, chi2 / dof)
+            print(
+                f"{map_name}: χ² = {chi2:.1f}, DoF = {dof}, χ²_red = {reduced_chi2:.2f}"
+            )
 
 
-def run_stacking(config: SimstackConfig, population_manager: PopulationManager,
-                sky_maps: SkyMaps) -> StackingResults:
+def run_stacking(
+    config: SimstackConfig, population_manager: PopulationManager, sky_maps: SkyMaps
+) -> StackingResults:
     """
     Convenience function to run simultaneous stacking
 
