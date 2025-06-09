@@ -276,13 +276,15 @@ class SimstackAlgorithm:
         # Check if masses are in log scale (typical COSMOS range is 8-12)
         if np.all((stellar_masses > 7) & (stellar_masses < 15)):  # log masses
             # Convert to linear scale and normalize
-            weights = 10 ** (stellar_masses - 10)  # Normalize around 10^10 solar masses
+            # weights = 10 ** (stellar_masses - 10)  # Normalize around 10^10 solar masses
+            weights = 10**stellar_masses  # Normalize around 10^10 solar masses
         else:
             # Already in linear scale
             weights = stellar_masses / 1e10  # Normalize to 10^10 solar masses
 
         # Ensure positive weights
         weights = np.maximum(weights, 1e-6)
+        weights = np.ones_like(weights)
 
         return ra, dec, weights
 
