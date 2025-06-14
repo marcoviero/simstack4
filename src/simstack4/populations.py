@@ -261,52 +261,6 @@ class PopulationManager:
 
         return classification
 
-    '''
-    def classify_catalog(self, catalog_df) -> None:
-        """
-        Classify catalog sources into populations based on configuration
-        UPDATED to handle both pandas and polars backends and store catalog reference
-
-        Args:
-            catalog_df: Catalog dataframe with required columns (pandas or polars)
-        """
-        # Convert polars to pandas for population management (temporary solution)
-        if hasattr(catalog_df, "to_pandas"):  # polars DataFrame
-            logger.debug(
-                "Converting Polars DataFrame to pandas for population classification"
-            )
-            pandas_df = catalog_df.to_pandas()
-            self.catalog_df = pandas_df  # Store pandas version for population manager
-
-            # Also keep reference to original for potential future use
-            self._original_catalog_df = catalog_df
-            self._catalog_backend = "polars"
-        else:  # pandas DataFrame
-            pandas_df = catalog_df
-            self.catalog_df = catalog_df
-            self._catalog_backend = "pandas"
-
-        # Validate required columns
-        self._validate_catalog_columns(pandas_df)
-
-        # Get column names
-        z_col = self.config.redshift.id
-        mass_col = self.config.stellar_mass.id
-
-        # Classify sources based on split type
-        if self.config.split_type == SplitType.LABELS:
-            split_values = self._classify_by_labels(pandas_df)
-        elif self.config.split_type == SplitType.UVJ:
-            split_values = self._classify_by_uvj(pandas_df)
-        elif self.config.split_type == SplitType.NUVRJ:
-            split_values = self._classify_by_nuvrj(pandas_df)
-        else:
-            raise PopulationError(f"Unknown split type: {self.config.split_type}")
-
-        # Create populations for all combinations of bins
-        self._create_popu
-    '''
-
     def _create_populations(
         self,
         catalog_df: pd.DataFrame,
