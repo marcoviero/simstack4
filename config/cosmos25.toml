@@ -31,7 +31,13 @@ ra = "ra"                     # Column name for right ascension
 dec = "dec"                   # Column name for declination
 
 [catalog.classification]
-split_type = "uvj"            # Options: "labels", "uvj", "nuvrj"
+split_type = "nuvrj"            # Options: "labels", "uvj", "nuvrj"
+
+[catalog.classification.split_params]
+id = "NUVRJ_class"              # Column with pre-computed classification (optional)
+[catalog.classification.split_params.bins]
+"NUV-R" = "NUV-R"              # NUV-R color column name
+"R-J" = "R-J"                  # R-J color column name
 
 [catalog.classification.redshift]
 id = "zpdf_med"                 # Column name for redshift
@@ -41,13 +47,17 @@ bins = [0.01, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 10.0]  # Re
 id = "mass_med"                  # Column name for stellar mass
 bins = [8.5, 9.5, 10.0, 10.5, 11.0, 12.0]  # Stellar mass bin edges
 
-[catalog.classification.split_params]
-id = "UVJ_class"                    # Label for this split
-[catalog.classification.split_params.bins]
-"U-V" = "U-V"             # Column name for U-V color
-"V-J" = "V-J"             # Column name for V-J color
-
 # Map configurations - each section defines a new map
+[maps.mips_24]
+wavelength = 24.0             # Wavelength in microns
+color_correction = 1.24       # Color correction factor
+path_map = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_sci_10.cutout.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_unc_10.cutout.fits"
+
+[maps.mips_24.beam]
+fwhm = 5.51                   # FWHM in arcsec
+area_sr = 1.328e-09          # Solid angle (1.0 if already in Jy/beam)
+
 [maps.pacs_green]
 wavelength = 100.0
 color_correction = 1.0
@@ -56,7 +66,7 @@ path_noise = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS100_20160805_img_avg_noise.fit
 
 [maps.pacs_green.beam]
 fwhm = 7.49
-area = 2.033e-09
+area_sr = 2.033e-09
 
 [maps.pacs_red]
 wavelength = 160.0
@@ -66,34 +76,40 @@ path_noise = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS160_20160728_img_avg_noise.fit
 
 [maps.pacs_red.beam]
 fwhm = 11.33
-area = 4.658e-09
+area_sr = 4.658e-9
 
 [maps.spire_psw]
 wavelength = 250.0
-color_correction = 1.02
+color_correction = 1.018
 path_map = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PSW.signal.cutout.fits"
 path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PSW.noise.cutout.fits"
 
 [maps.spire_psw.beam]
-fwhm = 18.15
-area = 1.0
+fwhm = 17.62
 
 [maps.spire_pmw]
 wavelength = 350.0
-color_correction = 1.05
+color_correction = 0.9914
 path_map = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PMW.signal.cutout.fits"
 path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PMW.noise.cutout.fits"
 
 [maps.spire_pmw.beam]
-fwhm = 25.15
-area = 1.0
+fwhm = 24.42
 
 [maps.spire_plw]
 wavelength = 500.0
-color_correction = 1.25
+color_correction = 0.9565
 path_map = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PLW.signal.cutout.fits"
 path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PLW.noise.cutout.fits"
 
 [maps.spire_plw.beam]
-fwhm = 36.60
-area = 1.0
+fwhm = 35.69
+
+[maps.scuba]
+wavelength = 850.0
+color_correction = 1e-3
+path_map = "$MAPSPATH/cosmos/cutouts/S2CLS_COSMOS_NMF_DR1_new_header.cutout.signal.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/S2CLS_COSMOS_NMF_DR1_new_header.cutout.noise.fits"
+
+[maps.scuba.beam]
+fwhm = 12.1

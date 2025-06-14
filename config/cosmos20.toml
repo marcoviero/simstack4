@@ -45,7 +45,26 @@ bins = [0.01, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 10.0]  # Re
 id = "lp_mass_med"                  # Column name for stellar mass
 bins = [8.5, 9.5, 10.0, 10.5, 11.0, 12.0]  # Stellar mass bin edges
 
+# Map configurations - each section defines a new map
+[maps.mips_24]
+wavelength = 24.0             # Wavelength in microns
+color_correction = 1.24       # Color correction factor
+path_map = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_sci_10.cutout.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_unc_10.cutout.fits"
 
+[maps.mips_24.beam]
+fwhm = 5.51                   # FWHM in arcsec
+area_sr = 1.328e-09          # Solid angle (1.0 if already in Jy/beam)
+
+[maps.pacs_green]
+wavelength = 100.0
+color_correction = 1.0
+path_map = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS100_20160805_img_avg.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS100_20160805_img_avg_noise.fits"
+
+[maps.pacs_green.beam]
+fwhm = 7.49
+area_sr = 2.033e-09
 
 [maps.pacs_red]
 wavelength = 160.0

@@ -56,7 +56,6 @@ path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iteration
 
 [maps.spire_psw.beam]
 fwhm = 18.15
-area = 1.0
 
 [maps.spire_pmw]
 wavelength = 350.0
@@ -66,7 +65,6 @@ path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iteration
 
 [maps.spire_pmw.beam]
 fwhm = 25.15
-area = 1.0
 
 [maps.spire_plw]
 wavelength = 500.0
@@ -76,4 +74,3 @@ path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iteration
 
 [maps.spire_plw.beam]
 fwhm = 36.60
-area = 1.0
