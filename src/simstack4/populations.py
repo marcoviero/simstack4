@@ -4,7 +4,6 @@ Improved population management system for Simstack4
 This replaces the jpop, lpop, mpop loop system from simstack3 with a more
 flexible and efficient population management system.
 """
-
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
@@ -124,15 +123,145 @@ class PopulationManager:
         return quiescent.astype(int)
 
     def _classify_by_nuvrj(self, catalog_df: pd.DataFrame) -> np.ndarray:
-        """Classify sources using NUVRJ criteria"""
+        """
+        Classify sources using NUVRJ criteria (Ilbert et al. 2013)
+
+        NUVRJ uses NUV-R vs R-J color-color diagram to separate:
+        - Star-forming galaxies: Blue in NUV-R, varied in R-J
+        - Quiescent galaxies: Red in NUV-R (> 3.1), red in R-J (> 0.9)
+
+        The NUVRJ method is particularly effective because:
+        - NUV is sensitive to young stellar populations
+        - The NUV-R color traces recent star formation activity
+        - R-J color traces stellar mass and dust content
+
+        Reference: Ilbert et al. 2013, A&A, 556, A55
+
+        Args:
+            catalog_df: DataFrame with galaxy catalog data
+
+        Returns:
+            Array of classification labels (0=star-forming, 1=quiescent)
+
+        Raises:
+            PopulationError: If required color columns are missing
+        """
+        import numpy as np
+
+        from .utils import setup_logging
+
+        logger = setup_logging()
+
         if not self.config.split_params:
             raise PopulationError("split_params required for NUVRJ classification")
 
-        # Similar to UVJ but with NUV-R and R-J
-        # Implementation would depend on specific criteria
-        # Placeholder for now
-        return np.zeros(len(catalog_df), dtype=int)
+        # Get color column names from config
+        nuv_r_col = self.config.split_params.bins.get("NUV-R")
+        r_j_col = self.config.split_params.bins.get("R-J")
 
+        if not nuv_r_col or not r_j_col:
+            raise PopulationError(
+                "NUVRJ classification requires 'NUV-R' and 'R-J' color columns in split_params.bins"
+            )
+
+        # Check if columns exist in catalog
+        missing_cols = []
+        if nuv_r_col not in catalog_df.columns:
+            missing_cols.append(f"NUV-R color column '{nuv_r_col}'")
+        if r_j_col not in catalog_df.columns:
+            missing_cols.append(f"R-J color column '{r_j_col}'")
+
+        if missing_cols:
+            available_cols = [
+                col
+                for col in catalog_df.columns
+                if any(c in col.lower() for c in ["nuv", "r-j", "color"])
+            ]
+            error_msg = f"Missing columns: {', '.join(missing_cols)}"
+            if available_cols:
+                error_msg += f"\nAvailable color-like columns: {available_cols}"
+            raise PopulationError(error_msg)
+
+        # Get color values
+        nuv_r = catalog_df[nuv_r_col].values
+        r_j = catalog_df[r_j_col].values
+
+        # Apply NUVRJ classification criteria (Ilbert et al. 2013)
+        # Quiescent galaxies: (NUV-R) > 3.1 AND (R-J) > 0.9
+        # This divides color-color space into four quadrants:
+        #   - Blue NUV-R, blue R-J: young star-forming galaxies
+        #   - Blue NUV-R, red R-J: dusty star-forming galaxies
+        #   - Red NUV-R, blue R-J: intermediate/transition galaxies
+        #   - Red NUV-R, red R-J: quiescent galaxies (our target)
+
+        quiescent_mask = (nuv_r > 3.1) & (r_j > 0.9)
+
+        # Create classification array (0=star-forming, 1=quiescent)
+        classification = np.zeros(len(catalog_df), dtype=int)
+        classification[quiescent_mask] = 1
+
+        # Handle NaN values (classify as star-forming by default)
+        # This is conservative - sources with bad photometry are assumed active
+        nan_mask = np.isnan(nuv_r) | np.isnan(r_j)
+        classification[nan_mask] = 0
+
+        # Additional quality checks
+        valid_mask = np.isfinite(nuv_r) & np.isfinite(r_j)
+
+        # Flag extreme colors that might indicate photometric issues
+        extreme_mask = (nuv_r > 10) | (nuv_r < -2) | (r_j > 5) | (r_j < -2)
+        n_extreme = np.sum(extreme_mask & valid_mask)
+
+        if n_extreme > 0:
+            logger.warning(f"Found {n_extreme} sources with extreme NUVRJ colors")
+            logger.warning("Consider additional quality cuts on photometry")
+
+        # Log classification statistics
+        n_total = len(catalog_df)
+        n_valid = np.sum(valid_mask)
+        n_quiescent = np.sum(classification == 1)
+        n_star_forming = np.sum((classification == 0) & valid_mask)
+        n_nan = np.sum(nan_mask)
+
+        logger.info("NUVRJ classification results:")
+        logger.info(f"  Total sources: {n_total:,}")
+        logger.info(f"  Valid colors: {n_valid:,} ({n_valid / n_total * 100:.1f}%)")
+        logger.info(
+            f"  Star-forming: {n_star_forming:,} ({n_star_forming / n_valid * 100:.1f}% of valid)"
+        )
+        logger.info(
+            f"  Quiescent: {n_quiescent:,} ({n_quiescent / n_valid * 100:.1f}% of valid)"
+        )
+        logger.info(f"  Invalid colors: {n_nan:,} ({n_nan / n_total * 100:.1f}%)")
+
+        # Color statistics for validation
+        if n_valid > 0:
+            logger.info("Color ranges:")
+            logger.info(
+                f"  NUV-R: {np.nanmin(nuv_r):.2f} to {np.nanmax(nuv_r):.2f} (median: {np.nanmedian(nuv_r):.2f})"
+            )
+            logger.info(
+                f"  R-J: {np.nanmin(r_j):.2f} to {np.nanmax(r_j):.2f} (median: {np.nanmedian(r_j):.2f})"
+            )
+
+        # Validate classification makes sense
+        if n_quiescent == 0:
+            logger.warning(
+                "No quiescent galaxies found - check classification criteria"
+            )
+        elif n_quiescent > n_valid * 0.8:
+            logger.warning(
+                "Most galaxies classified as quiescent - check color calculations"
+            )
+
+        if n_star_forming == 0:
+            logger.warning(
+                "No star-forming galaxies found - check classification criteria"
+            )
+
+        return classification
+
+    '''
     def classify_catalog(self, catalog_df) -> None:
         """
         Classify catalog sources into populations based on configuration
@@ -176,6 +305,7 @@ class PopulationManager:
 
         # Create populations for all combinations of bins
         self._create_popu
+    '''
 
     def _create_populations(
         self,
@@ -363,13 +493,25 @@ class PopulationManager:
 
         # Fallback to common column names if config not available
         if not ra_col:
-            ra_col = "ra"
+            if "ALPHA_J2000" in self.catalog_df.iloc[indices]:
+                ra_col = "ALPHA_J2000"
+            else:
+                ra_col = "ra"
         if not dec_col:
-            dec_col = "dec"
+            if "DELTA_J2000" in self.catalog_df.iloc[indices]:
+                dec_col = "DELTA_J2000"
+            else:
+                dec_col = "dec"
         if not z_col:
-            z_col = "z_peak"
+            if "lp_zBEST" in self.catalog_df.iloc[indices]:
+                z_col = "lp_zBEST"
+            else:
+                z_col = "z_peak"
         if not mass_col:
-            mass_col = "lmass"
+            if "lp_mass_med" in self.catalog_df.iloc[indices]:
+                mass_col = "lp_mass_med"
+            else:
+                mass_col = "lmass"
 
         # Extract data using the indices
         try:
