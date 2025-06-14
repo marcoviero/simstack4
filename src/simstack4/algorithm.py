@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from astropy.io import fits
+from astropy.wcs import WCS
 from scipy import linalg
 
 from .config import SimstackConfig
@@ -85,11 +87,72 @@ class SimstackAlgorithm:
         self.add_foreground = config.binning.add_foreground
         self.stack_all_z = config.binning.stack_all_z_at_once
 
+        # FITS output settings
+        self.write_layer_maps = getattr(config.error_estimator, "write_simmaps", False)
+        self.layer_output_dir = Path(config.output.folder) / "layer_maps"
+
+        # Create output directory if we're writing layers
+        if self.write_layer_maps:
+            self.layer_output_dir.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Layer maps will be written to: {self.layer_output_dir}")
+
         logger.info("SimstackAlgorithm initialized:")
         logger.info(f"  - {len(population_manager)} populations")
         logger.info(f"  - {len(sky_maps)} maps")
         logger.info(f"  - Crop circles: {self.crop_circles}")
         logger.info(f"  - Add foreground: {self.add_foreground}")
+        logger.info(f"  - Write layer maps: {self.write_layer_maps}")
+
+    def save_layer_to_fits(
+        self,
+        data: np.ndarray,
+        wcs: WCS,
+        map_name: str,
+        population_id: str,
+        layer_type: str = "convolved",
+    ) -> None:
+        """
+        Save a population layer to FITS file
+
+        Args:
+            data: 2D array of layer data
+            wcs: World coordinate system
+            map_name: Name of the map (e.g., 'pacs_green')
+            population_id: Population identifier
+            layer_type: Type of layer ('raw', 'convolved', 'mean_subtracted')
+        """
+        if not self.write_layer_maps:
+            return
+
+        try:
+            # Create safe filename
+            safe_pop_id = population_id.replace("__", "_").replace(".", "p")
+            filename = f"{map_name}_{safe_pop_id}_{layer_type}.fits"
+            output_path = self.layer_output_dir / filename
+
+            # Create FITS header from WCS
+            header = wcs.to_header()
+
+            # Add metadata about the layer
+            header["LAYERTYP"] = layer_type
+            header["POPID"] = population_id
+            header["MAPNAME"] = map_name
+            header["BUNIT"] = "Jy/beam" if layer_type == "convolved" else "Jy"
+            header["COMMENT"] = f"Population layer for {population_id}"
+
+            # Add statistics
+            header["DATAMIN"] = np.nanmin(data)
+            header["DATAMAX"] = np.nanmax(data)
+            header["DATAMEAN"] = np.nanmean(data)
+            header["DATASTD"] = np.nanstd(data)
+
+            # Write FITS file
+            fits.writeto(output_path, data, header=header, overwrite=True)
+
+            logger.debug(f"Saved layer: {filename}")
+
+        except Exception as e:
+            logger.warning(f"Failed to save layer {population_id} for {map_name}: {e}")
 
     def run_stacking(self) -> StackingResults:
         """
@@ -120,6 +183,9 @@ class SimstackAlgorithm:
 
             logger.info(f"Stacking completed in {self.results.execution_time:.1f}s")
             logger.info(f"Peak memory usage: {self.results.memory_used_gb:.2f}GB")
+
+            if self.write_layer_maps:
+                logger.info(f"Layer maps saved to: {self.layer_output_dir}")
 
             return self.results
 
@@ -246,6 +312,18 @@ class SimstackAlgorithm:
             # Convolve with PSF
             convolved_layer = self.sky_maps.convolve_with_psf(source_layer, map_name)
 
+            # Remove mean
+            convolved_layer -= np.nanmean(convolved_layer)
+
+            if self.write_layer_maps:
+                self.save_layer_to_fits(
+                    data=convolved_layer,
+                    wcs=map_data.wcs,
+                    map_name=map_name,
+                    population_id=pop_bin.id_label,
+                    layer_type="convolved",
+                )
+
             # Store flattened layer
             layer_matrix[i, :] = convolved_layer.ravel()
             population_labels.append(pop_bin.id_label)
@@ -276,8 +354,8 @@ class SimstackAlgorithm:
         # Check if masses are in log scale (typical COSMOS range is 8-12)
         if np.all((stellar_masses > 7) & (stellar_masses < 15)):  # log masses
             # Convert to linear scale and normalize
-            # weights = 10 ** (stellar_masses - 10)  # Normalize around 10^10 solar masses
-            weights = 10**stellar_masses  # Normalize around 10^10 solar masses
+            weights = 10 ** (stellar_masses - 10)  # Normalize around 10^10 solar masses
+            # weights = 10**stellar_masses  # Normalize around 10^10 solar masses
         else:
             # Already in linear scale
             weights = stellar_masses / 1e10  # Normalize to 10^10 solar masses
@@ -517,6 +595,7 @@ class SimstackAlgorithm:
 
         # Check if we have enough pixels for the fit
         n_populations = layer_matrix.shape[0]
+
         if n_valid_pixels < n_populations:
             logger.warning(
                 f"Too few pixels ({n_valid_pixels}) for {n_populations} populations"
@@ -569,6 +648,9 @@ class SimstackAlgorithm:
 
         # Extract the data
         cropped_observed = observed_map.ravel()[flat_indices]
+        # Remove mean
+        cropped_observed -= np.nanmean(cropped_observed)
+        # Add cropped layer to cube
         cropped_layers = layer_matrix[:, flat_indices]
 
         logger.debug(
