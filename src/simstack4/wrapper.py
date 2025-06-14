@@ -4,19 +4,18 @@ Complete SimstackWrapper implementation for Simstack4
 Replace your current wrapper.py with this complete version
 """
 
-from typing import Optional, Union, Dict, Any
 from pathlib import Path
-import logging
+from typing import Any
 
+from .algorithm import run_stacking
 from .config import SimstackConfig, load_config
+from .cosmology import CosmologyCalculator
+from .exceptions.simstack_exceptions import SimstackError
+from .populations import PopulationManager
+from .results import SimstackResults, create_results_processor
 from .sky_catalogs import SkyCatalogs
 from .sky_maps import SkyMaps, load_maps
-from .populations import PopulationManager
-from .algorithm import SimstackAlgorithm, run_stacking
-from .results import SimstackResults, create_results_processor
-from .cosmology import CosmologyCalculator
-from .utils import setup_logging, memory_usage_gb
-from .exceptions.simstack_exceptions import SimstackError
+from .utils import setup_logging
 
 logger = setup_logging()
 
@@ -29,9 +28,13 @@ class SimstackWrapper:
     handling configuration, data loading, stacking, and results processing.
     """
 
-    def __init__(self, config: Optional[Union[SimstackConfig, str, Path]] = None,
-                 read_maps: bool = False, read_catalog: bool = False,
-                 stack_automatically: bool = False):
+    def __init__(
+        self,
+        config: SimstackConfig | str | Path | None = None,
+        read_maps: bool = False,
+        read_catalog: bool = False,
+        stack_automatically: bool = False,
+    ):
         """
         Initialize SimstackWrapper
 
@@ -43,7 +46,7 @@ class SimstackWrapper:
         """
 
         # Handle config loading
-        if isinstance(config, (str, Path)):
+        if isinstance(config, str | Path):
             self.config = load_config(config)
         else:
             self.config = config
@@ -54,15 +57,15 @@ class SimstackWrapper:
         self.stack_automatically = stack_automatically
 
         # Initialize component containers
-        self.sky_catalogs: Optional[SkyCatalogs] = None
-        self.sky_maps: Optional[SkyMaps] = None
-        self.population_manager: Optional[PopulationManager] = None
-        self.cosmology_calc: Optional[CosmologyCalculator] = None
+        self.sky_catalogs: SkyCatalogs | None = None
+        self.sky_maps: SkyMaps | None = None
+        self.population_manager: PopulationManager | None = None
+        self.cosmology_calc: CosmologyCalculator | None = None
 
         # Results containers
         self.stacking_results = None
-        self.processed_results: Optional[SimstackResults] = None
-        self.results_dict: Dict[str, Any] = {}
+        self.processed_results: SimstackResults | None = None
+        self.results_dict: dict[str, Any] = {}
 
         logger.info("SimstackWrapper initialized")
 
@@ -85,19 +88,25 @@ class SimstackWrapper:
 
         try:
             # Load catalog using SkyCatalogs
-            self.sky_catalogs = SkyCatalogs(self.config.catalog)
+            self.sky_catalogs = SkyCatalogs(
+                catalog_config=self.config.catalog,
+                backend="auto",
+                full_config=self.config,
+            )
             self.sky_catalogs.load_catalog()
 
             # Create population manager from loaded catalog
             if self.sky_catalogs.population_manager:
                 self.population_manager = self.sky_catalogs.population_manager
-                logger.info(f"✓ Catalog loaded: {len(self.population_manager)} populations created")
+                logger.info(
+                    f"✓ Catalog loaded: {len(self.population_manager)} populations created"
+                )
             else:
                 logger.warning("Catalog loaded but no population manager created")
 
         except Exception as e:
             logger.error(f"Failed to load catalog: {e}")
-            raise SimstackError(f"Catalog loading failed: {e}")
+            raise SimstackError(f"Catalog loading failed: {e}") from e
 
     def _load_maps(self) -> None:
         """Load all configured maps"""
@@ -113,7 +122,7 @@ class SimstackWrapper:
 
         except Exception as e:
             logger.error(f"Failed to load maps: {e}")
-            raise SimstackError(f"Map loading failed: {e}")
+            raise SimstackError(f"Map loading failed: {e}") from e
 
     def _run_stacking(self) -> None:
         """Run the complete stacking pipeline"""
@@ -135,34 +144,37 @@ class SimstackWrapper:
             self.stacking_results = run_stacking(
                 config=self.config,
                 population_manager=self.population_manager,
-                sky_maps=self.sky_maps
+                sky_maps=self.sky_maps,
             )
 
             # Process results
             self.processed_results = create_results_processor(
                 config=self.config,
                 stacking_results=self.stacking_results,
-                population_manager=self.population_manager
+                population_manager=self.population_manager,
             )
 
             # Save results
-            output_path = Path(self.config.output.folder) / f"{self.config.output.shortname}_results.pkl"
+            output_path = (
+                Path(self.config.output.folder)
+                / f"{self.config.output.shortname}_results.pkl"
+            )
             self.processed_results.save_results(output_path)
 
             # Update results dict for backward compatibility
             self.results_dict = {
-                'band_results_dict': self.processed_results.band_results,
-                'population_summary': self.processed_results.get_population_summary(),
-                'stacking_results': self.stacking_results,
-                'processed_results': self.processed_results
+                "band_results_dict": self.processed_results.band_results,
+                "population_summary": self.processed_results.get_population_summary(),
+                "stacking_results": self.stacking_results,
+                "processed_results": self.processed_results,
             }
 
-            logger.info(f"✓ Stacking completed successfully!")
+            logger.info("✓ Stacking completed successfully!")
             logger.info(f"Results saved to: {output_path}")
 
         except Exception as e:
             logger.error(f"Stacking pipeline failed: {e}")
-            raise SimstackError(f"Stacking failed: {e}")
+            raise SimstackError(f"Stacking failed: {e}") from e
 
     def load_catalog(self) -> None:
         """Public method to load catalog"""
@@ -177,26 +189,26 @@ class SimstackWrapper:
         self._run_stacking()
         return self.processed_results
 
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self) -> dict[str, Any]:
         """Get summary of current state"""
         summary = {
-            'config_loaded': self.config is not None,
-            'catalog_loaded': self.sky_catalogs is not None,
-            'maps_loaded': self.sky_maps is not None,
-            'populations_created': self.population_manager is not None,
-            'stacking_completed': self.stacking_results is not None,
-            'results_processed': self.processed_results is not None
+            "config_loaded": self.config is not None,
+            "catalog_loaded": self.sky_catalogs is not None,
+            "maps_loaded": self.sky_maps is not None,
+            "populations_created": self.population_manager is not None,
+            "stacking_completed": self.stacking_results is not None,
+            "results_processed": self.processed_results is not None,
         }
 
         if self.population_manager:
-            summary['n_populations'] = len(self.population_manager)
+            summary["n_populations"] = len(self.population_manager)
 
         if self.sky_maps:
-            summary['n_maps'] = len(self.sky_maps)
-            summary['map_names'] = list(self.sky_maps.maps.keys())
+            summary["n_maps"] = len(self.sky_maps)
+            summary["map_names"] = list(self.sky_maps.maps.keys())
 
         if self.processed_results:
-            summary['n_results'] = len(self.processed_results.sed_results)
+            summary["n_results"] = len(self.processed_results.sed_results)
 
         return summary
 
@@ -211,14 +223,14 @@ class SimstackWrapper:
         print(f"Populations created: {'✓' if summary['populations_created'] else '✗'}")
         print(f"Stacking completed: {'✓' if summary['stacking_completed'] else '✗'}")
 
-        if summary.get('n_populations'):
+        if summary.get("n_populations"):
             print(f"Number of populations: {summary['n_populations']}")
 
-        if summary.get('n_maps'):
+        if summary.get("n_maps"):
             print(f"Number of maps: {summary['n_maps']}")
             print(f"Map names: {', '.join(summary['map_names'])}")
 
-        if summary.get('n_results'):
+        if summary.get("n_results"):
             print(f"Results available for {summary['n_results']} populations")
 
     def __len__(self) -> int:
@@ -240,8 +252,9 @@ class SimstackWrapper:
 
 
 # Convenience functions for backward compatibility
-def create_simstack_wrapper(config_path: Union[str, Path],
-                          load_all: bool = True) -> SimstackWrapper:
+def create_simstack_wrapper(
+    config_path: str | Path, load_all: bool = True
+) -> SimstackWrapper:
     """
     Convenience function to create and initialize wrapper
 
@@ -256,11 +269,11 @@ def create_simstack_wrapper(config_path: Union[str, Path],
         config=config_path,
         read_maps=load_all,
         read_catalog=load_all,
-        stack_automatically=False
+        stack_automatically=False,
     )
 
 
-def run_complete_pipeline(config_path: Union[str, Path]) -> SimstackResults:
+def run_complete_pipeline(config_path: str | Path) -> SimstackResults:
     """
     Run complete stacking pipeline from config file
 
@@ -271,10 +284,7 @@ def run_complete_pipeline(config_path: Union[str, Path]) -> SimstackResults:
         Processed results object
     """
     wrapper = SimstackWrapper(
-        config=config_path,
-        read_maps=True,
-        read_catalog=True,
-        stack_automatically=True
+        config=config_path, read_maps=True, read_catalog=True, stack_automatically=True
     )
 
     return wrapper.processed_results

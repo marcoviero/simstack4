@@ -32,7 +32,6 @@ from astropy.io import fits
 from astropy.table import Table
 
 from .config import CatalogConfig
-from .cosmos import create_cosmos_sky_catalog
 from .exceptions.simstack_exceptions import CatalogError, ValidationError
 from .populations import PopulationManager
 from .utils import setup_logging
@@ -48,7 +47,9 @@ class SkyCatalogs:
     fallback and performance optimization for large datasets.
     """
 
-    def __init__(self, catalog_config: CatalogConfig, backend: str = "auto"):
+    def __init__(
+        self, catalog_config: CatalogConfig, backend: str = "auto", full_config=None
+    ):
         """
         Initialize catalog handler
 
@@ -57,6 +58,7 @@ class SkyCatalogs:
             backend: Data backend - "pandas", "polars", or "auto"
         """
         self.config = catalog_config
+        self.full_config = full_config
         self.backend = self._select_backend(backend)
         self.catalog_df = None
         self.population_manager = None
@@ -371,12 +373,15 @@ class SkyCatalogs:
         logger.debug("Catalog validation passed")
 
     def _create_population_manager(self) -> None:
-        """Create and initialize population manager"""
-        self.population_manager = PopulationManager(self.config.classification)
+        """Create and initialize population manager with full config access"""
+        full_config_stub = type("Config", (), {"catalog": self.config})()
+
+        self.population_manager = PopulationManager(
+            full_config=full_config_stub  # Pass config with astrometry
+        )
 
         # Convert to pandas if population manager needs it
         if self.backend == "polars":
-            # PopulationManager currently expects pandas
             pandas_df = self.catalog_df.to_pandas()
             self.population_manager.classify_catalog(pandas_df)
         else:
@@ -484,20 +489,3 @@ def load_catalog(catalog_config: CatalogConfig, backend: str = "auto") -> SkyCat
     catalogs = SkyCatalogs(catalog_config, backend=backend)
     catalogs.load_catalog()
     return catalogs
-
-
-def load_cosmos_catalog_direct(
-    catalog_path: Path, backend: str = "auto", **kwargs
-) -> SkyCatalogs:
-    """
-    Convenience function to load COSMOS catalog directly with optimized backend
-
-    Args:
-        catalog_path: Path to COSMOSweb_master.fits file
-        backend: Data backend ("auto", "polars", "pandas") - auto defaults to polars for large files
-        **kwargs: Additional arguments for COSMOS loader
-
-    Returns:
-        Loaded SkyCatalogs instance with COSMOS data
-    """
-    return create_cosmos_sky_catalog(catalog_path, backend=backend, **kwargs)

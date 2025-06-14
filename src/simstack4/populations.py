@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from .config import ClassificationConfig, SplitType
+from .config import SplitType
 from .exceptions.simstack_exceptions import PopulationError
 from .utils import setup_logging
 
@@ -44,13 +44,12 @@ class PopulationManager:
     and mass bins.
     """
 
-    def __init__(self, classification_config: ClassificationConfig):
-        self.config = classification_config
+    def __init__(self, full_config):
+        self.full_config = full_config
+        self.config = full_config.catalog.classification
         self.populations: dict[str, PopulationBin] = {}
-        self.redshift_bins = self._create_bins(classification_config.redshift.bins)
-        self.stellar_mass_bins = self._create_bins(
-            classification_config.stellar_mass.bins
-        )
+        self.redshift_bins = self._create_bins(self.config.redshift.bins)
+        self.stellar_mass_bins = self._create_bins(self.config.stellar_mass.bins)
         self.split_labels: list[str] = []
 
     def _create_bins(self, bin_edges: list[float]) -> list[tuple[float, float]]:
@@ -394,25 +393,8 @@ class PopulationManager:
 
         return bootstrap_manager
 
-    """
-    Add this method to your PopulationManager class in populations.py
-
-    Insert this method inside the PopulationManager class, after the existing methods
-    """
-
     def get_population_data(self, population_id: str) -> dict[str, np.ndarray]:
-        """
-        Get catalog data for a specific population
-
-        Args:
-            population_id: Population identifier
-
-        Returns:
-            Dictionary with ra, dec, redshift, stellar_mass, and indices arrays
-
-        Raises:
-            PopulationError: If population not found or no catalog loaded
-        """
+        """Get catalog data for a specific population using config column mappings"""
         if population_id not in self.populations:
             raise PopulationError(f"Population {population_id} not found")
 
@@ -422,120 +404,19 @@ class PopulationManager:
         if not hasattr(self, "catalog_df") or self.catalog_df is None:
             raise PopulationError("No catalog data loaded")
 
-        # Get column names from config
-        ra_col = None
-        dec_col = None
-        z_col = None
-        mass_col = None
-
-        # Try to get column names from the config
-        # This assumes the catalog_df was loaded with the classification config
-        if hasattr(self, "config"):
-            if hasattr(self.config, "astrometry"):
-                ra_col = self.config.astrometry.get("ra", "ra")
-                dec_col = self.config.astrometry.get("dec", "dec")
-            z_col = (
-                self.config.redshift.id
-                if hasattr(self.config, "redshift")
-                else "z_peak"
-            )
-            mass_col = (
-                self.config.stellar_mass.id
-                if hasattr(self.config, "stellar_mass")
-                else "lmass"
-            )
-
-        # Fallback to common column names if config not available
-        if not ra_col:
-            if "ALPHA_J2000" in self.catalog_df.iloc[indices]:
-                ra_col = "ALPHA_J2000"
-            else:
-                ra_col = "ra"
-        if not dec_col:
-            if "DELTA_J2000" in self.catalog_df.iloc[indices]:
-                dec_col = "DELTA_J2000"
-            else:
-                dec_col = "dec"
-        if not z_col:
-            if "lp_zBEST" in self.catalog_df.iloc[indices]:
-                z_col = "lp_zBEST"
-            else:
-                z_col = "z_peak"
-        if not mass_col:
-            if "lp_mass_med" in self.catalog_df.iloc[indices]:
-                mass_col = "lp_mass_med"
-            else:
-                mass_col = "lmass"
-
-        # Extract data using the indices
-        try:
-            if hasattr(self.catalog_df, "iloc"):  # pandas DataFrame
-                subset = self.catalog_df.iloc[indices]
-
-                data = {
-                    "ra": subset[ra_col].values,
-                    "dec": subset[dec_col].values,
-                    "redshift": subset[z_col].values,
-                    "stellar_mass": subset[mass_col].values,
-                    "indices": indices,
-                }
-            else:
-                # Handle other DataFrame types (like polars)
-                subset = self.catalog_df[indices]
-                data = {
-                    "ra": subset[ra_col].to_numpy(),
-                    "dec": subset[dec_col].to_numpy(),
-                    "redshift": subset[z_col].to_numpy(),
-                    "stellar_mass": subset[mass_col].to_numpy(),
-                    "indices": indices,
-                }
-
-        except KeyError as e:
-            raise PopulationError(f"Required column not found in catalog: {e}") from e
-        except Exception as e:
-            raise PopulationError(f"Error extracting population data: {e}") from e
-
-        return data
-
-    def get_population_data_optimized(
-        self, population_id: str
-    ) -> dict[str, np.ndarray]:
-        """
-        Get catalog data for a specific population (optimized for different backends)
-
-        Args:
-            population_id: Population identifier
-
-        Returns:
-            Dictionary with ra, dec, redshift, stellar_mass, and indices arrays
-        """
-        if population_id not in self.populations:
-            raise PopulationError(f"Population {population_id} not found")
-
-        pop_bin = self.populations[population_id]
-        indices = pop_bin.indices
-
-        if not hasattr(self, "catalog_df") or self.catalog_df is None:
-            raise PopulationError("No catalog data loaded")
-
-        # Get column names from config with fallbacks
-        if hasattr(self.config, "astrometry"):
-            ra_col = getattr(self.config.astrometry, "ra", "ra")
-            dec_col = getattr(self.config.astrometry, "dec", "dec")
+        # Get column names from the full config (astrometry mappings from TOML)
+        if hasattr(self, "full_config") and self.full_config:
+            ra_col = self.full_config.catalog.astrometry["ra"]  # "ALPHA_J2000"
+            dec_col = self.full_config.catalog.astrometry["dec"]  # "DELTA_J2000"
         else:
-            ra_col = "ra"
-            dec_col = "dec"
+            # Fallback to hardcoded values if config not available
+            ra_col = "ALPHA_J2000"
+            dec_col = "DELTA_J2000"
 
-        z_col = (
-            self.config.redshift.id if hasattr(self.config, "redshift") else "z_best"
-        )
-        mass_col = (
-            self.config.stellar_mass.id
-            if hasattr(self.config, "stellar_mass")
-            else "log10_stellarmass"
-        )
+        # These come from classification config
+        z_col = self.config.redshift.id  # "lp_zBEST"
+        mass_col = self.config.stellar_mass.id  # "lp_mass_med"
 
-        # Extract data using the indices (always use pandas version stored in self.catalog_df)
         try:
             subset = self.catalog_df.iloc[indices]
 
@@ -548,9 +429,12 @@ class PopulationManager:
             }
 
         except KeyError as e:
-            raise PopulationError(f"Required column not found in catalog: {e}") from e
-        except Exception as e:
-            raise PopulationError(f"Error extracting population data: {e}") from e
+            available_cols = list(self.catalog_df.columns)
+            raise PopulationError(
+                f"Required column '{e}' not found.\n"
+                f"Expected: ra='{ra_col}', dec='{dec_col}', z='{z_col}', mass='{mass_col}'\n"
+                f"Available: {available_cols[:10]}..."
+            ) from e
 
         return data
 

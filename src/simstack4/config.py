@@ -12,6 +12,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .exceptions.simstack_exceptions import ConfigError
 
 
@@ -62,15 +64,23 @@ class BeamConfig:
     """Beam configuration with optional explicit beam area"""
 
     fwhm: float
-    area_sr: float
+    area_sr: float | None = None  # Make this optional
 
     def get_beam_area_sr(self) -> float:
         """
         Returns:
         - If area_sr specified: return area_sr (for conversion)
-        - If area_sr is None: return 1.0 (no conversion)
+        - If area_sr is None: calculate from FWHM assuming Gaussian beam
         """
-        return self.area_sr if self.area_sr is not None else 1.0
+        if self.area_sr is not None:
+            return self.area_sr
+        else:
+            # Calculate beam area from FWHM for Gaussian beam
+            # Area = 1.133 * (FWHM_arcsec)^2 * (π/180/3600)^2 steradians
+            fwhm_arcsec = self.fwhm
+            beam_area_arcsec2 = 1.133 * fwhm_arcsec**2
+            beam_area_sr = beam_area_arcsec2 * (np.pi / (180 * 3600)) ** 2
+            return beam_area_sr
 
 
 @dataclass
@@ -181,7 +191,7 @@ class SimstackConfig:
 
     @classmethod
     def _from_dict(cls, config_dict: dict[str, Any]) -> "SimstackConfig":
-        """Create configuration from dictionary (CORRECTED VERSION)"""
+        """Create configuration from dictionary (FIXED for nested TOML structure)"""
         try:
             # Parse binning config
             binning_dict = config_dict.get("binning", {})
@@ -194,7 +204,7 @@ class SimstackConfig:
             # Parse error estimator config
             error_dict = config_dict.get("error_estimator", {})
 
-            # Parse bootstrap config - only extract the expected keys
+            # Parse bootstrap config
             bootstrap_dict = error_dict.get("bootstrap", {})
             bootstrap = BootstrapConfig(
                 enabled=bootstrap_dict.get("enabled", True),
@@ -208,7 +218,7 @@ class SimstackConfig:
                 randomize=error_dict.get("randomize", False),
             )
 
-            # Parse cosmology - TOP-LEVEL key in your TOML
+            # Parse cosmology - TOP-LEVEL key
             cosmology_str = config_dict.get("cosmology", "Planck18")
             try:
                 cosmology = Cosmology(cosmology_str)
@@ -257,13 +267,17 @@ class SimstackConfig:
                 bins=stellar_mass_dict.get("bins", []),
             )
 
-            # Parse split params (optional)
+            # Parse split params (FIXED to handle nested structure)
             split_params = None
             if "split_params" in classification_dict:
                 split_params_dict = classification_dict["split_params"]
+
+                # Handle the nested structure: split_params.bins.{color names}
+                bins_dict = split_params_dict.get("bins", {})
+
                 split_params = SplitParams(
-                    id=split_params_dict.get("id", "split_id"),
-                    bins=split_params_dict.get("bins", {}),
+                    id=split_params_dict.get("id", "population_split"),
+                    bins=bins_dict,  # This now correctly gets {"NUV-R": "restNUV-R", "R-J": "restR-J"}
                 )
 
             classification = ClassificationConfig(
@@ -300,9 +314,12 @@ class SimstackConfig:
                 if not beam_dict:
                     raise ConfigError(f"Beam configuration required for map {map_name}")
 
+                # Handle missing area_sr (make it optional as in your TOML)
                 beam = BeamConfig(
                     fwhm=beam_dict.get("fwhm", 6.0),
-                    area_sr=beam_dict.get("area_sr", 1.0),
+                    area_sr=beam_dict.get(
+                        "area_sr", 1.0
+                    ),  # Default to 1.0 if not specified
                 )
 
                 # Validate required map fields
@@ -310,7 +327,7 @@ class SimstackConfig:
                 if wavelength is None:
                     raise ConfigError(f"Wavelength required for map {map_name}")
 
-                path_map = map_config.get("path_map", "")
+                path_map = map_config.get("path_map")
                 if not path_map:
                     raise ConfigError(f"path_map required for map {map_name}")
 
