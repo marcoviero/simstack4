@@ -5,17 +5,15 @@ This consolidates utility functions and mathematical operations needed for stack
 replacing the minimal toolbox.py and extending utils.py functionality.
 """
 
-import numpy as np
-import warnings
-from typing import Dict, List, Tuple, Optional, Union, Any
-from pathlib import Path
 import logging
 from dataclasses import dataclass
-from scipy.spatial.distance import cdist
-from scipy.ndimage import gaussian_filter
-from astropy.wcs import WCS
-from astropy.coordinates import SkyCoord
+from typing import Any
+
+import numpy as np
 from astropy import units as u
+from astropy.coordinates import SkyCoord
+from astropy.wcs import WCS
+from scipy.ndimage import gaussian_filter
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +21,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CircularRegion:
     """Defines a circular region on the sky"""
+
     center_ra: float  # degrees
     center_dec: float  # degrees
     radius_arcsec: float
@@ -39,7 +38,9 @@ class SimstackToolbox:
     """
 
     @staticmethod
-    def world_to_pixel_coords(wcs: WCS, ra: np.ndarray, dec: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def world_to_pixel_coords(
+        wcs: WCS, ra: np.ndarray, dec: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Convert world coordinates to pixel coordinates with error handling
 
@@ -52,7 +53,7 @@ class SimstackToolbox:
             x_pixel, y_pixel arrays
         """
         try:
-            coords = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+            coords = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
             x_pix, y_pix = wcs.world_to_pixel(coords)
             return np.asarray(x_pix), np.asarray(y_pix)
         except Exception as e:
@@ -61,7 +62,7 @@ class SimstackToolbox:
             pixel_scale = 1.0  # arcsec/pixel default
             try:
                 pixel_scale = abs(wcs.wcs.cdelt[0]) * 3600
-            except:
+            except Exception:
                 pass
 
             x_pix = ra * 3600 / pixel_scale  # Convert to pixels from origin
@@ -69,8 +70,9 @@ class SimstackToolbox:
             return x_pix, y_pix
 
     @staticmethod
-    def create_circular_mask(shape: Tuple[int, int], center: Tuple[float, float],
-                           radius: float) -> np.ndarray:
+    def create_circular_mask(
+        shape: tuple[int, int], center: tuple[float, float], radius: float
+    ) -> np.ndarray:
         """
         Create circular mask array
 
@@ -84,12 +86,15 @@ class SimstackToolbox:
         """
         ny, nx = shape
         y, x = np.ogrid[:ny, :nx]
-        dist_from_center = np.sqrt((x - center[0])**2 + (y - center[1])**2)
+        dist_from_center = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2)
         return dist_from_center <= radius
 
     @staticmethod
-    def add_circles_to_mask(mask: np.ndarray, centers: List[Tuple[float, float]],
-                          radii: Union[float, List[float]]) -> np.ndarray:
+    def add_circles_to_mask(
+        mask: np.ndarray,
+        centers: list[tuple[float, float]],
+        radii: float | list[float],
+    ) -> np.ndarray:
         """
         Add multiple circles to existing mask
 
@@ -101,17 +106,21 @@ class SimstackToolbox:
         Returns:
             Updated mask
         """
-        if isinstance(radii, (int, float)):
+        if isinstance(radii, int | float):
             radii = [radii] * len(centers)
 
-        for center, radius in zip(centers, radii):
-            circle_mask = SimstackToolbox.create_circular_mask(mask.shape, center, radius)
+        for center, radius in zip(centers, radii, strict=True):
+            circle_mask = SimstackToolbox.create_circular_mask(
+                mask.shape, center, radius
+            )
             mask |= circle_mask
 
         return mask
 
     @staticmethod
-    def gaussian_psf_kernel(fwhm_pixels: float, kernel_size: Optional[int] = None) -> np.ndarray:
+    def gaussian_psf_kernel(
+        fwhm_pixels: float, kernel_size: int | None = None
+    ) -> np.ndarray:
         """
         Create normalized Gaussian PSF kernel
 
@@ -136,7 +145,7 @@ class SimstackToolbox:
         x, y = np.mgrid[0:kernel_size, 0:kernel_size]
 
         # Calculate Gaussian
-        dist_sq = (x - center)**2 + (y - center)**2
+        dist_sq = (x - center) ** 2 + (y - center) ** 2
         kernel = np.exp(-0.5 * dist_sq / sigma**2)
 
         # Normalize
@@ -145,8 +154,9 @@ class SimstackToolbox:
         return kernel
 
     @staticmethod
-    def convolve_with_kernel(data: np.ndarray, kernel: np.ndarray,
-                           mode: str = 'constant') -> np.ndarray:
+    def convolve_with_kernel(
+        data: np.ndarray, kernel: np.ndarray, mode: str = "constant"
+    ) -> np.ndarray:
         """
         Convolve data with kernel using scipy
 
@@ -159,6 +169,7 @@ class SimstackToolbox:
             Convolved array
         """
         from scipy.ndimage import convolve
+
         return convolve(data, kernel, mode=mode, cval=0.0)
 
     @staticmethod
@@ -173,11 +184,12 @@ class SimstackToolbox:
         Returns:
             Convolved array
         """
-        return gaussian_filter(data, sigma=sigma, mode='constant', cval=0.0)
+        return gaussian_filter(data, sigma=sigma, mode="constant", cval=0.0)
 
     @staticmethod
-    def create_source_layer(ra: np.ndarray, dec: np.ndarray, weights: np.ndarray,
-                          wcs: WCS, shape: Tuple[int, int]) -> np.ndarray:
+    def create_source_layer(
+        ra: np.ndarray, dec: np.ndarray, wcs: WCS, shape: tuple[int, int]
+    ) -> np.ndarray:
         """
         Create 2D source layer from coordinates and weights
 
@@ -198,19 +210,24 @@ class SimstackToolbox:
         layer = np.zeros(shape, dtype=np.float64)
 
         # Add sources to layer
-        for x, y, weight in zip(x_pix, y_pix, weights):
+        for x, y in zip(x_pix, y_pix, strict=True):
             # Round to nearest pixel
             ix, iy = int(np.round(x)), int(np.round(y))
 
             # Check bounds
             if 0 <= ix < shape[1] and 0 <= iy < shape[0]:
-                layer[iy, ix] += weight
+                layer[iy, ix] += 1
 
         return layer
 
     @staticmethod
-    def bilinear_interpolate_sources(ra: np.ndarray, dec: np.ndarray, weights: np.ndarray,
-                                   wcs: WCS, shape: Tuple[int, int]) -> np.ndarray:
+    def bilinear_interpolate_sources(
+        ra: np.ndarray,
+        dec: np.ndarray,
+        weights: np.ndarray,
+        wcs: WCS,
+        shape: tuple[int, int],
+    ) -> np.ndarray:
         """
         Create source layer using bilinear interpolation for sub-pixel accuracy
 
@@ -230,7 +247,7 @@ class SimstackToolbox:
         # Initialize layer
         layer = np.zeros(shape, dtype=np.float64)
 
-        for x, y, weight in zip(x_pix, y_pix, weights):
+        for x, y, weight in zip(x_pix, y_pix, weights, strict=True):
             # Get integer pixel coordinates
             x0, y0 = int(np.floor(x)), int(np.floor(y))
             x1, y1 = x0 + 1, y0 + 1
@@ -257,7 +274,9 @@ class SimstackToolbox:
         return layer
 
     @staticmethod
-    def calculate_overlap_matrix(layers: np.ndarray, valid_mask: np.ndarray) -> np.ndarray:
+    def calculate_overlap_matrix(
+        layers: np.ndarray, valid_mask: np.ndarray
+    ) -> np.ndarray:
         """
         Calculate overlap matrix between population layers
 
@@ -277,8 +296,9 @@ class SimstackToolbox:
         return overlap
 
     @staticmethod
-    def robust_linear_solve(A: np.ndarray, b: np.ndarray,
-                          rcond: float = 1e-12) -> Tuple[np.ndarray, Dict[str, Any]]:
+    def robust_linear_solve(
+        A: np.ndarray, b: np.ndarray, rcond: float = 1e-12
+    ) -> tuple[np.ndarray, dict[str, Any]]:
         """
         Robust linear system solver with diagnostics
 
@@ -290,7 +310,7 @@ class SimstackToolbox:
         Returns:
             solution, diagnostics_dict
         """
-        from scipy.linalg import lstsq, LinAlgError
+        from scipy.linalg import LinAlgError, lstsq
 
         diagnostics = {}
 
@@ -305,13 +325,13 @@ class SimstackToolbox:
                 cond_num = np.inf
 
             diagnostics = {
-                'residuals': residuals,
-                'rank': rank,
-                'singular_values': singular_values,
-                'condition_number': cond_num,
-                'well_conditioned': cond_num < 1e12,
-                'n_pixels': len(b),
-                'n_populations': A.shape[1]
+                "residuals": residuals,
+                "rank": rank,
+                "singular_values": singular_values,
+                "condition_number": cond_num,
+                "well_conditioned": cond_num < 1e12,
+                "n_pixels": len(b),
+                "n_populations": A.shape[1],
             }
 
             # Check for numerical issues
@@ -322,13 +342,14 @@ class SimstackToolbox:
         except LinAlgError as e:
             logger.error(f"Linear algebra error: {e}")
             solution = np.zeros(A.shape[1])
-            diagnostics['error'] = str(e)
+            diagnostics["error"] = str(e)
 
         return solution, diagnostics
 
     @staticmethod
-    def bootstrap_resample_indices(n_total: int, n_sample: int,
-                                 seed: Optional[int] = None) -> np.ndarray:
+    def bootstrap_resample_indices(
+        n_total: int, n_sample: int, seed: int | None = None
+    ) -> np.ndarray:
         """
         Generate bootstrap resampled indices
 
@@ -346,7 +367,9 @@ class SimstackToolbox:
         return np.random.choice(n_total, size=n_sample, replace=True)
 
     @staticmethod
-    def calculate_error_from_bootstrap(bootstrap_results: List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    def calculate_error_from_bootstrap(
+        bootstrap_results: list[np.ndarray],
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
         Calculate errors from bootstrap results
 
@@ -369,8 +392,9 @@ class SimstackToolbox:
         return mean_flux, flux_errors
 
     @staticmethod
-    def percentile_errors(bootstrap_results: List[np.ndarray],
-                         percentiles: Tuple[float, float] = (16, 84)) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def percentile_errors(
+        bootstrap_results: list[np.ndarray], percentiles: tuple[float, float] = (16, 84)
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Calculate percentile-based errors from bootstrap
 
@@ -396,7 +420,9 @@ class SimstackToolbox:
         return median_flux, lower_error, upper_error
 
     @staticmethod
-    def validate_layer_matrix(layers: np.ndarray, population_labels: List[str]) -> Dict[str, Any]:
+    def validate_layer_matrix(
+        layers: np.ndarray, population_labels: list[str]
+    ) -> dict[str, Any]:
         """
         Validate layer matrix for numerical issues
 
@@ -410,27 +436,28 @@ class SimstackToolbox:
         n_pops, n_pixels = layers.shape
 
         results = {
-            'shape': (n_pops, n_pixels),
-            'total_sources': np.sum(layers),
-            'populations': {}
+            "shape": (n_pops, n_pixels),
+            "total_sources": np.sum(layers),
+            "populations": {},
         }
 
         for i, label in enumerate(population_labels):
             layer = layers[i]
             pop_results = {
-                'total_flux': np.sum(layer),
-                'n_nonzero_pixels': np.sum(layer > 0),
-                'max_value': np.max(layer),
-                'has_nan': np.any(np.isnan(layer)),
-                'has_inf': np.any(np.isinf(layer))
+                "total_flux": np.sum(layer),
+                "n_nonzero_pixels": np.sum(layer > 0),
+                "max_value": np.max(layer),
+                "has_nan": np.any(np.isnan(layer)),
+                "has_inf": np.any(np.isinf(layer)),
             }
-            results['populations'][label] = pop_results
+            results["populations"][label] = pop_results
 
         return results
 
     @staticmethod
-    def spatial_clustering_analysis(ra: np.ndarray, dec: np.ndarray,
-                                  max_separation_arcmin: float = 5.0) -> Dict[str, Any]:
+    def spatial_clustering_analysis(
+        ra: np.ndarray, dec: np.ndarray, max_separation_arcmin: float = 5.0
+    ) -> dict[str, Any]:
         """
         Analyze spatial clustering of sources
 
@@ -443,34 +470,39 @@ class SimstackToolbox:
             Clustering analysis results
         """
         # Convert to cartesian coordinates for distance calculation
-        coords = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+        coords = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
 
         # Calculate pairwise separations (this can be memory intensive for large catalogs)
         if len(ra) > 10000:
-            logger.warning(f"Large catalog ({len(ra)} sources) - spatial analysis may be slow")
+            logger.warning(
+                f"Large catalog ({len(ra)} sources) - spatial analysis may be slow"
+            )
 
         separations = coords[:, np.newaxis].separation(coords).to(u.arcmin).value
 
         # Count pairs within max_separation
-        close_pairs = np.sum(separations < max_separation_arcmin) - len(ra)  # Subtract diagonal
+        close_pairs = np.sum(separations < max_separation_arcmin) - len(
+            ra
+        )  # Subtract diagonal
 
         # Calculate clustering statistics
         mean_separation = np.mean(separations[separations > 0])
         median_separation = np.median(separations[separations > 0])
 
         results = {
-            'n_sources': len(ra),
-            'close_pairs': close_pairs // 2,  # Each pair counted twice
-            'clustering_fraction': (close_pairs / 2) / len(ra),
-            'mean_separation_arcmin': mean_separation,
-            'median_separation_arcmin': median_separation
+            "n_sources": len(ra),
+            "close_pairs": close_pairs // 2,  # Each pair counted twice
+            "clustering_fraction": (close_pairs / 2) / len(ra),
+            "mean_separation_arcmin": mean_separation,
+            "median_separation_arcmin": median_separation,
         }
 
         return results
 
     @staticmethod
-    def estimate_confusion_noise(map_data: np.ndarray, beam_fwhm_arcsec: float,
-                               pixel_scale_arcsec: float) -> float:
+    def estimate_confusion_noise(
+        map_data: np.ndarray, beam_fwhm_arcsec: float, pixel_scale_arcsec: float
+    ) -> float:
         """
         Estimate confusion noise in map
 
@@ -484,7 +516,7 @@ class SimstackToolbox:
         """
         # Calculate beam area in pixels
         beam_fwhm_pixels = beam_fwhm_arcsec / pixel_scale_arcsec
-        beam_area_pixels = np.pi * (beam_fwhm_pixels / 2.355)**2  # Gaussian beam
+        # beam_area_pixels = np.pi * (beam_fwhm_pixels / 2.355) ** 2  # Gaussian beam
 
         # Use structure function approach to estimate confusion
         # This is a simplified version - full implementation would be more sophisticated
@@ -501,7 +533,9 @@ class SimstackToolbox:
             kernel_size += 1
 
         # Smooth map and calculate difference
-        smoothed = gaussian_filter(map_data, sigma=beam_fwhm_pixels/2.355, mode='constant')
+        smoothed = gaussian_filter(
+            map_data, sigma=beam_fwhm_pixels / 2.355, mode="constant"
+        )
         difference = map_data - smoothed
 
         # Estimate confusion as RMS of difference
@@ -510,8 +544,12 @@ class SimstackToolbox:
         return confusion_noise
 
     @staticmethod
-    def color_correction_factor(observed_wavelength: float, rest_wavelength: float,
-                              redshift: float, spectral_index: float = -2.0) -> float:
+    def color_correction_factor(
+        observed_wavelength: float,
+        rest_wavelength: float,
+        redshift: float,
+        spectral_index: float = -2.0,
+    ) -> float:
         """
         Calculate color correction factor for flux measurements
 
@@ -534,7 +572,9 @@ class SimstackToolbox:
 
 
 # Additional utility functions that were in utils.py but fit better here
-def create_coordinate_grids(shape: Tuple[int, int], wcs: WCS) -> Tuple[np.ndarray, np.ndarray]:
+def create_coordinate_grids(
+    shape: tuple[int, int], wcs: WCS
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Create RA/Dec coordinate grids for a map
 
@@ -558,7 +598,7 @@ def create_coordinate_grids(shape: Tuple[int, int], wcs: WCS) -> Tuple[np.ndarra
         pixel_scale = 1.0  # arcsec/pixel
         try:
             pixel_scale = abs(wcs.wcs.cdelt[0]) * 3600
-        except:
+        except Exception:
             pass
 
         ra_grid = x_pixels * pixel_scale / 3600  # Convert to degrees
@@ -593,6 +633,6 @@ def angular_separation(ra1: float, dec1: float, ra2: float, dec2: float) -> floa
     Returns:
         Angular separation in degrees
     """
-    coord1 = SkyCoord(ra=ra1*u.deg, dec=dec1*u.deg)
-    coord2 = SkyCoord(ra=ra2*u.deg, dec=dec2*u.deg)
+    coord1 = SkyCoord(ra=ra1 * u.deg, dec=dec1 * u.deg)
+    coord2 = SkyCoord(ra=ra2 * u.deg, dec=dec2 * u.deg)
     return coord1.separation(coord2).degree

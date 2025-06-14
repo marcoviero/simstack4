@@ -302,12 +302,10 @@ class SimstackAlgorithm:
             # Get source positions from catalog
             # This is a simplified approach - in practice you'd get RA/Dec from catalog
             # using the population indices
-            ra, dec, weights = self._get_population_coordinates(pop_bin)
+            ra, dec = self._get_population_coordinates(pop_bin)
 
             # Create source layer
-            source_layer = self._create_source_layer(
-                map_name, ra, dec, weights, map_shape
-            )
+            source_layer = self._create_source_layer(map_name, ra, dec, map_shape)
 
             # Convolve with PSF
             convolved_layer = self.sky_maps.convolve_with_psf(source_layer, map_name)
@@ -348,23 +346,8 @@ class SimstackAlgorithm:
 
         ra = pop_data["ra"]
         dec = pop_data["dec"]
-        stellar_masses = pop_data["stellar_mass"]
 
-        # For COSMOS catalogs, stellar masses are typically in log units
-        # Check if masses are in log scale (typical COSMOS range is 8-12)
-        if np.all((stellar_masses > 7) & (stellar_masses < 15)):  # log masses
-            # Convert to linear scale and normalize
-            weights = 10 ** (stellar_masses - 10)  # Normalize around 10^10 solar masses
-            # weights = 10**stellar_masses  # Normalize around 10^10 solar masses
-        else:
-            # Already in linear scale
-            weights = stellar_masses / 1e10  # Normalize to 10^10 solar masses
-
-        # Ensure positive weights
-        weights = np.maximum(weights, 1e-6)
-        weights = np.ones_like(weights)
-
-        return ra, dec, weights
+        return ra, dec
 
     # Fix for the _create_source_layer method in algorithm.py
     def _create_source_layer(
@@ -372,7 +355,6 @@ class SimstackAlgorithm:
         map_name: str,
         ra: np.ndarray,
         dec: np.ndarray,
-        weights: np.ndarray,
         map_shape: tuple[int, int],
     ) -> np.ndarray:
         """
@@ -386,7 +368,7 @@ class SimstackAlgorithm:
 
         # Use toolbox function for better accuracy
         layer = SimstackToolbox.create_source_layer(
-            ra=ra, dec=dec, weights=weights, wcs=map_data.wcs, shape=map_shape
+            ra=ra, dec=dec, wcs=map_data.wcs, shape=map_shape
         )
 
         return layer
