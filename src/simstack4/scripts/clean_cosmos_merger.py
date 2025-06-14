@@ -260,6 +260,48 @@ def create_clean_cosmos_catalog_fixed(photometry_path, lephare_path, output_path
         clean_merged_df["V-J"] = np.nan
         clean_merged_df["UVJ_class"] = 0
 
+    # Find required bands for NUVRJ
+    nuv_col = None  # Use U-band as NUV proxy
+    r_col = None
+    j_col = None
+
+    for col in mag_cols:
+        if any(u in col.lower() for u in ["cfht-u", "hsc-u", "_u_", "-u"]):
+            nuv_col = col
+        elif any(r in col.lower() for r in ["hsc-r", "_r_", "-r"]):
+            r_col = col
+        elif any(j in col.lower() for j in ["uvista-j", "vista-j", "_j_", "-j"]):
+            j_col = col
+
+    print(f"  - NUV (U-proxy): {nuv_col}")
+    print(f"  - R-band: {r_col}")
+    print(f"  - J-band: {j_col}")
+
+    print("\nCalculating NUVRJ colors...")
+
+    if nuv_col and r_col and j_col:
+        clean_merged_df["NUV-R"] = clean_merged_df[nuv_col] - clean_merged_df[r_col]
+        clean_merged_df["R-J"] = clean_merged_df[r_col] - clean_merged_df[j_col]
+
+        # NUVRJ classification (Ilbert et al. 2013 criteria)
+        # Quiescent: (NUV-R) > 3.1 AND (R-J) > 0.9
+        nuv_r = clean_merged_df["NUV-R"]
+        r_j = clean_merged_df["R-J"]
+
+        quiescent_nuvrj = (nuv_r > 3.1) & (r_j > 0.9)
+        # ind_nuvrj = (table[uvrkey] > (3 * table[rjkey] + 1)) & (table[uvrkey] > 3.1) & (table[zkey] < qg_zcut)
+        clean_merged_df["NUVRJ_class"] = quiescent_nuvrj.astype(int)
+
+        n_sf = np.sum(~quiescent_nuvrj & np.isfinite(nuv_r) & np.isfinite(r_j))
+        n_q = np.sum(quiescent_nuvrj & np.isfinite(nuv_r) & np.isfinite(r_j))
+        print(f"  ✓ NUVRJ classification: {n_sf:,} star-forming, {n_q:,} quiescent")
+    else:
+        print("  ❌ Cannot calculate NUVRJ - missing magnitude columns")
+        # Add dummy UVJ columns
+        clean_merged_df["NUV-R"] = np.nan
+        clean_merged_df["R-J"] = np.nan
+        clean_merged_df["NUVRJ_class"] = 0
+
     # Add quality flags
     print("\nAdding quality flags...")
 
