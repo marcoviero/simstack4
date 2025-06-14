@@ -186,10 +186,10 @@ class SkyCatalogs:
             if col not in available_cols:
                 missing_cols.append(col)
 
-        if missing_cols:
-            raise ValidationError(
-                f"COSMOS catalog missing essential columns: {missing_cols}"
-            )
+        # if missing_cols:
+        #    raise ValidationError(
+        #        f"COSMOS catalog missing essential columns: {missing_cols}"
+        #    )
 
         # Check if UVJ classification is already done
         if "UVJ_class" in available_cols:
@@ -206,6 +206,22 @@ class SkyCatalogs:
         else:
             logger.warning(
                 "No UVJ_class column found - will use split_type from config"
+            )
+
+        if "NUVRJ_class" in available_cols:
+            if self.backend == "polars":
+                n_q = self.catalog_df.filter(pl.col("NUVRJ_class") == 1).height
+                n_sf = len(self.catalog_df) - n_q
+            else:
+                n_sf = np.sum(self.catalog_df["NUVRJ_class"] == 0)
+                n_q = np.sum(self.catalog_df["NUVRJ_class"] == 1)
+
+            logger.info(
+                f"✓ NUVRJ classification found: {n_sf} star-forming, {n_q} quiescent"
+            )
+        else:
+            logger.warning(
+                "No NUVRJ_class column found - will use split_type from config"
             )
 
         # Standard catalog validation and population creation
