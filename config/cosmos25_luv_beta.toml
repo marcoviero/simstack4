@@ -12,7 +12,7 @@ randomize = false             # For null-testing: shuffle (x,y) when building la
 
 [error_estimator.bootstrap]
 enabled = true                # Use bootstrap method for error estimation
-iterations = 150              # Number of bootstrap iterations
+iterations = 10              # Number of bootstrap iterations
 initial_seed = 1              # Seed for random shuffling (ensures consistency across bands)
 
 # Top-level simple settings
@@ -20,32 +20,39 @@ cosmology = "Planck18"        # Options: "Planck15", "Planck18"
 
 [output]
 folder = "$PICKLESPATH/simstack/stacked_flux_densities"  # Environment variables supported
-shortname = "uVista_DR2"      # Name for output folder
+shortname = "cosmos25"      # Name for output folder
 
 [catalog]
-path = "$CATSPATH/uVista"     # Path to catalog directory
-file = "UVISTA_DR2_master_v2.1_USE.csv"  # Catalog filename
+path = "$CATSPATH/cosmos"     # Path to catalog directory
+file = "COSMOSWeb_clean.parquet"  # Catalog filename
 
 [catalog.astrometry]
 ra = "ra"                     # Column name for right ascension
 dec = "dec"                   # Column name for declination
 
 [catalog.classification]
-split_type = "uvj"            # Options: "labels", "uvj", "nuvrj"
 
-[catalog.classification.split_params]
-id = "sfg"                    # Label for this split
-[catalog.classification.split_params.bins]
-"U-V" = "rf_U_V"             # Column name for U-V color
-"V-J" = "rf_V_J"             # Column name for V-J color
+# β_UV calculation parameters (used for binning, not splitting)
+[catalog.classification.beta_uv_formula]
+formula = "beta_uv"
+bins = {"E(B-V)" = "ebv_minchi2", "dust_law" = "law_minchi2"}
+single_law = "calzetti"  # Force single dust law: "calzetti", "arnouts", or "salim"
 
+# Generalized binning - redshift + L_UV only
 [catalog.classification.binning.redshift]
-id = "z_peak"                 # Column name for redshift
-bins = [0.01, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]  # Redshift bin edges
+id = "zpdf_med"                 # Column name for redshift
+label = "Redshift"
+bins = [0.01, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]  # Redshift bin edges
 
-[catalog.classification.binning.stellar_mass]
-id = "lmass"                  # Column name for stellar mass
-bins = [8.5, 9.5, 10.0, 10.5, 11.0, 12.0]  # Stellar mass bin edges
+[catalog.classification.binning.l_uv]
+id = "l_nuv"
+label = "NUV Luminosity"
+bins = [9.0, 10.0, 11.0, 12.0]
+
+[catalog.classification.binning.beta_uv]
+id = "calculated_beta_uv"  # This will be created by the calculation
+label = "UV Continuum Slope β"
+bins = [-2.75, -2.25, -1.75, -1.25, -0.75, -0.25, 0.5, 1.25]
 
 # Map configurations - each section defines a new map
 [maps.mips_24]
@@ -56,7 +63,7 @@ path_noise = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_unc_10.cutout.fits"
 
 [maps.mips_24.beam]
 fwhm = 5.51                   # FWHM in arcsec
-area_sr = 1.3280e-09          # Solid angle (1.0 if already in Jy/beam)
+area_sr = 1.328e-09          # Solid angle (1.0 if already in Jy/beam)
 
 [maps.pacs_green]
 wavelength = 100.0
@@ -75,8 +82,8 @@ path_map = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS160_20160728_img_avg.fits"
 path_noise = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS160_20160728_img_avg_noise.fits"
 
 [maps.pacs_red.beam]
-fwhm = 11.18
-area_sr = 4.658e-09
+fwhm = 11.33
+area_sr = 4.658e-9
 
 [maps.spire_psw]
 wavelength = 250.0
@@ -98,7 +105,7 @@ fwhm = 24.42
 
 [maps.spire_plw]
 wavelength = 500.0
-color_correction = 0.95615
+color_correction = 0.9565
 path_map = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PLW.signal.cutout.fits"
 path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PLW.noise.cutout.fits"
 

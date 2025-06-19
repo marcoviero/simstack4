@@ -37,11 +37,11 @@ split_type = "nuvrj"            # Options: "labels", "uvj", "nuvrj"
 "NUV-R" = "restNUV-R"              # NUV-R color column name
 "R-J" = "restR-J"                  # R-J color column name
 
-[catalog.classification.redshift]
+[catalog.classification.binning.redshift]
 id = "lp_zBEST"                 # Column name for redshift
 bins = [0.01, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0, 6.0, 8.0, 10.0]  # Redshift bin edges
 
-[catalog.classification.stellar_mass]
+[catalog.classification.binning.stellar_mass]
 id = "lp_mass_med"                  # Column name for stellar mass
 bins = [8.5, 9.5, 10.0, 10.5, 11.0, 12.0]  # Stellar mass bin edges
 

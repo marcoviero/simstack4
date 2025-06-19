@@ -12,7 +12,7 @@ randomize = false             # For null-testing: shuffle (x,y) when building la
 
 [error_estimator.bootstrap]
 enabled = true                # Use bootstrap method for error estimation
-iterations = 3              # Number of bootstrap iterations
+iterations = 20              # Number of bootstrap iterations
 initial_seed = 1              # Seed for random shuffling (ensures consistency across bands)
 
 # Top-level simple settings
@@ -33,19 +33,19 @@ dec = "dec"                   # Column name for declination
 [catalog.classification]
 split_type = "uvj"            # Options: "labels", "uvj", "nuvrj"
 
-[catalog.classification.redshift]
-id = "z_peak"                 # Column name for redshift
-bins = [0.01, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]  # Redshift bin edges
-
-[catalog.classification.stellar_mass]
-id = "lmass"                  # Column name for stellar mass
-bins = [8.5, 9.5, 10.0, 10.5, 11.0, 12.0]  # Stellar mass bin edges
-
 [catalog.classification.split_params]
 id = "sfg"                    # Label for this split
 [catalog.classification.split_params.bins]
 "U-V" = "rf_U_V"             # Column name for U-V color
 "V-J" = "rf_V_J"             # Column name for V-J color
+
+[catalog.classification.binning.redshift]
+id = "z_peak"                 # Column name for redshift
+bins = [0.01, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]  # Redshift bin edges
+
+[catalog.classification.binning.stellar_mass]
+id = "lmass"                  # Column name for stellar mass
+bins = [8.5, 9.5, 10.0, 10.5, 11.0, 12.0]  # Stellar mass bin edges
 
 # Map configurations - each section defines a new map
 [maps.spire_psw]
