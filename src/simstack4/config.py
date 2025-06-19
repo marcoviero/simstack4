@@ -18,11 +18,12 @@ from .exceptions.simstack_exceptions import ConfigError
 
 
 class SplitType(Enum):
-    """Enum for different catalog splitting methods"""
+    """Enum for different catalog splitting methods (expanded)"""
 
-    LABELS = "labels"
-    UVJ = "uvj"
-    NUVRJ = "nuvrj"
+    LABELS = "labels"  # Use existing column values
+    FORMULA = "formula"  # Calculate from custom formula
+    UVJ = "uvj"  # Built-in UVJ classification
+    NUVRJ = "nuvrj"  # Built-in NUVRJ classification
 
 
 class Cosmology(Enum):
@@ -30,6 +31,16 @@ class Cosmology(Enum):
 
     PLANCK15 = "Planck15"
     PLANCK18 = "Planck18"
+
+
+@dataclass
+class BinConfig:
+    """Generic binning configuration for any variable"""
+
+    id: str  # Column name in catalog
+    label: str  # Human-readable label
+    bins: list[float]  # Bin edges
+    formula_ref: str | None = None  # Reference to formula for calculated variables
 
 
 @dataclass
@@ -100,29 +111,32 @@ class MapConfig:
 
 
 @dataclass
-class ClassificationBins:
-    """Configuration for classification binning"""
+class SplitParams:
+    """Parameters for population splitting (generalized)"""
 
-    id: str  # Column name in catalog
-    bins: list[float]  # Bin edges
+    id: str  # Column name OR formula identifier
+    formula: str | None = None  # Formula expression or built-in name
+    bins: dict[str, str] | None = None  # Input columns for formulas (e.g., colors)
 
 
 @dataclass
-class SplitParams:
-    """Parameters for UVJ/NUVRJ splitting"""
+class FormulaParams:
+    """Parameters for calculated binning variables (like β_UV)"""
 
-    id: str  # Label for this split
-    bins: dict[str, str]  # e.g., {"U-V": "rf_U_V", "V-J": "rf_V_J"}
+    formula: str  # Formula type: "beta_uv", "custom", etc.
+    bins: dict[str, str] | None = None  # Input columns for formulas
+    single_law: str | None = None  # For dust law selection
+    custom_expression: str | None = None  # For custom formulas
 
 
 @dataclass
 class ClassificationConfig:
     """Configuration for catalog classification and binning"""
 
-    split_type: SplitType
-    redshift: ClassificationBins
-    stellar_mass: ClassificationBins
-    split_params: SplitParams | None
+    binning: dict[str, BinConfig]  # Multiple binning dimensions
+    split_type: SplitType | None = None  # Optional population splitting
+    split_params: SplitParams | None = None  # Only if split_type is specified
+    formulas: dict[str, FormulaParams] | None = None  # Calculation formulas
 
 
 @dataclass
@@ -189,11 +203,13 @@ class SimstackConfig:
     Replace the _from_dict method in your config.py with this version
     """
 
+    # Replace the classification parsing section in your config.py _from_dict method
+
     @classmethod
     def _from_dict(cls, config_dict: dict[str, Any]) -> "SimstackConfig":
-        """Create configuration from dictionary (FIXED for nested TOML structure)"""
+        """Create configuration from dictionary (UPDATED for generalized binning)"""
         try:
-            # Parse binning config
+            # Parse binning config (unchanged)
             binning_dict = config_dict.get("binning", {})
             binning = BinningConfig(
                 stack_all_z_at_once=binning_dict.get("stack_all_z_at_once", True),
@@ -201,31 +217,28 @@ class SimstackConfig:
                 crop_circles=binning_dict.get("crop_circles", True),
             )
 
-            # Parse error estimator config
+            # Parse error estimator config (unchanged)
             error_dict = config_dict.get("error_estimator", {})
-
-            # Parse bootstrap config
             bootstrap_dict = error_dict.get("bootstrap", {})
             bootstrap = BootstrapConfig(
                 enabled=bootstrap_dict.get("enabled", True),
                 iterations=bootstrap_dict.get("iterations", 150),
                 initial_seed=bootstrap_dict.get("initial_seed", 1),
             )
-
             error_estimator = ErrorConfig(
                 bootstrap=bootstrap,
                 write_simmaps=error_dict.get("write_simmaps", False),
                 randomize=error_dict.get("randomize", False),
             )
 
-            # Parse cosmology - TOP-LEVEL key
+            # Parse cosmology (unchanged)
             cosmology_str = config_dict.get("cosmology", "Planck18")
             try:
                 cosmology = Cosmology(cosmology_str)
             except ValueError as e:
                 raise ConfigError(f"Unknown cosmology: {cosmology_str}") from e
 
-            # Parse output config
+            # Parse output config (unchanged)
             output_dict = config_dict.get("output", {})
             output = OutputConfig(
                 folder=output_dict.get("folder", "./output"),
@@ -241,53 +254,81 @@ class SimstackConfig:
             if not classification_dict:
                 raise ConfigError("Classification configuration is required")
 
-            # Parse classification config
-            split_type_str = classification_dict.get("split_type", "labels")
-            try:
-                split_type = SplitType(split_type_str)
-            except ValueError:
-                raise ConfigError(f"Unknown split_type: {split_type_str}") from None
+            # ===== UPDATED CLASSIFICATION PARSING =====
 
-            # Parse redshift bins
-            redshift_dict = classification_dict.get("redshift", {})
-            if not redshift_dict:
-                raise ConfigError("Redshift configuration is required")
-
-            redshift = ClassificationBins(
-                id=redshift_dict.get("id", "z"), bins=redshift_dict.get("bins", [])
-            )
-
-            # Parse stellar mass bins
-            stellar_mass_dict = classification_dict.get("stellar_mass", {})
-            if not stellar_mass_dict:
-                raise ConfigError("Stellar mass configuration is required")
-
-            stellar_mass = ClassificationBins(
-                id=stellar_mass_dict.get("id", "stellar_mass"),
-                bins=stellar_mass_dict.get("bins", []),
-            )
-
-            # Parse split params (FIXED to handle nested structure)
+            # Parse split type (NOW OPTIONAL)
+            split_type = None
             split_params = None
-            if "split_params" in classification_dict:
-                split_params_dict = classification_dict["split_params"]
 
-                # Handle the nested structure: split_params.bins.{color names}
-                bins_dict = split_params_dict.get("bins", {})
+            if "split_type" in classification_dict:
+                split_type_str = classification_dict["split_type"]
+                try:
+                    split_type = SplitType(split_type_str)
+                except ValueError:
+                    raise ConfigError(f"Unknown split_type: {split_type_str}") from None
 
-                split_params = SplitParams(
-                    id=split_params_dict.get("id", "population_split"),
-                    bins=bins_dict,  # This now correctly gets {"NUV-R": "restNUV-R", "R-J": "restR-J"}
-                )
+                # Parse split params only if split_type is specified
+                if "split_params" in classification_dict:
+                    split_params_dict = classification_dict["split_params"]
+                    split_params = SplitParams(
+                        id=split_params_dict.get("id", "population_split"),
+                        formula=split_params_dict.get("formula"),
+                        bins=split_params_dict.get("bins", {}),
+                    )
 
+            # Parse formula configurations (NEW)
+            formulas = {}
+            for key, value in classification_dict.items():
+                if key.endswith("_formula"):
+                    formula_name = key.replace("_formula", "")
+                    formulas[formula_name] = FormulaParams(
+                        formula=value.get("formula", formula_name),
+                        bins=value.get("bins", {}),
+                        single_law=value.get("single_law"),
+                        custom_expression=value.get("custom_expression"),
+                    )
+
+            # Parse binning configurations
+            binning_config = {}
+            if "binning" in classification_dict:
+                binning_dict = classification_dict["binning"]
+                for bin_name, bin_config_dict in binning_dict.items():
+                    if not isinstance(bin_config_dict, dict):
+                        continue
+
+                    bin_config = BinConfig(
+                        id=bin_config_dict.get("id", bin_name),
+                        label=bin_config_dict.get(
+                            "label", bin_name.replace("_", " ").title()
+                        ),
+                        bins=bin_config_dict.get("bins", []),
+                        formula_ref=bin_config_dict.get("formula_ref"),
+                    )
+
+                    # Validate bins
+                    if len(bin_config.bins) < 2:
+                        raise ConfigError(
+                            f"At least 2 bin edges required for {bin_name}"
+                        )
+
+                    if bin_config.bins != sorted(bin_config.bins):
+                        raise ConfigError(
+                            f"Bin edges must be in ascending order for {bin_name}"
+                        )
+
+                    binning_config[bin_name] = bin_config
+            else:
+                raise ConfigError("Binning configuration is required")
+
+            # Create classification config
             classification = ClassificationConfig(
-                split_type=split_type,
-                redshift=redshift,
-                stellar_mass=stellar_mass,
-                split_params=split_params,
+                split_type=split_type,  # Can be None
+                binning=binning_config,
+                split_params=split_params,  # Can be None
+                formulas=formulas if formulas else None,
             )
 
-            # Parse astrometry
+            # Parse astrometry (unchanged)
             astrometry = catalog_dict.get("astrometry", {})
             if not astrometry:
                 raise ConfigError("Astrometry configuration is required")
@@ -299,7 +340,7 @@ class SimstackConfig:
                 classification=classification,
             )
 
-            # Parse maps config
+            # Parse maps config (unchanged)
             maps = {}
             maps_dict = config_dict.get("maps", {})
             if not maps_dict:
@@ -307,22 +348,17 @@ class SimstackConfig:
 
             for map_name, map_config in maps_dict.items():
                 if not isinstance(map_config, dict):
-                    continue  # Skip non-dict entries
+                    continue
 
-                # Parse beam config
                 beam_dict = map_config.get("beam", {})
                 if not beam_dict:
                     raise ConfigError(f"Beam configuration required for map {map_name}")
 
-                # Handle missing area_sr (make it optional as in your TOML)
                 beam = BeamConfig(
                     fwhm=beam_dict.get("fwhm", 6.0),
-                    area_sr=beam_dict.get(
-                        "area_sr", 1.0
-                    ),  # Default to 1.0 if not specified
+                    area_sr=beam_dict.get("area_sr", 1.0),
                 )
 
-                # Validate required map fields
                 wavelength = map_config.get("wavelength")
                 if wavelength is None:
                     raise ConfigError(f"Wavelength required for map {map_name}")
@@ -349,29 +385,26 @@ class SimstackConfig:
             )
 
         except ConfigError:
-            # Re-raise ConfigError as-is
             raise
         except Exception as e:
             raise ConfigError(f"Failed to parse configuration: {e}") from e
 
     def validate(self) -> None:
-        """Validate configuration settings (IMPROVED VERSION)"""
+        """Validate configuration settings (FIXED for generalized binning)"""
         errors = []
 
-        # Check that catalog file exists (if path is set)
+        # Check that catalog file exists (unchanged)
         if self.catalog.path and self.catalog.file:
             catalog_path = self.catalog.full_path
             if not catalog_path.exists():
-                # Don't fail validation if using environment variables that aren't set yet
                 if "$" not in str(catalog_path):
                     errors.append(f"Catalog file not found: {catalog_path}")
 
-        # Check that map files exist (if paths are set)
+        # Check that map files exist (unchanged)
         for map_name, map_config in self.maps.items():
             if map_config.path_map:
                 map_path = Path(map_config.path_map)
                 if not map_path.exists():
-                    # Don't fail validation if using environment variables
                     if "$" not in map_config.path_map:
                         errors.append(f"Map file not found for {map_name}: {map_path}")
 
@@ -383,31 +416,22 @@ class SimstackConfig:
                             f"Noise file not found for {map_name}: {noise_path}"
                         )
 
-        # Check output directory can be created
+        # Check output directory can be created (unchanged)
         try:
             output_path = Path(self.output.folder)
-            # Don't try to create if it has environment variables
             if "$" not in self.output.folder:
                 output_path.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             if "$" not in self.output.folder:
                 errors.append(f"Cannot create output directory: {e}")
 
-        # Validate bin configurations
-        if len(self.catalog.classification.redshift.bins) < 2:
-            errors.append("At least 2 redshift bin edges required")
+        # FIXED: Validate bin configurations for generalized binning
+        for bin_name, bin_config in self.catalog.classification.binning.items():
+            if len(bin_config.bins) < 2:
+                errors.append(f"At least 2 bin edges required for {bin_name}")
 
-        if len(self.catalog.classification.stellar_mass.bins) < 2:
-            errors.append("At least 2 stellar mass bin edges required")
-
-        # Check bins are in ascending order
-        z_bins = self.catalog.classification.redshift.bins
-        if z_bins != sorted(z_bins):
-            errors.append("Redshift bins must be in ascending order")
-
-        m_bins = self.catalog.classification.stellar_mass.bins
-        if m_bins != sorted(m_bins):
-            errors.append("Stellar mass bins must be in ascending order")
+            if bin_config.bins != sorted(bin_config.bins):
+                errors.append(f"Bin edges must be in ascending order for {bin_name}")
 
         if errors:
             raise ConfigError(
