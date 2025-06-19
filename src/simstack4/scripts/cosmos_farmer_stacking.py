@@ -28,15 +28,15 @@ def run_cosmos_stacking_pipeline():
 
     # Config path relative to project root (where you run the script from)
     config_path = (
-        Path(__file__).parent.parent.parent.parent / "config" / "cosmos25.toml"
+        Path(__file__).parent.parent.parent.parent / "config" / "cosmos20.toml"
     )
 
     if not config_path.exists():
         # Alternative paths to try
         alt_paths = [
-            "config/cosmos25.toml",  # If run from project root
-            "../../../config/cosmos25.toml",  # Relative to script location
-            Path.cwd() / "config" / "cosmos25.toml",  # From current working directory
+            "config/cosmos20.toml",  # If run from project root
+            "../../../config/cosmos20.toml",  # Relative to script location
+            Path.cwd() / "config" / "cosmos20.toml",  # From current working directory
         ]
 
         for alt_path in alt_paths:
@@ -44,9 +44,9 @@ def run_cosmos_stacking_pipeline():
                 config_path = Path(alt_path)
                 break
         else:
-            print("❌ Could not find cosmos25.toml in any of these locations:")
+            print("❌ Could not find cosmos20.toml in any of these locations:")
             print(
-                f"   • {Path(__file__).parent.parent.parent.parent / 'config' / 'cosmos25.toml'}"
+                f"   • {Path(__file__).parent.parent.parent.parent / 'config' / 'cosmos20.toml'}"
             )
             for path in alt_paths:
                 print(f"   • {path}")
@@ -57,6 +57,13 @@ def run_cosmos_stacking_pipeline():
     print(f"📄 Using config: {config_path}")
     config = load_config(config_path)
 
+    # Remove crop_circles setting (use default from TOML)
+    # config.binning.crop_circles = False  # REMOVED as requested
+
+    # Enable bootstrap with 10 iterations
+    config.error_estimator.bootstrap.enabled = True
+    config.error_estimator.bootstrap.iterations = 10
+
     print(f"Configuration loaded: {config.output.shortname}")
     print(f"Crop circles: {config.binning.crop_circles}")
     print(f"Bootstrap enabled: {config.error_estimator.bootstrap.enabled}")
@@ -64,6 +71,7 @@ def run_cosmos_stacking_pipeline():
     print(
         f"Expected runs: {config.error_estimator.bootstrap.iterations} × {len(config.maps)} maps = {config.error_estimator.bootstrap.iterations * len(config.maps)} bootstrap runs"
     )
+    print("Estimated time: ~15-20 minutes")
     print()
 
     # Create output directory
