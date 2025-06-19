@@ -51,6 +51,24 @@ def create_clean_cosmos_catalog_fixed(photometry_path, lephare_path, output_path
         "age_med",  # Median age
         "sfr_med",  # Median star formation rate
         "ssfr_med",  # Median specific star formation rate
+        "l_nuv",  # UV luminosity
+        "ebv_minchi2",  # E(B-V) color excess from min chi2 fit
+        "law_minchi2",  # Dust attenuation law from min chi2 fit
+        # Additional useful columns for UV analysis
+        "Mstar_med",  # Alternative stellar mass (if available)
+        "SFR_best",  # Alternative SFR (if available)
+        "sSFR_med",  # Alternative specific SFR (if available)
+        "beta_best",  # Beta slope if already calculated (if available)
+        "av_minchi2",  # V-band extinction (if available)
+        "redshift_best",  # Alternative redshift (if available)
+        "lp_zBEST",  # LePhare best redshift (if different from zfinal)
+        "lp_mass_med",  # LePhare mass (if different from mass_med)
+        "lp_SFR_best",  # LePhare SFR
+        "lp_sSFR_med",  # LePhare sSFR
+        # Quality flags
+        "flag_use",  # Usage flag (if available)
+        "chi2_phot",  # Photometric chi2 (if available)
+        "nband_used",  # Number of bands used in fit (if available)
     ]
 
     print(f"Loading photometry catalog: {photometry_path}")
@@ -407,20 +425,99 @@ def run_clean_cosmos_merger_fixed():
         print(f"Reduced from 330+ columns to {len(clean_df.columns)} essential columns")
         print("Ready for Simstack4!")
 
-        # Show what columns we actually got
-        essential_cols = ["id", "ra", "dec", "zfinal", "mass_med"]
+        # UPDATED: Show what columns we actually got for L_UV/beta_UV analysis
+        essential_cols = [
+            "id",
+            "ra",
+            "dec",
+            "zfinal",
+            "mass_med",  # Core
+            "l_nuv",
+            "ebv_minchi2",
+            "law_minchi2",  # L_UV/beta_UV analysis
+        ]
+
         print("\nEssential columns check:")
         for col in essential_cols:
             status = "✓" if col in clean_df.columns else "❌"
+            alt_cols = []
+
+            # Look for alternatives if missing
+            if col not in clean_df.columns:
+                if col == "l_nuv":
+                    alt_cols = [
+                        c
+                        for c in clean_df.columns
+                        if any(x in c.lower() for x in ["luv", "l_uv", "uv_lum"])
+                    ]
+                elif col == "ebv_minchi2":
+                    alt_cols = [
+                        c
+                        for c in clean_df.columns
+                        if any(x in c.lower() for x in ["ebv", "e_b_v", "extinction"])
+                    ]
+                elif col == "law_minchi2":
+                    alt_cols = [
+                        c
+                        for c in clean_df.columns
+                        if any(x in c.lower() for x in ["law", "dust_law", "atten"])
+                    ]
+                elif col == "zfinal":
+                    alt_cols = [
+                        c
+                        for c in clean_df.columns
+                        if any(
+                            x in c.lower() for x in ["lp_zbest", "z_best", "redshift"]
+                        )
+                    ]
+                elif col == "mass_med":
+                    alt_cols = [
+                        c
+                        for c in clean_df.columns
+                        if any(
+                            x in c.lower() for x in ["lp_mass", "mstar", "stellar_mass"]
+                        )
+                    ]
+
             print(f"  {status} {col}")
+            if alt_cols:
+                print(f"    Alternatives found: {alt_cols[:3]}")
+
+        # Show UV/dust related columns found
+        uv_dust_cols = [
+            col
+            for col in clean_df.columns
+            if any(
+                x in col.lower()
+                for x in [
+                    "luv",
+                    "ebv",
+                    "law",
+                    "beta",
+                    "dust",
+                    "atten",
+                    "av_",
+                    "extinction",
+                ]
+            )
+        ]
+
+        if uv_dust_cols:
+            print("\nUV/Dust related columns found:")
+            for col in uv_dust_cols:
+                print(f"  • {col}")
+        else:
+            print(
+                "\n⚠️  No UV/dust columns found - check column names in LePhare catalog"
+            )
 
         print("\nTo use with Simstack4:")
-        print("1. Update your cosmos25.toml:")
-        print('   file = "COSMOSWeb_clean.parquet"')
-        print("2. Update column mapping in cosmos.py based on actual columns found")
+        print("1. Update your TOML file with actual column names found")
+        print("2. Use cosmos_luv_beta_calculated.toml for L_UV + beta_UV analysis")
 
         return output_path
 
+    return None
     return None
 
 
