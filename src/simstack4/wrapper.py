@@ -1,11 +1,15 @@
 """
-Complete SimstackWrapper implementation for Simstack4
+Complete SimstackWrapper implementation for Simstack4 with JSON save/load
 
-Replace your current wrapper.py with this complete version
+Replace your current wrapper.py with this version
 """
 
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from .algorithm import run_stacking
 from .config import SimstackConfig, load_config
@@ -18,6 +22,19 @@ from .sky_maps import SkyMaps, load_maps
 from .utils import setup_logging
 
 logger = setup_logging()
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """JSON encoder for numpy arrays"""
+
+    def default(self, obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        return super().default(obj)
 
 
 class SimstackWrapper:
@@ -34,6 +51,7 @@ class SimstackWrapper:
         read_maps: bool = False,
         read_catalog: bool = False,
         stack_automatically: bool = False,
+        analyze_automatically: bool = False,  # New parameter
     ):
         """
         Initialize SimstackWrapper
@@ -43,18 +61,22 @@ class SimstackWrapper:
             read_maps: Whether to load maps immediately
             read_catalog: Whether to load catalog immediately
             stack_automatically: Whether to run stacking immediately
+            analyze_automatically: Whether to run analysis immediately (requires stacking)
         """
 
         # Handle config loading
         if isinstance(config, str | Path):
             self.config = load_config(config)
+            self.config_path = str(config)  # Store original path
         else:
             self.config = config
+            self.config_path = None
 
         # Store initialization options
         self.read_maps = read_maps
         self.read_catalog = read_catalog
         self.stack_automatically = stack_automatically
+        self.analyze_automatically = analyze_automatically
 
         # Initialize component containers
         self.sky_catalogs: SkyCatalogs | None = None
@@ -78,6 +100,9 @@ class SimstackWrapper:
 
         if stack_automatically and self.config:
             self._run_stacking()
+
+        if analyze_automatically and self.config and self.stacking_results:
+            self._run_analysis()
 
     def _load_catalog(self) -> None:
         """Load catalog and create population manager"""
@@ -125,7 +150,7 @@ class SimstackWrapper:
             raise SimstackError(f"Map loading failed: {e}") from e
 
     def _run_stacking(self) -> None:
-        """Run the complete stacking pipeline"""
+        """Run ONLY the stacking computation (no analysis)"""
         if not self.population_manager:
             logger.info("Loading catalog for stacking...")
             self._load_catalog()
@@ -140,26 +165,37 @@ class SimstackWrapper:
         logger.info("Starting stacking pipeline...")
 
         try:
-            # Run stacking algorithm
+            # Run ONLY stacking algorithm - no analysis yet
             self.stacking_results = run_stacking(
                 config=self.config,
                 population_manager=self.population_manager,
                 sky_maps=self.sky_maps,
             )
 
-            # Process results
+            logger.info("✓ Stacking computation completed!")
+
+        except Exception as e:
+            logger.error(f"Stacking pipeline failed: {e}")
+            raise SimstackError(f"Stacking failed: {e}") from e
+
+    def _run_analysis(self) -> None:
+        """Run ONLY the analysis/SED fitting (requires stacking results)"""
+        if not self.stacking_results:
+            raise SimstackError("No stacking results available for analysis")
+
+        if not self.population_manager:
+            logger.info("Loading catalog for analysis...")
+            self._load_catalog()
+
+        logger.info("Starting analysis pipeline...")
+
+        try:
+            # Process results - SED fitting, error estimation, etc.
             self.processed_results = create_results_processor(
                 config=self.config,
                 stacking_results=self.stacking_results,
                 population_manager=self.population_manager,
             )
-
-            # Save results
-            output_path = (
-                Path(self.config.output.folder)
-                / f"{self.config.output.shortname}_results.pkl"
-            )
-            self.processed_results.save_results(output_path)
 
             # Update results dict for backward compatibility
             self.results_dict = {
@@ -169,13 +205,129 @@ class SimstackWrapper:
                 "processed_results": self.processed_results,
             }
 
-            logger.info("✓ Stacking completed successfully!")
-            logger.info(f"Results saved to: {output_path}")
+            logger.info("✓ Analysis completed successfully!")
 
         except Exception as e:
-            logger.error(f"Stacking pipeline failed: {e}")
-            raise SimstackError(f"Stacking failed: {e}") from e
+            logger.error(f"Analysis pipeline failed: {e}")
+            raise SimstackError(f"Analysis failed: {e}") from e
 
+    def save_stacking_results(self, filepath: str | Path) -> None:
+        """Save raw stacking results as JSON"""
+        if not self.stacking_results:
+            raise SimstackError("No stacking results to save")
+
+        filepath = Path(filepath).with_suffix(".json")
+
+        # Extract stacking data as simple types
+        stacking_data = self._extract_stacking_data()
+
+        # Add metadata
+        stacking_data["metadata"] = {
+            "timestamp": datetime.now().isoformat(),
+            "version": "simstack4_json",
+            "config_path": self.config_path,
+            "n_populations": len(self.population_manager)
+            if self.population_manager
+            else 0,
+            "n_maps": len(self.sky_maps) if self.sky_maps else 0,
+        }
+
+        with open(filepath, "w") as f:
+            json.dump(stacking_data, f, indent=2, cls=NumpyEncoder)
+
+        logger.info(f"✓ Stacking results saved as JSON: {filepath}")
+
+    def _extract_stacking_data(self) -> dict:
+        """Extract stacking results as JSON-serializable data"""
+        data = {}
+
+        # Extract stacking results
+        if hasattr(self.stacking_results, "__dict__"):
+            for key, value in self.stacking_results.__dict__.items():
+                if isinstance(value, dict):
+                    # Handle dictionaries (like flux_densities, flux_errors)
+                    data[key] = {}
+                    for sub_key, sub_value in value.items():
+                        if isinstance(sub_value, np.ndarray | list | float | int | str):
+                            data[key][sub_key] = sub_value
+                        else:
+                            data[key][sub_key] = str(sub_value)
+                elif isinstance(value, np.ndarray | list | float | int | str):
+                    data[key] = value
+                elif hasattr(value, "__dict__"):
+                    # Handle objects with attributes
+                    data[key] = {
+                        k: v
+                        for k, v in value.__dict__.items()
+                        if isinstance(v, np.ndarray | list | float | int | str)
+                    }
+                else:
+                    data[key] = str(value)
+
+        # Extract population info (minimal)
+        """
+        if self.population_manager:
+            data["populations"] = []
+            for i, pop in enumerate(self.population_manager):
+                pop_data = {
+                    "index": i,
+                    "population_id": getattr(pop, 'population_id', f"pop_{i}"),
+                    "n_sources": getattr(pop, 'n_sources', 0),
+                }
+                data["populations"].append(pop_data)
+        """
+
+        return data
+
+    def load_stacking_results(self, filepath: str | Path) -> None:
+        """Load stacking results from JSON"""
+        filepath = Path(filepath)
+
+        # Try .json extension if original doesn't exist
+        if not filepath.exists() and filepath.suffix != ".json":
+            filepath = filepath.with_suffix(".json")
+
+        if not filepath.exists():
+            raise SimstackError(f"Stacking results file not found: {filepath}")
+
+        with open(filepath) as f:
+            stacking_data = json.load(f)
+
+        # Reconstruct stacking results object
+        self.stacking_results = type("StackingResults", (), {})()
+
+        for key, value in stacking_data.items():
+            if key not in ["metadata", "populations"]:
+                if isinstance(value, list):
+                    # Convert back to numpy arrays
+                    setattr(self.stacking_results, key, np.array(value))
+                else:
+                    setattr(self.stacking_results, key, value)
+
+        # Store population info (we'll reload the full catalog for analysis)
+        self._population_info = stacking_data.get("populations", [])
+
+        # Load config if we don't have one
+        if not self.config and stacking_data["metadata"].get("config_path"):
+            config_path = stacking_data["metadata"]["config_path"]
+            logger.info(f"Loading config from: {config_path}")
+            try:
+                self.config = load_config(config_path)
+            except Exception:
+                logger.warning(f"Config file {config_path} not found")
+
+        logger.info(f"✓ Stacking results loaded from JSON: {filepath}")
+        logger.info(f"  - {len(self._population_info)} populations")
+
+    def save_analysis_results(self, filepath: str | Path) -> None:
+        """Save analysis results"""
+        if not self.processed_results:
+            raise SimstackError("No analysis results to save")
+
+        self.processed_results.save_results(filepath)
+        logger.info(f"✓ Analysis results saved to: {filepath}")
+
+    # Public methods
     def load_catalog(self) -> None:
         """Public method to load catalog"""
         self._load_catalog()
@@ -184,9 +336,23 @@ class SimstackWrapper:
         """Public method to load maps"""
         self._load_maps()
 
-    def run_stacking(self) -> SimstackResults:
-        """Public method to run stacking"""
+    def run_stacking_only(self) -> None:
+        """Public method to run ONLY stacking"""
         self._run_stacking()
+
+    def run_analysis_only(self) -> SimstackResults:
+        """Public method to run ONLY analysis (requires stacking results)"""
+        # Reload catalog if needed for analysis
+        if not self.population_manager and self.config:
+            self._load_catalog()
+
+        self._run_analysis()
+        return self.processed_results
+
+    def run_complete_pipeline(self) -> SimstackResults:
+        """Run both stacking and analysis"""
+        self._run_stacking()
+        self._run_analysis()
         return self.processed_results
 
     def get_summary(self) -> dict[str, Any]:
@@ -197,7 +363,7 @@ class SimstackWrapper:
             "maps_loaded": self.sky_maps is not None,
             "populations_created": self.population_manager is not None,
             "stacking_completed": self.stacking_results is not None,
-            "results_processed": self.processed_results is not None,
+            "analysis_completed": self.processed_results is not None,
         }
 
         if self.population_manager:
@@ -222,6 +388,7 @@ class SimstackWrapper:
         print(f"Maps loaded: {'✓' if summary['maps_loaded'] else '✗'}")
         print(f"Populations created: {'✓' if summary['populations_created'] else '✗'}")
         print(f"Stacking completed: {'✓' if summary['stacking_completed'] else '✗'}")
+        print(f"Analysis completed: {'✓' if summary['analysis_completed'] else '✗'}")
 
         if summary.get("n_populations"):
             print(f"Number of populations: {summary['n_populations']}")
@@ -246,45 +413,59 @@ class SimstackWrapper:
             status.append(f"{len(self.sky_maps)} maps")
         if self.stacking_results:
             status.append("stacking complete")
+        if self.processed_results:
+            status.append("analysis complete")
 
         status_str = ", ".join(status) if status else "not initialized"
         return f"SimstackWrapper({status_str})"
 
 
-# Convenience functions for backward compatibility
-def create_simstack_wrapper(
-    config_path: str | Path, load_all: bool = True
+# Convenience functions
+def run_stacking_only(
+    config_path: str | Path, save_path: str | Path = None
 ) -> SimstackWrapper:
     """
-    Convenience function to create and initialize wrapper
+    Run ONLY stacking and save results
 
     Args:
         config_path: Path to configuration file
-        load_all: Whether to load all components immediately
+        save_path: Path to save stacking results (optional)
 
     Returns:
-        Initialized SimstackWrapper
+        Wrapper with stacking results
     """
-    return SimstackWrapper(
+    wrapper = SimstackWrapper(
         config=config_path,
-        read_maps=load_all,
-        read_catalog=load_all,
-        stack_automatically=False,
+        read_maps=True,
+        read_catalog=True,
+        stack_automatically=True,
+        analyze_automatically=False,
     )
 
+    if save_path:
+        wrapper.save_stacking_results(save_path)
 
-def run_complete_pipeline(config_path: str | Path) -> SimstackResults:
+    return wrapper
+
+
+def run_analysis_only(
+    stacking_results_path: str | Path, save_path: str | Path = None
+) -> SimstackResults:
     """
-    Run complete stacking pipeline from config file
+    Run analysis from self-contained JSON file (no config needed!)
 
     Args:
-        config_path: Path to configuration file
+        stacking_results_path: Path to saved stacking results JSON
+        save_path: Path to save analysis results (optional)
 
     Returns:
         Processed results object
     """
-    wrapper = SimstackWrapper(
-        config=config_path, read_maps=True, read_catalog=True, stack_automatically=True
-    )
+    wrapper = SimstackWrapper()  # No config needed!
+    wrapper.load_stacking_results(stacking_results_path)
+    results = wrapper.run_analysis_only()
 
-    return wrapper.processed_results
+    if save_path:
+        wrapper.save_analysis_results(save_path)
+
+    return results
