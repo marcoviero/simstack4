@@ -33,8 +33,6 @@ dec = "dec"                   # Column name for declination
 [catalog.classification]
 split_type = "uvj"            # Options: "labels", "uvj", "nuvrj"
 
-[catalog.classification.split_params]
-id = "sfg"                    # Label for this split
 [catalog.classification.split_params.bins]
 "U-V" = "rf_U_V"             # Column name for U-V color
 "V-J" = "rf_V_J"             # Column name for V-J color

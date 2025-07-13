@@ -11,7 +11,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy.integrate import quad
 from scipy.optimize import curve_fit
 
 from .algorithm import StackingResults
@@ -121,39 +120,36 @@ class GreybodyFitter:
         wavelength_um: np.ndarray,
         amplitude: float,
         temperature: float,
-        beta: float = None,
+        beta: float = 1.8,
         alpha: float = 2.0,
     ) -> np.ndarray:
         """
-        Modified blackbody model with power-law tail - returns flux density in mJy
+        Greybody model with power law extensions.
 
-        This matches the simstack3 graybody_fn implementation with proper physics:
-        - Modified blackbody at long wavelengths
-        - Power-law tail at short wavelengths (nu > nu_cut)
-        - Proper unit scaling to match simstack3 results
-
-        Args:
-            wavelength_um: Wavelengths in microns
-            amplitude: Amplitude parameter (log10 scale)
-            temperature: Temperature in K
-            beta: Dust emissivity index (default from self.beta_fixed)
-            alpha: Power-law slope for high-frequency tail (default 2.0)
+        Parameters:
+        -----------
+        wavelength_um : array of wavelengths in micrometers
+        amplitude : log10 of the amplitude parameter (typical values around -35)
+        temperature : dust temperature in Kelvin
+        beta : emissivity index for long wavelengths (default 1.8)
+        alpha : power law index for short wavelengths (default 2.0)
 
         Returns:
-            Flux density in mJy
+        --------
+        flux_density : array of flux densities in Jy
         """
-        if beta is None:
-            beta = self.beta_fixed
-
-        # Constants (matching simstack3)
-        c_light = 299792458.0  # m/s
-        # h = 6.626e-34  # Planck constant
-        # k_B = 1.38e-23  # Boltzmann constant
 
         # Convert wavelength to frequency
-        nu_in = c_light * 1e6 / wavelength_um  # Hz
+        c_light = 299792458.0  # m/s
+        nu_in = c_light * 1.0e6 / wavelength_um  # Hz
 
-        # Calculate scaling factor K (from simstack3)
+        # Linear amplitude
+        A = 10**amplitude
+
+        # Calculate transition frequency
+        nu_cut = (3.0 + beta + alpha) * 0.208367e11 * temperature
+
+        # Constants for power law normalization (from your existing code)
         base = (
             2.0
             * (6.626) ** (-2.0 - beta - alpha)
@@ -162,48 +158,52 @@ class GreybodyFitter:
         )
         expo = 34.0 * (2.0 + beta + alpha) - 23.0 * (3.0 + beta + alpha) - 16.0 + 26.0
         K = base * 10.0**expo
-
-        # Power-law component parameters
-        w_num = (
-            10**amplitude
-            * K
-            * (temperature * (3.0 + beta + alpha)) ** (3.0 + beta + alpha)
-        )
+        w_num = A * K * (temperature * (3.0 + beta + alpha)) ** (3.0 + beta + alpha)
         w_den = np.exp(3.0 + beta + alpha) - 1.0
         w_div = w_num / w_den
 
-        # Cutoff frequency for power-law transition
-        nu_cut = (3.0 + beta + alpha) * 0.208367e11 * temperature
+        # Modified blackbody (long wavelength side)
+        graybody = A * nu_in**beta * self.black(nu_in, temperature)[0] / 1000.0
 
-        # Blackbody function (matching simstack3 black function)
-        def blackbody_model(nu, T):
-            # h = 6.623e-34     ; Joule*s
-            # k = 1.38e-23      ; Joule/K
-            # c = 3e8           ; m/s
-            # (2*h*nu_in^3/c^2)*(1/( exp(h*nu_in/k*T) - 1 )) * 10^29
-
-            a0 = 1.4718e-21  # 2*h*10^29/c^2
-            a1 = 4.7993e-11  # h/k
-
-            num = a0 * nu**3.0
-            den = np.exp(a1 * nu_in / T) - 1.0
-            ret = num / den
-
-            return ret
-
-        # Modified blackbody component
-        blackbody = blackbody_model(nu_in, temperature)
-        graybody = 10**amplitude * nu_in**beta * blackbody / 1000.0
-
-        # Power-law component
+        # Power law (short wavelength side)
         powerlaw = w_div * nu_in ** (-alpha)
 
-        # Apply transition: use power-law where nu >= nu_cut
-        mask = nu_in >= nu_cut
-        flux_model = graybody.copy()
-        flux_model[mask] = powerlaw[mask]
+        # Apply transition
+        flux_density = graybody.copy()
+        ind_cut = nu_in >= nu_cut
+        flux_density[ind_cut] = powerlaw[ind_cut]
 
-        return flux_model
+        return flux_density
+
+    def black(self, nu_in, T):
+        # h = 6.623e-34     ; Joule*s
+        # k = 1.38e-23      ; Joule/K
+        # c = 3e8           ; m/s
+        # (2*h*nu_in^3/c^2)*(1/( exp(h*nu_in/k*T) - 1 )) * 10^29
+
+        a0 = 1.4718e-21  # 2*h*10^29/c^2
+        a1 = 4.7993e-11  # h/k
+
+        num = a0 * nu_in**3.0
+        den = np.exp(a1 * np.outer(1.0 / T, nu_in)) - 1.0
+        ret = num / den
+
+        return ret
+
+    def blackbody_model(self, nu_in, T):
+        # h = 6.623e-34     ; Joule*s
+        # k = 1.38e-23      ; Joule/K
+        # c = 3e8           ; m/s
+        # (2*h*nu_in^3/c^2)*(1/( exp(h*nu_in/k*T) - 1 )) * 10^29
+
+        a0 = 1.4718e-21  # 2*h*10^29/c^2
+        a1 = 4.7993e-11  # h/k
+
+        num = a0 * nu_in**3.0
+        den = np.exp(a1 * nu_in / T) - 1.0
+        ret = num / den
+
+        return ret
 
     def calculate_LIR(
         self, amplitude: float, temperature: float, beta: float, redshift: float
@@ -211,73 +211,58 @@ class GreybodyFitter:
         """
         Calculate L_IR by integrating L_ν over frequency (8-1000 μm rest-frame)
 
-        The correct physics: ∫ L_ν dν where L_ν = 4π D_L² F_ν
+        Parameters:
+        -----------
+        amplitude : SED normalization
+        temperature : dust temperature in Kelvin
+        beta : emissivity index for long wavelengths
+        alpha : power law index for short wavelengths
+        redshift : power law index for short wavelengths
+
+        Returns:
+        --------
+        flux_density : array of flux densities in Jy
         """
         if np.isnan(redshift) or redshift <= 0:
             redshift = 0.01
 
-        # Get luminosity distance
+        # Get luminosity distance (in Mpc, matching simstack3)
         D_L = self.luminosity_distance(redshift)
 
-        # Define frequency limits for 8-1000 μm rest-frame
-        nu_min = self.c / (1000e-6)  # 1000 μm → Hz
-        nu_max = self.c / (8e-6)  # 8 μm → Hz
+        # Generate wavelength range in microns (8-1000 μm rest-frame)
+        wavelength_range = np.logspace(np.log10(8), np.log10(1000), 1000)
 
-        def luminosity_integrand(nu):
-            """
-            Integrate monochromatic luminosity L_ν over frequency
-            """
-            # Convert frequency back to wavelength for the model
-            wavelength_um = self.c / nu * 1e6  # Convert Hz → μm
+        # Get model SED in same units as simstack3
+        # greybody_model returns flux in Jy
+        model_sed_jy = self.greybody_model(
+            wavelength_range, amplitude, temperature, beta
+        )
 
-            # FIX: Ensure wavelength is array-like for greybody_model
-            if np.isscalar(wavelength_um):
-                wavelength_array = np.array([wavelength_um])
-            else:
-                wavelength_array = np.atleast_1d(wavelength_um)
+        # Convert wavelength to frequency (Hz)
+        c_light = 299792458.0  # m/s (matching simstack3)
+        nu_in = c_light * 1.0e6 / wavelength_range  # Hz
 
-            # Get flux density from fitted greybody model
-            flux_density_mjy = self.greybody_model(
-                wavelength_array, amplitude, temperature, beta
-            )
+        # Calculate frequency intervals (matching simstack3 exactly)
+        dnu = (
+            nu_in[:-1] - nu_in[1:]
+        )  # Note: frequencies decrease as wavelength increases
+        dnu = np.append(dnu[0], dnu)  # Extend first interval to match array length
 
-            # FIX: Extract scalar value if array returned
-            if hasattr(flux_density_mjy, "__len__") and len(flux_density_mjy) == 1:
-                flux_density_mjy = flux_density_mjy[0]
-            elif hasattr(flux_density_mjy, "__len__"):
-                flux_density_mjy = (
-                    flux_density_mjy.item()
-                )  # Convert numpy scalar to Python scalar
+        # Integrate: L_IR = ∫ S_ν dν in Jy⋅Hz (matching simstack3)
+        Lir_jy_hz = np.sum(model_sed_jy * dnu)
 
-            # Convert Jy to SI: 1 Jy = 10^-26 W/m²/Hz
-            flux_density_jy = flux_density_mjy / 1000.0
+        # Convert to solar luminosities
+        # conversion = 4π D_L² / L_sun with proper unit handling
+        conversion = (
+            4.0 * np.pi * (1.0e-13 * D_L * 3.08568025e22) ** 2.0 / self.L_sun
+        )  # Units: L_sun/(Jy⋅Hz)
 
-            conversion = (
-                4.0 * np.pi * (1.0e-13 * D_L * 3.08568025e22) ** 2.0 / self.L_sun
-            )
+        L_IR_solar = Lir_jy_hz * conversion
 
-            # Calculate monochromatic luminosity in solar units
-            L_nu_solar = flux_density_jy * conversion  # L_sun/Hz
-
-            return L_nu_solar  # Integrate this over frequency
-
-        try:
-            # Integrate L_ν over frequency range
-            total_luminosity_solar, _ = quad(
-                luminosity_integrand, nu_min, nu_max, limit=200
-            )
-
-            # Convert to solar luminosities
-            L_IR_solar = total_luminosity_solar
-
-            # Error estimate
-            L_IR_error = L_IR_solar * 0.2  # 20% uncertainty
-
-            return L_IR_solar, L_IR_error
-
-        except Exception as e:
-            logger.warning(f"L_IR integration failed: {e}")
-            return np.nan, np.nan
+        # Error estimate (20% uncertainty)
+        L_IR_error = L_IR_solar * 0.2
+        print(np.log10(L_IR_solar))
+        return L_IR_solar, L_IR_error
 
     def calculate_dust_mass(
         self, amplitude: float, temperature: float, beta: float, redshift: float
@@ -410,10 +395,10 @@ class GreybodyFitter:
 
             # Calculate L_IR and dust mass
             L_IR, L_IR_error = self.calculate_LIR(
-                amplitude, temperature_rest_frame, beta, redshift
+                amplitude, temperature_observed, beta, redshift
             )
             M_dust, M_dust_error = self.calculate_dust_mass(
-                amplitude, temperature_rest_frame, beta, redshift
+                amplitude, temperature_observed, beta, redshift
             )
 
             # Generate smooth model for plotting
@@ -421,7 +406,7 @@ class GreybodyFitter:
                 np.log10(np.min(wave_fit) * 0.5), np.log10(np.max(wave_fit) * 2), 200
             )
             flux_model = self.greybody_model(
-                wave_model, amplitude, temperature_rest_frame, beta
+                wave_model, amplitude, temperature_observed, beta
             )
 
             return {
@@ -640,24 +625,53 @@ class SimstackResults:
         dust_mass = None
 
         if sed_result.greybody_fit_success:
-            # Re-run greybody fitting to get L_IR (could be optimized)
-            greybody_results = self.greybody_fitter.fit_sed(
-                sed_result.wavelengths,
-                sed_result.flux_densities,
-                sed_result.flux_errors,
-                sed_result.median_redshift,
-            )
+            # Get L_IR directly from the greybody fit results that are already stored
+            # The fit_sed method already calculated L_IR and stored it in the results
 
-            if greybody_results["fit_success"]:
-                total_ir_lum = greybody_results.get("L_IR", 0.0)
-                total_ir_lum_err = greybody_results.get("L_IR_error", 0.0)
-                dust_temp_rest = greybody_results.get("temperature_rest_frame")
-                dust_temp_obs = greybody_results.get("temperature_observed_frame")
-                dust_mass = greybody_results.get("dust_mass")
+            # Use the stored fit parameters to calculate L_IR
+            amplitude = sed_result.amplitude
+            # temperature_rest = sed_result.dust_temperature_rest_frame
+            temperature_observed = sed_result.dust_temperature_observed_frame
+            beta = sed_result.emissivity_index or self.greybody_fitter.beta_fixed
+            redshift = sed_result.median_redshift
 
-        # Fallback to direct integration if greybody failed
+            if amplitude is not None and temperature_observed is not None:
+                try:
+                    # Calculate L_IR using the greybody fitter's method
+                    total_ir_lum, total_ir_lum_err = self.greybody_fitter.calculate_LIR(
+                        amplitude, temperature_observed, beta, redshift
+                    )
+
+                    # Also get dust mass
+                    dust_mass, _ = self.greybody_fitter.calculate_dust_mass(
+                        amplitude, temperature_observed, beta, redshift
+                    )
+
+                    # Store temperature values
+                    dust_temp_rest = sed_result.dust_temperature_rest_frame
+                    dust_temp_obs = sed_result.dust_temperature_observed_frame
+
+                    print(
+                        f"✓ Population {sed_result.population_id}: L_IR = {total_ir_lum:.2e} L_sun"
+                    )
+
+                except Exception as e:
+                    print(
+                        f"⚠️  L_IR calculation failed for {sed_result.population_id}: {e}"
+                    )
+                    total_ir_lum = 0.0
+                    total_ir_lum_err = 0.0
+            else:
+                print(f"⚠️  Missing fit parameters for {sed_result.population_id}")
+        else:
+            print(f"⚠️  No successful greybody fit for {sed_result.population_id}")
+
+        """# Fallback: if L_IR is still zero, try direct integration of flux measurements
         if total_ir_lum <= 0:
             total_ir_lum, total_ir_lum_err = self._calculate_direct_LIR(sed_result)
+            if total_ir_lum > 0:
+                print(f"✓ Used direct integration for {sed_result.population_id}: L_IR = {total_ir_lum:.2e} L_sun")
+        """
 
         # Convert IR luminosity to star formation rate
         # Use Kennicutt (1998) relation: SFR [M_sun/yr] = L_IR [L_sun] / 1e10
@@ -694,7 +708,7 @@ class SimstackResults:
         valid_lums = sed_result.rest_luminosities[valid_mask]
         valid_errs = sed_result.rest_luminosity_errors[valid_mask]
 
-        # IR range integration
+        # IR range integration (8-1000 μm)
         ir_mask = (valid_waves >= 8) & (valid_waves <= 1000)
 
         if np.sum(ir_mask) >= 2:

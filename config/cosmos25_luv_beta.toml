@@ -24,7 +24,7 @@ shortname = "cosmos25"      # Name for output folder
 
 [catalog]
 path = "$CATSPATH/cosmos"     # Path to catalog directory
-file = "COSMOSWeb_clean.parquet"  # Catalog filename
+file = "COSMOSWeb_mastercatalog_v1_galaxies_mag27.0_clean.parquet"  # Catalog filename
 
 [catalog.astrometry]
 ra = "ra"                     # Column name for right ascension
@@ -52,7 +52,7 @@ bins = [9.0, 10.0, 11.0, 12.0]
 [catalog.classification.binning.beta_uv]
 id = "calculated_beta_uv"  # This will be created by the calculation
 label = "UV Continuum Slope β"
-bins = [-2.5, -2.0, -1.5, -0.75, 0, 0.75, 1.5]
+bins = [-2.5, -1.5, -0.5, 0.5, 1.5]
 
 # Map configurations - each section defines a new map
 [maps.mips_24]

@@ -209,17 +209,46 @@ class PopulationManager:
         return quiescent.astype(int)
 
     def _classify_by_nuvrj(self, catalog_df: pd.DataFrame) -> np.ndarray:
-        """Classify sources using NUVRJ criteria (Ilbert et al. 2013)"""
+        """
+        Classify sources using NUVRJ criteria - UPDATED for exact Ilbert et al. 2013 implementation
+
+        Reference: Ilbert et al. 2013, A&A, 556, A55, Section 3.3
+        "Mass assembly in quiescent and star-forming galaxies since z≃4 from UltraVISTA"
+
+        The paper uses a "slightly modified version of the two-colour selection
+        technique proposed by Williams et al. (2009), following Ilbert et al. (2010)"
+        using NUV - r+ versus r+ - J instead of U - V versus V - J.
+
+        EXACT CRITERIA:
+        1. M_NUV - M_r > 3(M_r - M_J) + 1  (diagonal line)
+        2. M_NUV - M_r > 3.1                (horizontal line)
+
+        Both conditions must be satisfied for quiescent classification.
+        """
         if not self.config.split_params:
             raise PopulationError("split_params required for NUVRJ classification")
 
+        # Check if we already have a NUVRJ_class column
+        if hasattr(catalog_df, "columns"):  # pandas
+            columns = catalog_df.columns
+        else:  # polars
+            columns = catalog_df.columns
+
+        if "NUVRJ_class" in columns:
+            logger.debug("Using existing NUVRJ_class column")
+            if hasattr(catalog_df, "values"):  # pandas
+                return catalog_df["NUVRJ_class"].values
+            else:  # polars
+                return catalog_df["NUVRJ_class"].to_numpy()
+
+        # Calculate NUVRJ classification from colors
         # Get color column names from config
-        nuv_r_col = self.config.split_params.bins.get("NUV-R")
-        r_j_col = self.config.split_params.bins.get("R-J")
+        nuv_r_col = self.config.split_params.bins.get("NUV-R")  # Should be NUV - r+
+        r_j_col = self.config.split_params.bins.get("R-J")  # Should be r+ - J
 
         if not nuv_r_col or not r_j_col:
             raise PopulationError(
-                "NUVRJ classification requires 'NUV-R' and 'R-J' color columns in split_params.bins"
+                "NUVRJ classification requires 'NUV-R' and 'R-J' columns in split_params.bins"
             )
 
         # Check if columns exist
@@ -233,7 +262,7 @@ class PopulationManager:
             available_cols = [
                 col
                 for col in catalog_df.columns
-                if any(c in col.lower() for c in ["nuv", "r-j", "color"])
+                if any(c in col.lower() for c in ["nuv", "r-j", "r_j", "color"])
             ]
             error_msg = f"Missing columns: {', '.join(missing_cols)}"
             if available_cols:
@@ -241,11 +270,23 @@ class PopulationManager:
             raise PopulationError(error_msg)
 
         # Get color values
-        nuv_r = catalog_df[nuv_r_col].values
-        r_j = catalog_df[r_j_col].values
+        if hasattr(catalog_df, "values"):  # pandas
+            nuv_r = catalog_df[nuv_r_col].values
+            r_j = catalog_df[r_j_col].values
+        else:  # polars
+            nuv_r = catalog_df[nuv_r_col].to_numpy()
+            r_j = catalog_df[r_j_col].to_numpy()
 
-        # Apply NUVRJ classification criteria
-        quiescent_mask = (nuv_r > 3.1) & (r_j > 0.9)
+        # Apply Ilbert et al. 2013 NUVRJ classification criteria
+        # Criterion 1: M_NUV - M_r > 3(M_r - M_J) + 1 (diagonal line)
+        criterion_1 = nuv_r > (3 * r_j + 1)
+
+        # Criterion 2: M_NUV - M_r > 3.1 (horizontal line)
+        criterion_2 = nuv_r > 3.1
+
+        # Quiescent classification: BOTH criteria must be satisfied
+        # This is more restrictive than the simple NUV-R > 3.1 AND R-J > 0.9
+        quiescent_mask = criterion_1 & criterion_2
 
         # Create classification array (0=star-forming, 1=quiescent)
         classification = np.zeros(len(catalog_df), dtype=int)
@@ -255,15 +296,15 @@ class PopulationManager:
         nan_mask = np.isnan(nuv_r) | np.isnan(r_j)
         classification[nan_mask] = 0
 
-        # Log classification statistics
+        # Statistics and validation
+        valid_mask = ~nan_mask
         n_total = len(catalog_df)
-        valid_mask = np.isfinite(nuv_r) & np.isfinite(r_j)
         n_valid = np.sum(valid_mask)
-        n_quiescent = np.sum(classification == 1)
         n_star_forming = np.sum((classification == 0) & valid_mask)
-        # n_nan = np.sum(nan_mask)
+        n_quiescent = np.sum(classification == 1)
+        n_nan = np.sum(nan_mask)
 
-        logger.info("NUVRJ classification results:")
+        logger.info("NUVRJ classification results (Ilbert et al. 2013 criteria):")
         logger.info(f"  Total sources: {n_total:,}")
         logger.info(f"  Valid colors: {n_valid:,} ({n_valid / n_total * 100:.1f}%)")
         logger.info(
@@ -272,6 +313,37 @@ class PopulationManager:
         logger.info(
             f"  Quiescent: {n_quiescent:,} ({n_quiescent / n_valid * 100:.1f}% of valid)"
         )
+        logger.info(f"  NaN/invalid: {n_nan:,}")
+
+        # Diagnostic: compare with simple NUVRJ criteria
+        simple_quiescent = (nuv_r > 3.1) & (r_j > 0.9) & valid_mask
+        n_simple_q = np.sum(simple_quiescent)
+
+        logger.info("  Comparison with simple NUVRJ (NUV-R > 3.1 AND R-J > 0.9):")
+        logger.info(f"    Simple criteria would find: {n_simple_q:,} quiescent")
+        logger.info(f"    Ilbert 2013 criteria: {n_quiescent:,} quiescent")
+        logger.info(
+            f"    Difference: {n_simple_q - n_quiescent:,} fewer with Ilbert criteria"
+        )
+
+        # Additional diagnostic: show intersection point
+        # The two lines intersect when 3.1 = 3*r_j + 1, so r_j = 0.7
+        intersection_r_j = (3.1 - 1) / 3  # = 0.7
+        logger.debug(f"  Ilbert criteria intersection at R-J = {intersection_r_j:.2f}")
+
+        # Warn if results seem unusual
+        quiescent_fraction = n_quiescent / n_valid * 100
+        if quiescent_fraction < 10:
+            logger.warning(
+                f"Very low quiescent fraction ({quiescent_fraction:.1f}%) - check color definitions"
+            )
+            logger.warning(
+                "Expected COSMOS quiescent fraction: ~15-25% with Ilbert 2013 criteria"
+            )
+        elif quiescent_fraction > 40:
+            logger.warning(
+                f"Very high quiescent fraction ({quiescent_fraction:.1f}%) - check color definitions"
+            )
 
         return classification
 

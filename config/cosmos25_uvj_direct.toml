@@ -24,7 +24,7 @@ shortname = "cosmos25"      # Name for output folder
 
 [catalog]
 path = "$CATSPATH/cosmos"     # Path to catalog directory
-file = "COSMOSWeb_mastercatalog_v1_galaxies_sn3.0_clean.parquet"  # Catalog filename
+file = "COSMOSWeb_clean.parquet"  # Catalog filename
 
 [catalog.astrometry]
 ra = "ra"                     # Column name for right ascension
@@ -34,7 +34,7 @@ dec = "dec"                   # Column name for declination
 split_type = "labels"           # Changed to labels
 
 [catalog.classification.split_params]
-id = "NUVRJ_class"             # Now this matters - uses existing column
+id = "UVJ_class"             # Now this matters - uses existing column
 
 [catalog.classification.binning.redshift]
 id = "zpdf_med"                 # Column name for redshift

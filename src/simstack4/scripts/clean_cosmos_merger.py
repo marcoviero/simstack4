@@ -306,8 +306,18 @@ def create_clean_cosmos_catalog_fixed(photometry_path, lephare_path, output_path
         nuv_r = clean_merged_df["NUV-R"]
         r_j = clean_merged_df["R-J"]
 
-        quiescent_nuvrj = (nuv_r > 3.1) & (r_j > 0.9)
+        # quiescent_nuvrj = (nuv_r > 3.1) & (r_j > 0.9)
         # ind_nuvrj = (table[uvrkey] > (3 * table[rjkey] + 1)) & (table[uvrkey] > 3.1) & (table[zkey] < qg_zcut)
+        # clean_merged_df["NUVRJ_class"] = quiescent_nuvrj.astype(int)
+
+        criterion_1 = nuv_r > (3 * r_j + 1)
+
+        # Criterion 2: M_NUV - M_r > 3.1 (horizontal line)
+        criterion_2 = nuv_r > 3.1
+
+        # Quiescent classification: BOTH criteria must be satisfied
+        # This is more restrictive than the simple NUV-R > 3.1 AND R-J > 0.9
+        quiescent_nuvrj = criterion_1 & criterion_2
         clean_merged_df["NUVRJ_class"] = quiescent_nuvrj.astype(int)
 
         n_sf = np.sum(~quiescent_nuvrj & np.isfinite(nuv_r) & np.isfinite(r_j))

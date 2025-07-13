@@ -24,17 +24,40 @@ from .utils import setup_logging
 logger = setup_logging()
 
 
-class NumpyEncoder(json.JSONEncoder):
-    """JSON encoder for numpy arrays"""
+class EnhancedJSONEncoder(json.JSONEncoder):
+    """Enhanced JSON encoder for numpy arrays and custom objects"""
 
     def default(self, obj):
+        # Handle numpy types
         if isinstance(obj, np.ndarray):
             return obj.tolist()
         if isinstance(obj, np.integer):
             return int(obj)
         if isinstance(obj, np.floating):
             return float(obj)
-        return super().default(obj)
+
+        # Handle custom enum/object types by converting to string
+        if hasattr(obj, "__name__"):  # Class types
+            return str(obj.__name__)
+        if hasattr(obj, "name"):  # Enum types
+            return str(obj.name)
+        if hasattr(obj, "value"):  # Enum values
+            return obj.value
+
+        # Handle other custom objects by converting to string
+        if hasattr(obj, "__dict__"):
+            # Try to serialize the object's dictionary
+            try:
+                return {
+                    k: v
+                    for k, v in obj.__dict__.items()
+                    if isinstance(v | (str, int, float, bool, list, dict, type(None)))
+                }
+            except Exception:
+                return str(obj)
+
+        # Final fallback - convert to string
+        return str(obj)
 
 
 class SimstackWrapper:
@@ -72,6 +95,13 @@ class SimstackWrapper:
             self.config = config
             self.config_path = None
 
+        # Store embedded config from JSON files
+        self._embedded_config: dict | None = None
+
+        # Store population info for reconstruction
+        self._population_info: list = []
+        self._population_details: dict = {}
+
         # Store initialization options
         self.read_maps = read_maps
         self.read_catalog = read_catalog
@@ -106,17 +136,19 @@ class SimstackWrapper:
 
     def _load_catalog(self) -> None:
         """Load catalog and create population manager"""
-        if not self.config or not self.config.catalog:
-            raise SimstackError("No catalog configuration provided")
+        current_config = self._get_working_config()  # Use helper method
+
+        if not current_config or not current_config.catalog:
+            raise SimstackError("No catalog configuration available")
 
         logger.info("Loading catalog...")
 
         try:
             # Load catalog using SkyCatalogs
             self.sky_catalogs = SkyCatalogs(
-                catalog_config=self.config.catalog,
+                catalog_config=current_config.catalog,
                 backend="auto",
-                full_config=self.config,
+                full_config=current_config,
             )
             self.sky_catalogs.load_catalog()
 
@@ -132,6 +164,15 @@ class SimstackWrapper:
         except Exception as e:
             logger.error(f"Failed to load catalog: {e}")
             raise SimstackError(f"Catalog loading failed: {e}") from e
+
+    def _get_working_config(self) -> SimstackConfig:
+        """Get the working config (either loaded or reconstructed from JSON)"""
+        if self.config:
+            return self.config
+        elif self._embedded_config:
+            return self._reconstruct_config_from_json()
+        else:
+            raise SimstackError("No configuration available")
 
     def _load_maps(self) -> None:
         """Load all configured maps"""
@@ -212,33 +253,336 @@ class SimstackWrapper:
             raise SimstackError(f"Analysis failed: {e}") from e
 
     def save_stacking_results(self, filepath: str | Path) -> None:
-        """Save raw stacking results as JSON"""
+        """Save raw stacking results as JSON with embedded config"""
         if not self.stacking_results:
             raise SimstackError("No stacking results to save")
 
         filepath = Path(filepath).with_suffix(".json")
 
-        # Extract stacking data as simple types
-        stacking_data = self._extract_stacking_data()
+        try:
+            # Extract stacking data as simple types
+            stacking_data = self._extract_stacking_data()
 
-        # Add metadata
-        stacking_data["metadata"] = {
-            "timestamp": datetime.now().isoformat(),
-            "version": "simstack4_json",
-            "config_path": self.config_path,
-            "n_populations": len(self.population_manager)
-            if self.population_manager
-            else 0,
-            "n_maps": len(self.sky_maps) if self.sky_maps else 0,
-        }
+            # Embed the full configuration in the JSON file
+            if self.config:
+                stacking_data["embedded_config"] = self._serialize_config(self.config)
 
-        with open(filepath, "w") as f:
-            json.dump(stacking_data, f, indent=2, cls=NumpyEncoder)
+            # Add metadata
+            stacking_data["metadata"] = {
+                "timestamp": datetime.now().isoformat(),
+                "version": "simstack4_json_self_contained",
+                "config_path": self.config_path,
+                "n_populations": len(self.population_manager)
+                if self.population_manager
+                else 0,
+                "n_maps": len(self.sky_maps) if self.sky_maps else 0,
+            }
 
-        logger.info(f"✓ Stacking results saved as JSON: {filepath}")
+            # Use the enhanced encoder
+            with open(filepath, "w") as f:
+                json.dump(stacking_data, f, indent=2, cls=EnhancedJSONEncoder)
+
+            logger.info(f"✓ Stacking results saved as self-contained JSON: {filepath}")
+
+        except Exception as e:
+            logger.error(f"Failed to save stacking results: {e}")
+
+            # Try to save without embedded config as fallback
+            try:
+                logger.info("Attempting to save without embedded config...")
+                stacking_data = self._extract_stacking_data()
+                stacking_data["metadata"] = {
+                    "timestamp": datetime.now().isoformat(),
+                    "version": "simstack4_json_basic",
+                    "config_path": self.config_path,
+                    "n_populations": len(self.population_manager)
+                    if self.population_manager
+                    else 0,
+                    "n_maps": len(self.sky_maps) if self.sky_maps else 0,
+                    "note": "Config embedding failed, use original config file",
+                }
+
+                with open(filepath, "w") as f:
+                    json.dump(stacking_data, f, indent=2, cls=EnhancedJSONEncoder)
+
+                logger.info(
+                    f"✓ Stacking results saved (without embedded config): {filepath}"
+                )
+
+            except Exception as e2:
+                logger.error(f"Complete save failure: {e2}")
+                raise SimstackError("Could not save stacking results.") from e2
+
+    def load_stacking_results(self, filepath: str | Path) -> None:
+        """Load stacking results from JSON with validation and automatic catalog loading"""
+        filepath = Path(filepath)
+
+        # Try .json extension if original doesn't exist
+        if not filepath.exists() and filepath.suffix != ".json":
+            filepath = filepath.with_suffix(".json")
+
+        if not filepath.exists():
+            raise SimstackError(f"Stacking results file not found: {filepath}")
+
+        with open(filepath) as f:
+            stacking_data = json.load(f)
+
+        # Validate JSON structure (skip validation for now to handle legacy files)
+        # if not self.validate_json_structure(stacking_data):
+        #     raise SimstackError("Invalid JSON structure - missing required data for analysis")
+
+        # Reconstruct stacking results object
+        self.stacking_results = type("StackingResults", (), {})()
+
+        for key, value in stacking_data.items():
+            if key not in [
+                "metadata",
+                "populations",
+                "population_details",
+                "embedded_config",
+            ]:
+                if isinstance(value, list):
+                    # Convert back to numpy arrays
+                    setattr(self.stacking_results, key, np.array(value))
+                else:
+                    setattr(self.stacking_results, key, value)
+
+        # Store embedded config if available
+        self._embedded_config = stacking_data.get("embedded_config")
+
+        # Store population info for reference and reconstruction
+        self._population_info = stacking_data.get("populations", [])
+        self._population_details = stacking_data.get("population_details", {})
+
+        # Try to load the original config if available, otherwise use embedded
+        metadata = stacking_data.get("metadata", {})
+        original_config_path = metadata.get("config_path")
+
+        if not self.config and original_config_path:
+            try:
+                logger.info(
+                    f"Attempting to load original config: {original_config_path}"
+                )
+                self.config = load_config(original_config_path)
+                self.config_path = original_config_path
+            except Exception as e:
+                logger.warning(
+                    f"Original config not found ({e}), will use embedded config"
+                )
+
+        # Log loading status
+        logger.info(f"✓ Stacking results loaded from JSON: {filepath}")
+        logger.info(f"  - {len(self._population_info)} populations")
+        logger.info(
+            f"  - Config source: {'original file' if self.config else 'embedded in JSON'}"
+        )
+
+        # Handle legacy JSON files that don't have embedded config
+        if not self.config and not self._embedded_config:
+            logger.warning("Legacy JSON file detected - no embedded config found")
+            logger.warning("You need to provide the config file path manually")
+            raise SimstackError(
+                "Legacy JSON file without embedded config. "
+                "Please use: wrapper = SimstackWrapper(config='path/to/config.toml') "
+                "before loading stacking results."
+            )
+
+        # Automatically load catalog if we have config
+        if self.config or self._embedded_config:
+            try:
+                logger.info("Automatically loading catalog for analysis...")
+                self._load_catalog()
+            except Exception as e:
+                logger.warning(f"Failed to auto-load catalog: {e}")
+                logger.info("You can manually call wrapper.load_catalog() if needed")
+        else:
+            logger.warning(
+                "No configuration available - cannot load catalog automatically"
+            )
+
+    def _serialize_config(self, config: SimstackConfig) -> dict:
+        """Enhanced config serialization that handles custom objects safely"""
+
+        def safe_serialize(obj):
+            """Recursively serialize an object, converting custom types to strings"""
+            if obj is None:
+                return None
+            elif isinstance(obj | (str, int, float, bool)):
+                return obj
+            elif isinstance(obj | (list, tuple)):
+                return [safe_serialize(item) for item in obj]
+            elif isinstance(obj, dict):
+                return {k: safe_serialize(v) for k, v in obj.items()}
+            elif hasattr(obj, "__dict__"):
+                # Handle objects with attributes
+                return {k: safe_serialize(v) for k, v in obj.__dict__.items()}
+            elif hasattr(obj, "name"):  # Enum types
+                return str(obj.name)
+            elif hasattr(obj, "value"):  # Enum values
+                return obj.value
+            else:
+                # Convert everything else to string
+                return str(obj)
+
+        config_dict = {}
+
+        # Safely serialize each major config section
+        try:
+            # Handle catalog config
+            if hasattr(config, "catalog") and config.catalog:
+                config_dict["catalog"] = safe_serialize(config.catalog)
+
+            # Handle maps config
+            if hasattr(config, "maps") and config.maps:
+                config_dict["maps"] = safe_serialize(config.maps)
+
+            # Handle other sections
+            for attr in ["cosmology", "output", "binning", "error_estimator"]:
+                if hasattr(config, attr):
+                    config_dict[attr] = safe_serialize(getattr(config, attr))
+
+        except Exception as e:
+            logger.warning(f"Config serialization failed for some sections: {e}")
+            # Fallback - just serialize what we can
+            config_dict = safe_serialize(config)
+
+        return config_dict
+
+    def _reconstruct_config_from_json(self) -> SimstackConfig:
+        """Enhanced config reconstruction from embedded JSON data"""
+        if not self._embedded_config:
+            raise SimstackError("No embedded config data available")
+
+        try:
+            # Import the config classes
+            from .config import (
+                AstrometryConfig,
+                BeamConfig,
+                BinningConfig,
+                BootstrapConfig,
+                CatalogConfig,
+                ClassificationConfig,
+                ErrorEstimatorConfig,
+                MapConfig,
+                OutputConfig,
+                SimstackConfig,
+            )
+
+            # Reconstruct catalog config
+            catalog_data = self._embedded_config.get("catalog", {})
+
+            # Astrometry
+            astrometry_data = catalog_data.get("astrometry", {})
+            astrometry_config = AstrometryConfig(
+                ra=astrometry_data.get("ra", "ra"),
+                dec=astrometry_data.get("dec", "dec"),
+            )
+
+            # Classification with binning
+            classification_data = catalog_data.get("classification", {})
+
+            # Redshift binning
+            redshift_binning_data = classification_data.get("binning", {}).get(
+                "redshift", {}
+            )
+            redshift_binning = BinningConfig(
+                id=redshift_binning_data.get("id", "zpdf_med"),
+                bins=redshift_binning_data.get("bins", []),
+            )
+
+            # Stellar mass binning
+            mass_binning_data = classification_data.get("binning", {}).get(
+                "stellar_mass", {}
+            )
+            mass_binning = BinningConfig(
+                id=mass_binning_data.get("id", "mass_med"),
+                bins=mass_binning_data.get("bins", []),
+            )
+
+            # Split params
+            split_params_data = classification_data.get("split_params", {})
+
+            # Classification config
+            classification_config = ClassificationConfig(
+                split_type=classification_data.get("split_type", "labels"),
+                split_params=split_params_data,
+                binning={"redshift": redshift_binning, "stellar_mass": mass_binning},
+            )
+
+            # Full catalog config
+            catalog_config = CatalogConfig(
+                path=catalog_data.get("path", ""),
+                file=catalog_data.get("file", ""),
+                astrometry=astrometry_config,
+                classification=classification_config,
+            )
+
+            # Reconstruct maps config
+            maps_data = self._embedded_config.get("maps", {})
+            maps_config = {}
+            for map_name, map_data in maps_data.items():
+                # Beam config
+                beam_data = map_data.get("beam", {})
+                beam_config = BeamConfig(
+                    fwhm=beam_data.get("fwhm", 0), area_sr=beam_data.get("area_sr", 1.0)
+                )
+
+                # Map config
+                maps_config[map_name] = MapConfig(
+                    wavelength=map_data.get("wavelength", 0),
+                    path_map=map_data.get("path_map", ""),
+                    path_noise=map_data.get("path_noise", ""),
+                    color_correction=map_data.get("color_correction", 1.0),
+                    beam=beam_config,
+                )
+
+            # Other config sections
+            output_data = self._embedded_config.get("output", {})
+            output_config = OutputConfig(
+                folder=output_data.get("folder", ""),
+                shortname=output_data.get("shortname", ""),
+            )
+
+            binning_data = self._embedded_config.get("binning", {})
+            binning_config = {
+                "stack_all_z_at_once": binning_data.get("stack_all_z_at_once", True),
+                "add_foreground": binning_data.get("add_foreground", True),
+                "crop_circles": binning_data.get("crop_circles", True),
+            }
+
+            error_est_data = self._embedded_config.get("error_estimator", {})
+            bootstrap_data = error_est_data.get("bootstrap", {})
+            bootstrap_config = BootstrapConfig(
+                enabled=bootstrap_data.get("enabled", True),
+                iterations=bootstrap_data.get("iterations", 5),
+                initial_seed=bootstrap_data.get("initial_seed", 1),
+                cosmology=bootstrap_data.get("cosmology", "Planck18"),
+            )
+
+            error_estimator_config = ErrorEstimatorConfig(
+                write_simmaps=error_est_data.get("write_simmaps", False),
+                randomize=error_est_data.get("randomize", False),
+                bootstrap=bootstrap_config,
+            )
+
+            # Create the full config
+            config = SimstackConfig(
+                catalog=catalog_config,
+                maps=maps_config,
+                cosmology=self._embedded_config.get("cosmology", "Planck18"),
+                output=output_config,
+                binning=binning_config,
+                error_estimator=error_estimator_config,
+            )
+
+            return config
+
+        except Exception as e:
+            logger.error(f"Failed to reconstruct config from JSON: {e}")
+            raise SimstackError(f"Config reconstruction failed: {e}") from e
 
     def _extract_stacking_data(self) -> dict:
-        """Extract stacking results as JSON-serializable data"""
+        """Enhanced stacking data extraction with better population info"""
         data = {}
 
         # Extract stacking results
@@ -264,60 +608,74 @@ class SimstackWrapper:
                 else:
                     data[key] = str(value)
 
-        # Extract population info (minimal)
-        """
+        # Enhanced population info extraction
         if self.population_manager:
             data["populations"] = []
-            for i, pop in enumerate(self.population_manager):
+            data["population_details"] = {}
+
+            for i, (pop_id, pop) in enumerate(
+                self.population_manager.populations.items()
+            ):
+                # Basic population data
                 pop_data = {
                     "index": i,
-                    "population_id": getattr(pop, 'population_id', f"pop_{i}"),
-                    "n_sources": getattr(pop, 'n_sources', 0),
+                    "population_id": pop_id,
+                    "n_sources": getattr(pop, "n_sources", 0),
+                    "median_redshift": getattr(pop, "median_redshift", 0),
+                    "median_stellar_mass": getattr(pop, "median_stellar_mass", 0),
                 }
+
+                # Try to get additional population properties
+                for attr in ["redshift_range", "mass_range", "classification_value"]:
+                    if hasattr(pop, attr):
+                        pop_data[attr] = getattr(pop, attr)
+
                 data["populations"].append(pop_data)
-        """
+
+                # Store detailed population info (coordinates, etc.) separately
+                # This allows for reconstruction of population manager
+                pop_details = {}
+                for attr in [
+                    "source_indices",
+                    "coordinates",
+                    "redshifts",
+                    "stellar_masses",
+                ]:
+                    if hasattr(pop, attr):
+                        value = getattr(pop, attr)
+                        if isinstance(value, np.ndarray):
+                            pop_details[attr] = value.tolist()
+                        else:
+                            pop_details[attr] = value
+
+                data["population_details"][pop_id] = pop_details
 
         return data
 
-    def load_stacking_results(self, filepath: str | Path) -> None:
-        """Load stacking results from JSON"""
-        filepath = Path(filepath)
+    # Additional method for better JSON structure validation
+    def validate_json_structure(self, json_data: dict) -> bool:
+        """Validate that JSON file has required structure for analysis"""
+        required_keys = [
+            "flux_densities",
+            "flux_errors",
+            "map_names",
+            "population_labels",
+        ]
 
-        # Try .json extension if original doesn't exist
-        if not filepath.exists() and filepath.suffix != ".json":
-            filepath = filepath.with_suffix(".json")
+        for key in required_keys:
+            if key not in json_data:
+                logger.warning(f"Missing required key in JSON: {key}")
+                return False
 
-        if not filepath.exists():
-            raise SimstackError(f"Stacking results file not found: {filepath}")
+        # Check for embedded config or metadata with config path
+        has_config = "embedded_config" in json_data
+        has_config_path = json_data.get("metadata", {}).get("config_path") is not None
 
-        with open(filepath) as f:
-            stacking_data = json.load(f)
+        if not (has_config or has_config_path):
+            logger.warning("JSON file missing both embedded config and config path")
+            return False
 
-        # Reconstruct stacking results object
-        self.stacking_results = type("StackingResults", (), {})()
-
-        for key, value in stacking_data.items():
-            if key not in ["metadata", "populations"]:
-                if isinstance(value, list):
-                    # Convert back to numpy arrays
-                    setattr(self.stacking_results, key, np.array(value))
-                else:
-                    setattr(self.stacking_results, key, value)
-
-        # Store population info (we'll reload the full catalog for analysis)
-        self._population_info = stacking_data.get("populations", [])
-
-        # Load config if we don't have one
-        if not self.config and stacking_data["metadata"].get("config_path"):
-            config_path = stacking_data["metadata"]["config_path"]
-            logger.info(f"Loading config from: {config_path}")
-            try:
-                self.config = load_config(config_path)
-            except Exception:
-                logger.warning(f"Config file {config_path} not found")
-
-        logger.info(f"✓ Stacking results loaded from JSON: {filepath}")
-        logger.info(f"  - {len(self._population_info)} populations")
+        return True
 
     def save_analysis_results(self, filepath: str | Path) -> None:
         """Save analysis results"""
