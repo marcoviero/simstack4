@@ -219,7 +219,13 @@ class SimstackWrapper:
             logger.error(f"Stacking pipeline failed: {e}")
             raise SimstackError(f"Stacking failed: {e}") from e
 
-    def _run_analysis(self) -> None:
+    def _run_analysis(
+        self,
+        use_mcmc: bool = False,
+        mcmc_iterations: int = 1000,
+        mcmc_burn_in: int = 200,
+        use_schreiber_prior: bool = False,
+    ) -> None:
         """Run ONLY the analysis/SED fitting (requires stacking results)"""
         if not self.stacking_results:
             raise SimstackError("No stacking results available for analysis")
@@ -228,7 +234,11 @@ class SimstackWrapper:
             logger.info("Loading catalog for analysis...")
             self._load_catalog()
 
-        logger.info("Starting analysis pipeline...")
+        fitting_method = "MCMC" if use_mcmc else "curve_fit"
+        prior_type = "Schreiber+2015" if use_schreiber_prior else "flat"
+        logger.info(
+            f"Starting analysis pipeline with {fitting_method} fitting and {prior_type} priors..."
+        )
 
         try:
             # Process results - SED fitting, error estimation, etc.
@@ -236,6 +246,10 @@ class SimstackWrapper:
                 config=self.config,
                 stacking_results=self.stacking_results,
                 population_manager=self.population_manager,
+                use_mcmc=use_mcmc,
+                mcmc_iterations=mcmc_iterations,
+                mcmc_burn_in=mcmc_burn_in,
+                use_schreiber_prior=use_schreiber_prior,
             )
 
             # Update results dict for backward compatibility
@@ -698,19 +712,57 @@ class SimstackWrapper:
         """Public method to run ONLY stacking"""
         self._run_stacking()
 
-    def run_analysis_only(self) -> SimstackResults:
-        """Public method to run ONLY analysis (requires stacking results)"""
+    def run_analysis_only(
+        self,
+        use_mcmc: bool = False,
+        mcmc_iterations: int = 1000,
+        mcmc_burn_in: int = 200,
+        use_schreiber_prior: bool = False,
+    ) -> SimstackResults:
+        """
+        Public method to run ONLY analysis (requires stacking results)
+
+        Args:
+            use_mcmc: Whether to use MCMC fitting (requires emcee)
+            mcmc_iterations: Number of MCMC iterations
+            mcmc_burn_in: Number of burn-in iterations to discard
+            use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
+        """
         # Reload catalog if needed for analysis
         if not self.population_manager and self.config:
             self._load_catalog()
 
-        self._run_analysis()
+        self._run_analysis(
+            use_mcmc=use_mcmc,
+            mcmc_iterations=mcmc_iterations,
+            mcmc_burn_in=mcmc_burn_in,
+            use_schreiber_prior=use_schreiber_prior,
+        )
         return self.processed_results
 
-    def run_complete_pipeline(self) -> SimstackResults:
-        """Run both stacking and analysis"""
+    def run_complete_pipeline(
+        self,
+        use_mcmc: bool = False,
+        mcmc_iterations: int = 1000,
+        mcmc_burn_in: int = 200,
+        use_schreiber_prior: bool = False,
+    ) -> SimstackResults:
+        """
+        Run both stacking and analysis
+
+        Args:
+            use_mcmc: Whether to use MCMC fitting (requires emcee)
+            mcmc_iterations: Number of MCMC iterations
+            mcmc_burn_in: Number of burn-in iterations to discard
+            use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
+        """
         self._run_stacking()
-        self._run_analysis()
+        self._run_analysis(
+            use_mcmc=use_mcmc,
+            mcmc_iterations=mcmc_iterations,
+            mcmc_burn_in=mcmc_burn_in,
+            use_schreiber_prior=use_schreiber_prior,
+        )
         return self.processed_results
 
     def get_summary(self) -> dict[str, Any]:
@@ -807,7 +859,12 @@ def run_stacking_only(
 
 
 def run_analysis_only(
-    stacking_results_path: str | Path, save_path: str | Path = None
+    stacking_results_path: str | Path,
+    save_path: str | Path = None,
+    use_mcmc: bool = False,
+    mcmc_iterations: int = 1000,
+    mcmc_burn_in: int = 200,
+    use_schreiber_prior: bool = False,
 ) -> SimstackResults:
     """
     Run analysis from self-contained JSON file (no config needed!)
@@ -815,13 +872,22 @@ def run_analysis_only(
     Args:
         stacking_results_path: Path to saved stacking results JSON
         save_path: Path to save analysis results (optional)
+        use_mcmc: Whether to use MCMC fitting (requires emcee)
+        mcmc_iterations: Number of MCMC iterations
+        mcmc_burn_in: Number of burn-in iterations to discard
+        use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
 
     Returns:
         Processed results object
     """
     wrapper = SimstackWrapper()  # No config needed!
     wrapper.load_stacking_results(stacking_results_path)
-    results = wrapper.run_analysis_only()
+    results = wrapper.run_analysis_only(
+        use_mcmc=use_mcmc,
+        mcmc_iterations=mcmc_iterations,
+        mcmc_burn_in=mcmc_burn_in,
+        use_schreiber_prior=use_schreiber_prior,
+    )
 
     if save_path:
         wrapper.save_analysis_results(save_path)

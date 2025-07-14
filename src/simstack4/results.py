@@ -13,6 +13,14 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
 
+# Add emcee import
+try:
+    import emcee
+
+    HAS_EMCEE = True
+except ImportError:
+    HAS_EMCEE = False
+
 from .algorithm import StackingResults
 from .config import SimstackConfig
 from .cosmology import CosmologyCalculator
@@ -51,6 +59,10 @@ class SEDResults:
     model_wavelengths: np.ndarray | None = None  # microns
     model_fluxes: np.ndarray | None = None  # Jy
 
+    # MCMC results
+    mcmc_samples: np.ndarray | None = None  # MCMC samples if used
+    mcmc_percentiles: dict | None = None  # Percentiles from MCMC
+
 
 @dataclass
 class DerivedQuantities:
@@ -65,11 +77,23 @@ class DerivedQuantities:
     dust_temperature_observed_frame: float | None = None  # K (observed-frame)
     dust_mass: float | None = None  # M_sun
 
+    # MCMC-derived uncertainties
+    total_ir_luminosity_mcmc_error: tuple | None = None  # (lower, upper) from MCMC
+    dust_temperature_mcmc_error: tuple | None = None  # (lower, upper) from MCMC
+
 
 class GreybodyFitter:
-    """Greybody fitter with proper L_IR calculation and fixed beta option"""
+    """Greybody fitter with proper L_IR calculation, fixed beta option, and MCMC support"""
 
-    def __init__(self, fix_beta: bool = True, beta_fixed: float = 1.8):
+    def __init__(
+        self,
+        fix_beta: bool = True,
+        beta_fixed: float = 1.8,
+        use_mcmc: bool = False,
+        mcmc_iterations: int = 1000,
+        mcmc_burn_in: int = 200,
+        use_schreiber_prior: bool = False,
+    ):
         """
         Initialize fitter
 
@@ -79,6 +103,14 @@ class GreybodyFitter:
             Whether to fix the emissivity index beta
         beta_fixed : float
             Fixed value of beta if fix_beta=True
+        use_mcmc : bool
+            Whether to use MCMC fitting (requires emcee)
+        mcmc_iterations : int
+            Number of MCMC iterations
+        mcmc_burn_in : int
+            Number of burn-in iterations to discard
+        use_schreiber_prior : bool
+            Whether to use Schreiber+2015 T_dust vs redshift prior
         """
         # Physical constants
         self.h = 6.62607015e-34  # Planck constant (J⋅s)
@@ -88,10 +120,322 @@ class GreybodyFitter:
 
         self.fix_beta = fix_beta
         self.beta_fixed = beta_fixed
+        self.use_mcmc = use_mcmc and HAS_EMCEE
+        self.mcmc_iterations = mcmc_iterations
+        self.mcmc_burn_in = mcmc_burn_in
+        self.use_schreiber_prior = use_schreiber_prior
 
         # Setup cosmology (simplified for now)
         self.H0 = 70  # km/s/Mpc
         self.Om0 = 0.3
+
+        if use_mcmc and not HAS_EMCEE:
+            logger.warning(
+                "MCMC requested but emcee not available. Falling back to curve_fit."
+            )
+
+    def schreiber_temperature_prior(self, redshift: float) -> tuple[float, float]:
+        """
+        Calculate expected dust temperature and uncertainty from Schreiber+2015
+
+        Parameters:
+        -----------
+        redshift : float
+            Redshift of the source
+
+        Returns:
+        --------
+        T_expected : float
+            Expected observed-frame dust temperature in K
+        T_sigma : float
+            Uncertainty in dust temperature in K
+        """
+        # Schreiber+2015 relation: T_dust = (23.8 + 2.7*z + 0.9*z^2) / (1+z)
+        T_rest = 23.8 + 2.7 * redshift + 0.9 * redshift**2
+        T_observed = T_rest / (1 + redshift)
+
+        # Assume 20% uncertainty in the relation
+        T_sigma = T_observed * 0.2
+
+        return T_observed, T_sigma
+
+    def log_prior(self, theta: list, redshift: float = 0.0) -> float:
+        """Calculate log prior probability with better bounds checking"""
+        amplitude, temperature = theta
+
+        # More restrictive amplitude bounds to avoid NaN
+        if not (-45 < amplitude < -25):
+            return -np.inf
+
+        # More restrictive temperature bounds
+        if not (8 < temperature < 60):
+            return -np.inf
+
+        # Temperature priors
+        if self.use_schreiber_prior and redshift > 0:
+            # Gaussian prior based on Schreiber+2015
+            T_expected, T_sigma = self.schreiber_temperature_prior(redshift)
+            # Ensure T_sigma is reasonable
+            if T_sigma <= 0 or T_sigma > 20:
+                T_sigma = 5.0  # Fallback
+            log_p_temp = -0.5 * ((temperature - T_expected) / T_sigma) ** 2
+            log_p_temp -= np.log(np.sqrt(2 * np.pi) * T_sigma)
+        else:
+            # Flat prior on temperature
+            log_p_temp = 0.0
+
+        return log_p_temp
+
+    def log_posterior(
+        self,
+        theta: list,
+        wavelengths: np.ndarray,
+        fluxes: np.ndarray,
+        flux_errors: np.ndarray,
+        redshift: float = 0.0,
+    ) -> float:
+        """
+        Calculate log posterior probability
+
+        Parameters:
+        -----------
+        theta : list
+            [amplitude, temperature] parameters
+        wavelengths : array
+            Wavelengths in microns
+        fluxes : array
+            Observed flux densities in Jy
+        flux_errors : array
+            Flux density errors in Jy
+        redshift : float
+            Redshift for prior calculation
+
+        Returns:
+        --------
+        log_posterior : float
+            Log posterior probability
+        """
+        log_p = self.log_prior(theta, redshift)
+        if not np.isfinite(log_p):
+            return -np.inf
+
+        log_l = self.log_likelihood(theta, wavelengths, fluxes, flux_errors)
+
+        return log_p + log_l
+
+    def log_likelihood(
+        self,
+        theta: list,
+        wavelengths: np.ndarray,
+        fluxes: np.ndarray,
+        flux_errors: np.ndarray,
+    ) -> float:
+        """Calculate log likelihood with better error handling"""
+        amplitude, temperature = theta
+
+        try:
+            # Calculate model fluxes
+            model_fluxes = self.greybody_model(
+                wavelengths, amplitude, temperature, self.beta_fixed
+            )
+
+            # Check for invalid model fluxes
+            if not np.all(np.isfinite(model_fluxes)) or np.any(model_fluxes <= 0):
+                return -np.inf
+
+            # Calculate chi-squared
+            residuals = (fluxes - model_fluxes) / flux_errors
+            chi2 = np.sum(residuals**2)
+
+            # Check for reasonable chi2
+            if not np.isfinite(chi2) or chi2 > 1000:  # Reject very bad fits
+                return -np.inf
+
+            # Log likelihood (assuming Gaussian errors)
+            log_like = -0.5 * chi2 - 0.5 * np.sum(np.log(2 * np.pi * flux_errors**2))
+
+            return log_like
+
+        except Exception as e:
+            logger.debug(f"Likelihood calculation failed: {e}")
+            return -np.inf
+
+    def run_mcmc(
+        self,
+        wavelengths: np.ndarray,
+        fluxes: np.ndarray,
+        flux_errors: np.ndarray,
+        redshift: float = 0.0,
+    ) -> dict:
+        """Run MCMC fitting with better initialization"""
+        if not HAS_EMCEE:
+            raise ImportError("emcee is required for MCMC fitting")
+
+        # Initial guess with better bounds
+        if self.use_schreiber_prior and redshift > 0:
+            T_guess, T_sigma = self.schreiber_temperature_prior(redshift)
+            # Ensure reasonable temperature guess
+            T_guess = np.clip(T_guess, 10, 50)
+        else:
+            T_guess = 25.0
+
+        amplitude_guess = -35.0
+
+        # Set up walkers with better initialization
+        n_walkers = 32
+        n_dim = 2
+
+        # Initialize walker positions with reasonable spread
+        pos = []
+        for _i in range(n_walkers):
+            while True:
+                # Sample around the guess with reasonable bounds
+                amp_trial = amplitude_guess + np.random.normal(0, 1.0)
+                temp_trial = T_guess + np.random.normal(0, 3.0)
+
+                # Ensure within bounds
+                if (-45 < amp_trial < -25) and (8 < temp_trial < 60):
+                    # Test that this position gives finite probability
+                    test_prob = self.log_posterior(
+                        [amp_trial, temp_trial],
+                        wavelengths,
+                        fluxes,
+                        flux_errors,
+                        redshift,
+                    )
+                    if np.isfinite(test_prob):
+                        pos.append([amp_trial, temp_trial])
+                        break
+
+                # Fallback if we can't find good position
+                if len(pos) > 0 and len(pos) % 10 == 0:
+                    # Use a previous good position with small perturbation
+                    base_pos = pos[np.random.randint(len(pos))]
+                    pos.append(
+                        [
+                            base_pos[0] + np.random.normal(0, 0.1),
+                            base_pos[1] + np.random.normal(0, 0.5),
+                        ]
+                    )
+                    break
+
+        pos = np.array(pos)
+
+        # Create sampler
+        sampler = emcee.EnsembleSampler(
+            n_walkers,
+            n_dim,
+            self.log_posterior,
+            args=(wavelengths, fluxes, flux_errors, redshift),
+        )
+
+        # Run MCMC with progress bar handling
+        try:
+            logger.info(f"Running MCMC with {self.mcmc_iterations} iterations...")
+            # Try with progress bar, fall back without if tqdm not available
+            try:
+                sampler.run_mcmc(pos, self.mcmc_iterations, progress=True)
+            except Exception:
+                logger.info("Progress bar not available, running without...")
+                sampler.run_mcmc(pos, self.mcmc_iterations, progress=False)
+        except Exception as e:
+            logger.error(f"MCMC run failed: {e}")
+            raise
+
+        # Check acceptance
+        acceptance = np.mean(sampler.acceptance_fraction)
+        if acceptance < 0.1:
+            logger.warning(f"Low MCMC acceptance fraction: {acceptance:.3f}")
+
+        # Extract samples
+        try:
+            samples = sampler.get_chain(discard=self.mcmc_burn_in, flat=True)
+        except Exception as e:
+            logger.error(f"Failed to extract MCMC samples: {e}")
+            raise
+
+        if len(samples) < 100:
+            raise ValueError(f"Too few MCMC samples: {len(samples)}")
+
+        # Calculate percentiles
+        percentiles = [16, 50, 84]
+        amplitude_percentiles = np.percentile(samples[:, 0], percentiles)
+        temperature_percentiles = np.percentile(samples[:, 1], percentiles)
+
+        # Best-fit parameters (median)
+        amplitude_best = amplitude_percentiles[1]
+        temperature_best = temperature_percentiles[1]
+
+        # Errors (16th-84th percentile range)
+        amplitude_err = np.diff(amplitude_percentiles[[0, 2]])[0] / 2
+        temperature_err = np.diff(temperature_percentiles[[0, 2]])[0] / 2
+
+        return {
+            "samples": samples,
+            "amplitude": amplitude_best,
+            "amplitude_error": amplitude_err,
+            "amplitude_percentiles": amplitude_percentiles,
+            "temperature_observed_frame": temperature_best,
+            "temperature_error": temperature_err,
+            "temperature_percentiles": temperature_percentiles,
+            "n_samples": len(samples),
+            "acceptance_fraction": acceptance,
+        }
+
+    def calculate_dust_mass(
+        self, amplitude: float, temperature: float, beta: float, redshift: float
+    ) -> tuple[float, float]:
+        """
+        Calculate dust mass from greybody fit parameters
+
+        Returns:
+        --------
+        M_dust : float
+            Dust mass in solar masses
+        M_dust_error : float
+            Error estimate
+        """
+        try:
+            if np.isnan(temperature) or np.isnan(amplitude):
+                return np.nan, np.nan
+
+            # Get luminosity distance
+            D_L = self.luminosity_distance(redshift) * 3.086e22  # Convert Mpc to meters
+
+            # Reference wavelength and opacity
+            lambda_ref = 250e-6  # 250 μm in meters
+            kappa_ref = 0.4  # m²/kg at 250 μm (typical value)
+
+            # Convert amplitude to luminosity at reference wavelength
+            nu_ref = self.c / lambda_ref
+
+            # Get flux at reference wavelength
+            flux_ref_jy = self.greybody_model(
+                np.array([250.0]), amplitude, temperature, beta
+            )[0]
+            flux_ref_si = flux_ref_jy * 1e-26  # W/m²/Hz
+
+            # Calculate dust mass (simplified)
+            # M_dust = F_ν * D_L² / (κ * B_ν(T))
+            B_nu = self.planck_function(np.array([nu_ref]), temperature)[0]
+
+            if B_nu <= 0:
+                return np.nan, np.nan
+
+            M_dust_kg = flux_ref_si * D_L**2 / (kappa_ref * B_nu)
+
+            # Convert to solar masses
+            M_sun_kg = 1.989e30
+            M_dust_solar = M_dust_kg / M_sun_kg
+
+            # Error estimate
+            M_dust_error = M_dust_solar * 0.3  # 30% error
+
+            return M_dust_solar, M_dust_error
+
+        except Exception as e:
+            logger.warning(f"Dust mass calculation failed: {e}")
+            return np.nan, np.nan
 
     def luminosity_distance(self, z: float) -> float:
         """Calculate luminosity distance in meters"""
@@ -101,18 +445,12 @@ class GreybodyFitter:
         # Simplified calculation for low-z
         c_km_s = 299792.458  # km/s
         D_L = c_km_s * z / self.H0  # Mpc
-        # D_L_m = D_L * 3.086e22  # Convert Mpc to meters
-        return D_L  # _m
+        return D_L
 
     def planck_function(self, nu: np.ndarray, T: float) -> np.ndarray:
         """Planck function B_ν(T) in SI units (W m⁻² sr⁻¹ Hz⁻¹)"""
-        # The Planck function needs to be normalized properly for the greybody model
-        # We need B_ν(T) but normalized for the greybody amplitude
         exponent = self.h * nu / (self.k_B * T)
-
-        # Avoid overflow for large exponents
         exponent = np.clip(exponent, 0, 700)
-
         return (2 * self.h * nu**3 / self.c**2) / (np.exp(exponent) - 1)
 
     def greybody_model(
@@ -125,20 +463,7 @@ class GreybodyFitter:
     ) -> np.ndarray:
         """
         Greybody model with power law extensions.
-
-        Parameters:
-        -----------
-        wavelength_um : array of wavelengths in micrometers
-        amplitude : log10 of the amplitude parameter (typical values around -35)
-        temperature : dust temperature in Kelvin
-        beta : emissivity index for long wavelengths (default 1.8)
-        alpha : power law index for short wavelengths (default 2.0)
-
-        Returns:
-        --------
-        flux_density : array of flux densities in Jy
         """
-
         # Convert wavelength to frequency
         c_light = 299792458.0  # m/s
         nu_in = c_light * 1.0e6 / wavelength_um  # Hz
@@ -149,7 +474,7 @@ class GreybodyFitter:
         # Calculate transition frequency
         nu_cut = (3.0 + beta + alpha) * 0.208367e11 * temperature
 
-        # Constants for power law normalization (from your existing code)
+        # Constants for power law normalization
         base = (
             2.0
             * (6.626) ** (-2.0 - beta - alpha)
@@ -176,11 +501,6 @@ class GreybodyFitter:
         return flux_density
 
     def black(self, nu_in, T):
-        # h = 6.623e-34     ; Joule*s
-        # k = 1.38e-23      ; Joule/K
-        # c = 3e8           ; m/s
-        # (2*h*nu_in^3/c^2)*(1/( exp(h*nu_in/k*T) - 1 )) * 10^29
-
         a0 = 1.4718e-21  # 2*h*10^29/c^2
         a1 = 4.7993e-11  # h/k
 
@@ -190,125 +510,43 @@ class GreybodyFitter:
 
         return ret
 
-    def blackbody_model(self, nu_in, T):
-        # h = 6.623e-34     ; Joule*s
-        # k = 1.38e-23      ; Joule/K
-        # c = 3e8           ; m/s
-        # (2*h*nu_in^3/c^2)*(1/( exp(h*nu_in/k*T) - 1 )) * 10^29
-
-        a0 = 1.4718e-21  # 2*h*10^29/c^2
-        a1 = 4.7993e-11  # h/k
-
-        num = a0 * nu_in**3.0
-        den = np.exp(a1 * nu_in / T) - 1.0
-        ret = num / den
-
-        return ret
-
     def calculate_LIR(
         self, amplitude: float, temperature: float, beta: float, redshift: float
     ) -> tuple[float, float]:
-        """
-        Calculate L_IR by integrating L_ν over frequency (8-1000 μm rest-frame)
-
-        Parameters:
-        -----------
-        amplitude : SED normalization
-        temperature : dust temperature in Kelvin
-        beta : emissivity index for long wavelengths
-        alpha : power law index for short wavelengths
-        redshift : power law index for short wavelengths
-
-        Returns:
-        --------
-        flux_density : array of flux densities in Jy
-        """
+        """Calculate L_IR by integrating L_ν over frequency (8-1000 μm rest-frame)"""
         if np.isnan(redshift) or redshift <= 0:
             redshift = 0.01
 
-        # Get luminosity distance (in Mpc, matching simstack3)
+        # Get luminosity distance (in Mpc)
         D_L = self.luminosity_distance(redshift)
 
         # Generate wavelength range in microns (8-1000 μm rest-frame)
         wavelength_range = np.logspace(np.log10(8), np.log10(1000), 1000)
 
-        # Get model SED in same units as simstack3
-        # greybody_model returns flux in Jy
+        # Get model SED
         model_sed_jy = self.greybody_model(
             wavelength_range, amplitude, temperature, beta
         )
 
         # Convert wavelength to frequency (Hz)
-        c_light = 299792458.0  # m/s (matching simstack3)
+        c_light = 299792458.0  # m/s
         nu_in = c_light * 1.0e6 / wavelength_range  # Hz
 
-        # Calculate frequency intervals (matching simstack3 exactly)
-        dnu = (
-            nu_in[:-1] - nu_in[1:]
-        )  # Note: frequencies decrease as wavelength increases
-        dnu = np.append(dnu[0], dnu)  # Extend first interval to match array length
+        # Calculate frequency intervals
+        dnu = nu_in[:-1] - nu_in[1:]
+        dnu = np.append(dnu[0], dnu)
 
-        # Integrate: L_IR = ∫ S_ν dν in Jy⋅Hz (matching simstack3)
+        # Integrate: L_IR = ∫ S_ν dν in Jy⋅Hz
         Lir_jy_hz = np.sum(model_sed_jy * dnu)
 
         # Convert to solar luminosities
-        # conversion = 4π D_L² / L_sun with proper unit handling
-        conversion = (
-            4.0 * np.pi * (1.0e-13 * D_L * 3.08568025e22) ** 2.0 / self.L_sun
-        )  # Units: L_sun/(Jy⋅Hz)
+        conversion = 4.0 * np.pi * (1.0e-13 * D_L * 3.08568025e22) ** 2.0 / self.L_sun
 
         L_IR_solar = Lir_jy_hz * conversion
 
         # Error estimate (20% uncertainty)
         L_IR_error = L_IR_solar * 0.2
-        print(np.log10(L_IR_solar))
         return L_IR_solar, L_IR_error
-
-    def calculate_dust_mass(
-        self, amplitude: float, temperature: float, beta: float, redshift: float
-    ) -> tuple[float, float]:
-        """
-        Calculate dust mass from greybody fit parameters
-
-        Returns:
-        --------
-        M_dust : float
-            Dust mass in solar masses
-        M_dust_error : float
-            Error estimate
-        """
-        if np.isnan(temperature) or np.isnan(amplitude):
-            return np.nan, np.nan
-
-        # Get luminosity distance
-        D_L = self.luminosity_distance(redshift)
-
-        # Reference wavelength and opacity
-        lambda_ref = 250e-6  # 250 μm in meters
-        kappa_ref = 0.4  # m²/kg at 250 μm (typical value)
-
-        # Convert amplitude to luminosity at reference wavelength
-        nu_ref = self.c / lambda_ref
-
-        # Get flux at reference wavelength
-        flux_ref_jy = self.greybody_model(
-            np.array([250.0]), amplitude, temperature, beta
-        )[0]
-        flux_ref_si = flux_ref_jy * 1e-26  # W/m²/Hz
-
-        # Calculate dust mass (simplified)
-        # M_dust = F_ν * D_L² / (κ * B_ν(T))
-        B_nu = self.planck_function(np.array([nu_ref]), temperature)[0]
-        M_dust_kg = flux_ref_si * D_L**2 / (kappa_ref * B_nu)
-
-        # Convert to solar masses
-        M_sun_kg = 1.989e30
-        M_dust_solar = M_dust_kg / M_sun_kg
-
-        # Error estimate
-        M_dust_error = M_dust_solar * 0.3  # 30% error
-
-        return M_dust_solar, M_dust_error
 
     def fit_sed(
         self,
@@ -317,11 +555,7 @@ class GreybodyFitter:
         flux_errors: np.ndarray,
         redshift: float,
     ) -> dict[str, Any]:
-        """
-        Fit greybody model to SED data with proper L_IR calculation
-
-        Returns both rest-frame and observed-frame dust temperatures
-        """
+        """Fit greybody model to SED data with optional MCMC"""
         valid = (
             (fluxes > 0)
             & (flux_errors > 0)
@@ -337,17 +571,17 @@ class GreybodyFitter:
         error_fit = flux_errors[valid]
 
         try:
-            # Initial guess based on Wien's displacement law
-            peak_idx = np.argmax(flux_fit)
-            T_guess = 2898 / wave_fit[peak_idx]  # Wien's displacement
-            T_guess = np.clip(T_guess, 8, 80)  # Reasonable temperature range
-            T_guess = 15
-            T_guess = (23.8 + 2.7 * redshift + 0.9 * redshift**2) / (1 + redshift)
-            amplitude_guess = -35
+            # Always start with curve_fit for initial guess
+            if self.use_schreiber_prior and redshift > 0:
+                T_guess, _ = self.schreiber_temperature_prior(redshift)
+                T_guess = np.clip(T_guess, 10, 50)  # Ensure reasonable bounds
+            else:
+                T_guess = 25.0
+            amplitude_guess = -35.0
 
-            # Fit the model
+            # Curve fitting with better bounds
             if self.fix_beta:
-                # Wrapper for fixed beta
+
                 def model_func(wave, amp, temp):
                     return self.greybody_model(wave, amp, temp, self.beta_fixed)
 
@@ -357,8 +591,7 @@ class GreybodyFitter:
                     flux_fit,
                     sigma=error_fit,
                     p0=[amplitude_guess, T_guess],
-                    # bounds=([amplitude_guess * 0.01, 8], [amplitude_guess * 100, 80]),
-                    bounds=([-50, 8], [-20, 80]),
+                    bounds=([-45, 8], [-25, 60]),  # More restrictive bounds
                     maxfev=5000,
                 )
                 amplitude, temperature_observed = popt
@@ -366,28 +599,47 @@ class GreybodyFitter:
                 param_errors = np.sqrt(np.diag(pcov))
                 amplitude_err, temperature_err = param_errors
                 beta_err = 0.0
-
             else:
+                # Free beta fitting not implemented for MCMC yet
                 popt, pcov = curve_fit(
                     self.greybody_model,
                     wave_fit,
                     flux_fit,
                     sigma=error_fit,
                     p0=[amplitude_guess, T_guess, 1.8],
-                    # bounds=([amplitude_guess * 0.01, 8, 0.5], [amplitude_guess * 100, 80, 2.5]),
-                    bounds=([-50, 8], [-20, 80]),
+                    bounds=([-45, 8, 0.5], [-25, 60, 2.5]),
                     maxfev=5000,
                 )
                 amplitude, temperature_observed, beta = popt
                 param_errors = np.sqrt(np.diag(pcov))
                 amplitude_err, temperature_err, beta_err = param_errors
 
-            # Calculate rest-frame temperature from observed-frame
+            # Run MCMC if requested
+            mcmc_results = None
+            if self.use_mcmc and self.fix_beta:  # MCMC only implemented for fixed beta
+                try:
+                    mcmc_results = self.run_mcmc(
+                        wave_fit, flux_fit, error_fit, redshift
+                    )
+                    # Update parameters with MCMC results
+                    amplitude = mcmc_results["amplitude"]
+                    temperature_observed = mcmc_results["temperature_observed_frame"]
+                    amplitude_err = mcmc_results["amplitude_error"]
+                    temperature_err = mcmc_results["temperature_error"]
+
+                    logger.info(
+                        f"MCMC fit successful: T_obs = {temperature_observed:.1f}±{temperature_err:.1f} K"
+                    )
+
+                except Exception as e:
+                    logger.warning(f"MCMC failed, using curve_fit results: {e}")
+
+            # Calculate rest-frame temperature
             temperature_rest_frame = temperature_observed * (1 + redshift)
 
             # Calculate goodness of fit
             model_fluxes = self.greybody_model(
-                wave_fit, amplitude, temperature_rest_frame, beta
+                wave_fit, amplitude, temperature_observed, beta
             )
             chi2 = np.sum(((flux_fit - model_fluxes) / error_fit) ** 2)
             dof = len(wave_fit) - (2 if self.fix_beta else 3)
@@ -409,7 +661,7 @@ class GreybodyFitter:
                 wave_model, amplitude, temperature_observed, beta
             )
 
-            return {
+            results = {
                 "fit_success": True,
                 "amplitude": amplitude,
                 "amplitude_error": amplitude_err,
@@ -430,20 +682,31 @@ class GreybodyFitter:
                 "model_wavelengths": wave_model,
                 "model_fluxes": flux_model,
                 "redshift_used": redshift,
+                "mcmc_used": mcmc_results is not None,
+                "schreiber_prior_used": self.use_schreiber_prior,
             }
+
+            # Add MCMC-specific results
+            if mcmc_results:
+                results["mcmc_samples"] = mcmc_results["samples"]
+                results["mcmc_percentiles"] = {
+                    "amplitude": mcmc_results["amplitude_percentiles"],
+                    "temperature": mcmc_results["temperature_percentiles"],
+                }
+                results["mcmc_acceptance_fraction"] = mcmc_results[
+                    "acceptance_fraction"
+                ]
+
+            return results
 
         except Exception as e:
             logger.warning(f"Greybody fit failed: {e}")
             return {"fit_success": False, "reason": str(e)}
 
 
+# Rest of the SimstackResults class remains the same, but update the initialization
 class SimstackResults:
-    """
-    Process and analyze stacking results
-
-    This class takes raw stacking results and applies cosmological corrections,
-    calculates luminosities, star formation rates, and other derived quantities.
-    """
+    """Process and analyze stacking results"""
 
     def __init__(
         self,
@@ -453,6 +716,10 @@ class SimstackResults:
         cosmology_calc: CosmologyCalculator | None = None,
         fix_beta: bool = True,
         beta_fixed: float = 1.8,
+        use_mcmc: bool = False,
+        mcmc_iterations: int = 1000,
+        mcmc_burn_in: int = 200,
+        use_schreiber_prior: bool = False,
     ):
         """
         Initialize results processor
@@ -464,6 +731,10 @@ class SimstackResults:
             cosmology_calc: Cosmology calculator (created if None)
             fix_beta: Whether to fix emissivity index beta in greybody fitting
             beta_fixed: Fixed value of beta if fix_beta=True
+            use_mcmc: Whether to use MCMC fitting (requires emcee)
+            mcmc_iterations: Number of MCMC iterations
+            mcmc_burn_in: Number of burn-in iterations to discard
+            use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
         """
         self.config = config
         self.raw_results = stacking_results
@@ -471,14 +742,19 @@ class SimstackResults:
 
         # Set up cosmology
         if cosmology_calc is None:
-            self.cosmology_calc = CosmologyCalculator(
-                config.cosmology
-            )  # Cosmology("Planck18"))
+            self.cosmology_calc = CosmologyCalculator(config.cosmology)
         else:
             self.cosmology_calc = cosmology_calc
 
-        # Initialize greybody fitter
-        self.greybody_fitter = GreybodyFitter(fix_beta=fix_beta, beta_fixed=beta_fixed)
+        # Initialize greybody fitter with MCMC options
+        self.greybody_fitter = GreybodyFitter(
+            fix_beta=fix_beta,
+            beta_fixed=beta_fixed,
+            use_mcmc=use_mcmc,
+            mcmc_iterations=mcmc_iterations,
+            mcmc_burn_in=mcmc_burn_in,
+            use_schreiber_prior=use_schreiber_prior,
+        )
 
         # Initialize processed results containers
         self.sed_results: dict[str, SEDResults] = {}
@@ -488,34 +764,9 @@ class SimstackResults:
         # Process results
         self._process_results()
 
-    def _process_results(self) -> None:
-        """Process raw results into SEDs and derived quantities"""
-        logger.info("Processing stacking results...")
-
-        # Create SEDs for each population
-        for i, pop_label in enumerate(self.raw_results.population_labels):
-            if pop_label == "foreground":
-                continue  # Skip foreground layer
-
-            try:
-                sed_result = self._create_sed_for_population(pop_label, i)
-                self.sed_results[pop_label] = sed_result
-
-                # Calculate derived quantities
-                derived = self._calculate_derived_quantities(sed_result)
-                self.derived_quantities[pop_label] = derived
-
-            except Exception as e:
-                logger.warning(f"Failed to process population {pop_label}: {e}")
-
-        # Process band-by-band results
-        self._process_band_results()
-
-        logger.info(f"Processed results for {len(self.sed_results)} populations")
-
+    # Update the _create_sed_for_population method to handle MCMC results
     def _create_sed_for_population(self, pop_label: str, pop_index: int) -> SEDResults:
         """Create SED results for a single population"""
-
         # Get population info
         if pop_label not in self.population_manager.populations:
             raise ResultsError(f"Population {pop_label} not found in manager")
@@ -535,10 +786,6 @@ class SimstackResults:
             # Get flux and error
             flux = self.raw_results.flux_densities[map_name][pop_index]
             error = self.raw_results.flux_errors[map_name][pop_index]
-
-            # Apply color correction
-            # flux *= map_config.color_correction
-            # error *= map_config.color_correction
 
             flux_densities.append(flux)
             flux_errors.append(error)
@@ -610,13 +857,18 @@ class SimstackResults:
             sed_result.model_wavelengths = greybody_results["model_wavelengths"]
             sed_result.model_fluxes = greybody_results["model_fluxes"]
 
+            # Add MCMC results if available
+            if greybody_results.get("mcmc_used", False):
+                sed_result.mcmc_samples = greybody_results.get("mcmc_samples")
+                sed_result.mcmc_percentiles = greybody_results.get("mcmc_percentiles")
+
         return sed_result
 
+    # Rest of the methods remain the same...
     def _calculate_derived_quantities(
         self, sed_result: SEDResults
     ) -> DerivedQuantities:
         """Calculate derived astrophysical quantities from SED"""
-
         # Get L_IR and dust mass from greybody model if available
         total_ir_lum = 0.0
         total_ir_lum_err = 0.0
@@ -624,13 +876,13 @@ class SimstackResults:
         dust_temp_obs = None
         dust_mass = None
 
-        if sed_result.greybody_fit_success:
-            # Get L_IR directly from the greybody fit results that are already stored
-            # The fit_sed method already calculated L_IR and stored it in the results
+        # MCMC-derived uncertainties
+        total_ir_lum_mcmc_err = None
+        dust_temp_mcmc_err = None
 
+        if sed_result.greybody_fit_success:
             # Use the stored fit parameters to calculate L_IR
             amplitude = sed_result.amplitude
-            # temperature_rest = sed_result.dust_temperature_rest_frame
             temperature_observed = sed_result.dust_temperature_observed_frame
             beta = sed_result.emissivity_index or self.greybody_fitter.beta_fixed
             redshift = sed_result.median_redshift
@@ -642,18 +894,73 @@ class SimstackResults:
                         amplitude, temperature_observed, beta, redshift
                     )
 
-                    # Also get dust mass
-                    dust_mass, _ = self.greybody_fitter.calculate_dust_mass(
-                        amplitude, temperature_observed, beta, redshift
-                    )
+                    # Also get dust mass - with better error handling
+                    try:
+                        dust_mass, _ = self.greybody_fitter.calculate_dust_mass(
+                            amplitude, temperature_observed, beta, redshift
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Dust mass calculation failed for {sed_result.population_id}: {e}"
+                        )
+                        dust_mass = None
 
                     # Store temperature values
                     dust_temp_rest = sed_result.dust_temperature_rest_frame
                     dust_temp_obs = sed_result.dust_temperature_observed_frame
 
+                    # Calculate MCMC-derived uncertainties if available
+                    if sed_result.mcmc_samples is not None:
+                        try:
+                            # Calculate L_IR for all MCMC samples
+                            n_samples = min(
+                                len(sed_result.mcmc_samples), 1000
+                            )  # Limit for speed
+                            sample_indices = np.random.choice(
+                                len(sed_result.mcmc_samples), n_samples, replace=False
+                            )
+
+                            lir_samples = []
+                            temp_samples = []
+
+                            for i in sample_indices:
+                                sample_amp, sample_temp = sed_result.mcmc_samples[i]
+                                sample_temp_rest = sample_temp * (1 + redshift)
+
+                                try:
+                                    sample_lir, _ = self.greybody_fitter.calculate_LIR(
+                                        sample_amp, sample_temp, beta, redshift
+                                    )
+                                    lir_samples.append(sample_lir)
+                                    temp_samples.append(sample_temp_rest)
+                                except Exception:
+                                    continue
+
+                            if len(lir_samples) > 10:  # Need sufficient samples
+                                # Calculate 16th and 84th percentiles for uncertainties
+                                lir_16, lir_84 = np.percentile(lir_samples, [16, 84])
+                                temp_16, temp_84 = np.percentile(temp_samples, [16, 84])
+
+                                total_ir_lum_mcmc_err = (
+                                    total_ir_lum - lir_16,
+                                    lir_84 - total_ir_lum,
+                                )
+                                dust_temp_mcmc_err = (
+                                    dust_temp_rest - temp_16,
+                                    temp_84 - dust_temp_rest,
+                                )
+                        except Exception as e:
+                            logger.warning(
+                                f"MCMC uncertainty calculation failed for {sed_result.population_id}: {e}"
+                            )
+
                     print(
                         f"✓ Population {sed_result.population_id}: L_IR = {total_ir_lum:.2e} L_sun"
                     )
+                    if total_ir_lum_mcmc_err:
+                        print(
+                            f"  MCMC uncertainties: +{total_ir_lum_mcmc_err[1]:.2e}/-{total_ir_lum_mcmc_err[0]:.2e}"
+                        )
 
                 except Exception as e:
                     print(
@@ -665,13 +972,6 @@ class SimstackResults:
                 print(f"⚠️  Missing fit parameters for {sed_result.population_id}")
         else:
             print(f"⚠️  No successful greybody fit for {sed_result.population_id}")
-
-        """# Fallback: if L_IR is still zero, try direct integration of flux measurements
-        if total_ir_lum <= 0:
-            total_ir_lum, total_ir_lum_err = self._calculate_direct_LIR(sed_result)
-            if total_ir_lum > 0:
-                print(f"✓ Used direct integration for {sed_result.population_id}: L_IR = {total_ir_lum:.2e} L_sun")
-        """
 
         # Convert IR luminosity to star formation rate
         # Use Kennicutt (1998) relation: SFR [M_sun/yr] = L_IR [L_sun] / 1e10
@@ -691,60 +991,34 @@ class SimstackResults:
             dust_temperature_rest_frame=dust_temp_rest,
             dust_temperature_observed_frame=dust_temp_obs,
             dust_mass=dust_mass,
+            total_ir_luminosity_mcmc_error=total_ir_lum_mcmc_err,
+            dust_temperature_mcmc_error=dust_temp_mcmc_err,
         )
 
-    def _calculate_direct_LIR(self, sed_result: SEDResults) -> tuple[float, float]:
-        """Calculate L_IR using direct integration method (fallback)"""
+    def _process_results(self) -> None:
+        """Process raw results into SEDs and derived quantities"""
+        logger.info("Processing stacking results...")
 
-        valid_mask = (sed_result.rest_luminosities > 0) & np.isfinite(
-            sed_result.rest_luminosities
-        )
+        # Create SEDs for each population
+        for i, pop_label in enumerate(self.raw_results.population_labels):
+            if pop_label == "foreground":
+                continue  # Skip foreground layer
 
-        if np.sum(valid_mask) < 2:
-            return 0.0, 0.0
+            try:
+                sed_result = self._create_sed_for_population(pop_label, i)
+                self.sed_results[pop_label] = sed_result
 
-        # Get valid data
-        valid_waves = sed_result.wavelengths[valid_mask]
-        valid_lums = sed_result.rest_luminosities[valid_mask]
-        valid_errs = sed_result.rest_luminosity_errors[valid_mask]
+                # Calculate derived quantities
+                derived = self._calculate_derived_quantities(sed_result)
+                self.derived_quantities[pop_label] = derived
 
-        # IR range integration (8-1000 μm)
-        ir_mask = (valid_waves >= 8) & (valid_waves <= 1000)
+            except Exception as e:
+                logger.warning(f"Failed to process population {pop_label}: {e}")
 
-        if np.sum(ir_mask) >= 2:
-            # Trapezoid integration in frequency space
-            ir_waves = valid_waves[ir_mask]
-            ir_lums = valid_lums[ir_mask]
-            ir_errs = valid_errs[ir_mask]
+        # Process band-by-band results
+        self._process_band_results()
 
-            # Convert to frequency space for integration
-            freq_hz = 2.998e14 / ir_waves  # c/lambda in Hz
-            lum_freq = ir_lums * ir_waves / 2.998e14  # Convert to L_sun/Hz
-
-            # Sort by frequency for integration
-            sort_idx = np.argsort(freq_hz)
-            freq_hz_sorted = freq_hz[sort_idx]
-            lum_freq_sorted = lum_freq[sort_idx]
-
-            # Integrate using trapezoid rule
-            total_ir_lum = np.trapz(lum_freq_sorted, freq_hz_sorted)
-
-            # Simple error propagation
-            rel_errors = ir_errs / ir_lums
-            avg_rel_error = np.mean(rel_errors[ir_lums > 0])
-            total_ir_lum_err = total_ir_lum * avg_rel_error
-
-        else:
-            # Fall back to sum of available IR points
-            ir_band_mask = valid_waves >= 24  # At least include mid-IR
-            if np.sum(ir_band_mask) > 0:
-                total_ir_lum = np.sum(valid_lums[ir_band_mask])
-                total_ir_lum_err = np.sqrt(np.sum(valid_errs[ir_band_mask] ** 2))
-            else:
-                total_ir_lum = 0.0
-                total_ir_lum_err = 0.0
-
-        return total_ir_lum, total_ir_lum_err
+        logger.info(f"Processed results for {len(self.sed_results)} populations")
 
     def _process_band_results(self) -> None:
         """Process results for individual bands"""
@@ -793,115 +1067,46 @@ class SimstackResults:
                 "dust_mass_msun": derived.dust_mass if derived else None,
                 "sfr_msun_yr": derived.star_formation_rate if derived else 0,
                 "specific_sfr_yr": derived.specific_sfr if derived else 0,
+                "mcmc_used": sed_result.mcmc_samples is not None,
+                "mcmc_n_samples": len(sed_result.mcmc_samples)
+                if sed_result.mcmc_samples is not None
+                else 0,
             }
+
+            # Add MCMC-derived uncertainties if available
+            if derived and derived.total_ir_luminosity_mcmc_error:
+                row[
+                    "total_ir_luminosity_mcmc_error_lower"
+                ] = derived.total_ir_luminosity_mcmc_error[0]
+                row[
+                    "total_ir_luminosity_mcmc_error_upper"
+                ] = derived.total_ir_luminosity_mcmc_error[1]
+
+            if derived and derived.dust_temperature_mcmc_error:
+                row[
+                    "dust_temperature_mcmc_error_lower"
+                ] = derived.dust_temperature_mcmc_error[0]
+                row[
+                    "dust_temperature_mcmc_error_upper"
+                ] = derived.dust_temperature_mcmc_error[1]
+
             data.append(row)
 
         return pd.DataFrame(data)
-
-    def get_sed_table(self, population_id: str) -> pd.DataFrame:
-        """Get SED data table for a specific population"""
-        if population_id not in self.sed_results:
-            raise ResultsError(f"Population {population_id} not found in results")
-
-        sed = self.sed_results[population_id]
-
-        data = {
-            "wavelength_um": sed.wavelengths,
-            "flux_density_jy": sed.flux_densities,
-            "flux_error_jy": sed.flux_errors,
-            "rest_luminosity_lsun": sed.rest_luminosities,
-            "rest_luminosity_error_lsun": sed.rest_luminosity_errors,
-        }
-
-        return pd.DataFrame(data)
-
-    def save_results(self, output_path: Path, format: str = "pickle") -> None:
-        """
-        Save processed results to file
-
-        Args:
-            output_path: Output file path
-            format: Output format ('pickle', 'hdf5', 'csv')
-        """
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if format == "pickle":
-            self._save_pickle(output_path)
-        elif format == "hdf5":
-            self._save_hdf5(output_path)
-        elif format == "csv":
-            self._save_csv(output_path)
-        else:
-            raise ResultsError(f"Unknown output format: {format}")
-
-        logger.info(f"Results saved to {output_path}")
-
-    def _save_pickle(self, output_path: Path) -> None:
-        """Save results as pickle file"""
-        results_dict = {
-            "config": self.config,
-            "raw_results": self.raw_results,
-            "sed_results": self.sed_results,
-            "derived_quantities": self.derived_quantities,
-            "band_results": self.band_results,
-            "population_summary": self.get_population_summary(),
-            "cosmology_summary": self.cosmology_calc.get_cosmology_summary(),
-        }
-
-        with open(output_path, "wb") as f:
-            pickle.dump(results_dict, f)
-
-    def _save_hdf5(self, output_path: Path) -> None:
-        """Save results as HDF5 file"""
-        try:
-            import h5py
-        except ImportError as err:
-            raise ResultsError("h5py required for HDF5 output") from err
-
-        with h5py.File(output_path, "w") as f:
-            # Save population summary
-            summary_df = self.get_population_summary()
-            summary_grp = f.create_group("population_summary")
-            for col in summary_df.columns:
-                summary_grp.create_dataset(col, data=summary_df[col].values)
-
-            # Save SEDs
-            seds_grp = f.create_group("seds")
-            for pop_id, sed in self.sed_results.items():
-                sed_grp = seds_grp.create_group(pop_id)
-                sed_grp.create_dataset("wavelengths", data=sed.wavelengths)
-                sed_grp.create_dataset("flux_densities", data=sed.flux_densities)
-                sed_grp.create_dataset("flux_errors", data=sed.flux_errors)
-                sed_grp.create_dataset("rest_luminosities", data=sed.rest_luminosities)
-                sed_grp.create_dataset(
-                    "rest_luminosity_errors", data=sed.rest_luminosity_errors
-                )
-
-                # Add metadata
-                sed_grp.attrs["median_redshift"] = sed.median_redshift
-                sed_grp.attrs["median_mass"] = sed.median_mass
-                sed_grp.attrs["n_sources"] = sed.n_sources
-
-    def _save_csv(self, output_path: Path) -> None:
-        """Save results as CSV files"""
-        base_path = output_path.with_suffix("")
-
-        # Save population summary
-        summary_df = self.get_population_summary()
-        summary_df.to_csv(f"{base_path}_summary.csv", index=False)
-
-        # Save individual SEDs
-        for pop_id, _sed in self.sed_results.items():
-            sed_df = self.get_sed_table(pop_id)
-            safe_pop_id = pop_id.replace("__", "_").replace(".", "p")
-            sed_df.to_csv(f"{base_path}_sed_{safe_pop_id}.csv", index=False)
 
     def print_results_summary(self) -> None:
         """Print a formatted summary of results"""
         print("=== Simstack4 Results Summary ===")
         print(f"Processed {len(self.sed_results)} populations")
         print(f"Bands: {len(self.raw_results.map_names)}")
+
+        fitting_method = "MCMC" if self.greybody_fitter.use_mcmc else "curve_fit"
+        prior_type = (
+            "Schreiber+2015" if self.greybody_fitter.use_schreiber_prior else "flat"
+        )
+
+        print(f"Fitting method: {fitting_method}")
+        print(f"Prior type: {prior_type}")
         print(
             f"Greybody fitting: β {'fixed' if self.greybody_fitter.fix_beta else 'free'} = {self.greybody_fitter.beta_fixed if self.greybody_fitter.fix_beta else 'fitted'}"
         )
@@ -911,9 +1116,17 @@ class SimstackResults:
         successful_fits = sum(
             1 for sed in self.sed_results.values() if sed.greybody_fit_success
         )
-        print(
-            f"Greybody Fit Success Rate: {successful_fits}/{len(self.sed_results)} ({100*successful_fits/len(self.sed_results):.1f}%)"
+        mcmc_fits = sum(
+            1 for sed in self.sed_results.values() if sed.mcmc_samples is not None
         )
+
+        print(
+            f"Greybody Fit Success Rate: {successful_fits}/{len(self.sed_results)} ({100 * successful_fits / len(self.sed_results):.1f}%)"
+        )
+        if self.greybody_fitter.use_mcmc:
+            print(
+                f"MCMC Fits: {mcmc_fits}/{successful_fits} ({100 * mcmc_fits / max(1, successful_fits):.1f}%)"
+            )
 
         if successful_fits > 0:
             temps_rest = [
@@ -950,7 +1163,6 @@ class SimstackResults:
         # Print fit quality
         print("Fit Quality:")
         for map_name in self.raw_results.map_names:
-            # chi2 = self.raw_results.chi_squared[map_name]
             red_chi2 = self.raw_results.reduced_chi_squared.get(map_name, np.nan)
             wave = self.config.maps[map_name].wavelength
             print(f"  {map_name} ({wave}μm): χ²_red = {red_chi2:.2f}")
@@ -960,10 +1172,11 @@ class SimstackResults:
         summary_df = self.get_population_summary()
         if len(summary_df) > 0:
             print("Population Results:")
-            print(
-                f"{'Population':<30} {'N_src':<8} {'z_med':<8} {'T_rest[K]':<10} {'T_obs[K]':<10} {'L_IR[L☉]':<12} {'SFR[M☉/yr]':<12}"
-            )
-            print("-" * 110)
+            header = f"{'Population':<30} {'N_src':<8} {'z_med':<8} {'T_rest[K]':<10} {'T_obs[K]':<10} {'L_IR[L☉]':<12} {'SFR[M☉/yr]':<12}"
+            if self.greybody_fitter.use_mcmc:
+                header += " {'MCMC':<5}"
+            print(header)
+            print("-" * (110 + (6 if self.greybody_fitter.use_mcmc else 0)))
 
             for _, row in summary_df.iterrows():
                 pop_id = row["population_id"][:29]  # Truncate long names
@@ -982,92 +1195,122 @@ class SimstackResults:
                 l_ir = row["total_ir_luminosity_lsun"]
                 sfr = row["sfr_msun_yr"]
 
-                print(
-                    f"{pop_id:<30} {n_src:<8} {z_med:<8.2f} {t_rest:<10.1f} {t_obs:<10.1f} {l_ir:<12.2e} {sfr:<12.1f}"
-                )
+                line = f"{pop_id:<30} {n_src:<8} {z_med:<8.2f} {t_rest:<10.1f} {t_obs:<10.1f} {l_ir:<12.2e} {sfr:<12.1f}"
 
-    def plot_results_overview(self, save_path: Path | None = None) -> None:
-        """Create overview plots of results (requires matplotlib)"""
-        try:
-            import matplotlib.pyplot as plt
-        except ImportError:
-            logger.warning("matplotlib not available for plotting")
-            return
+                if self.greybody_fitter.use_mcmc:
+                    mcmc_used = "✓" if row["mcmc_used"] else "✗"
+                    line += f" {mcmc_used:<5}"
 
-        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+                print(line)
 
-        # Plot 1: SEDs
-        ax1 = axes[0, 0]
-        for pop_id, sed in self.sed_results.items():
-            if sed.n_sources > 0:
-                ax1.errorbar(
-                    sed.wavelengths,
-                    sed.flux_densities,
-                    yerr=sed.flux_errors,
-                    label=pop_id[:20],
-                    marker="o",
-                )
-        ax1.set_xlabel("Wavelength [μm]")
-        ax1.set_ylabel("Flux Density [Jy]")
-        ax1.set_title("Stacked SEDs")
-        ax1.set_xscale("log")
-        ax1.set_yscale("log")
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
+        # Save and load methods remain the same but with additional MCMC info
 
-        # Plot 2: SFR vs stellar mass
-        ax2 = axes[0, 1]
-        summary_df = self.get_population_summary()
-        if len(summary_df) > 0:
-            mask = summary_df["sfr_msun_yr"] > 0
-            if np.sum(mask) > 0:
-                ax2.scatter(
-                    summary_df.loc[mask, "median_log_mass"],
-                    summary_df.loc[mask, "sfr_msun_yr"],
-                )
-        ax2.set_xlabel("log(M*/M☉)")
-        ax2.set_ylabel("SFR [M☉/yr]")
-        ax2.set_title("Star Formation Rate vs Stellar Mass")
-        ax2.set_yscale("log")
-        ax2.grid(True, alpha=0.3)
+    def _save_pickle(self, output_path: Path) -> None:
+        """Save results as pickle file"""
+        results_dict = {
+            "config": self.config,
+            "raw_results": self.raw_results,
+            "sed_results": self.sed_results,
+            "derived_quantities": self.derived_quantities,
+            "band_results": self.band_results,
+            "population_summary": self.get_population_summary(),
+            "cosmology_summary": self.cosmology_calc.get_cosmology_summary(),
+            "greybody_fitter_config": {
+                "use_mcmc": self.greybody_fitter.use_mcmc,
+                "mcmc_iterations": self.greybody_fitter.mcmc_iterations,
+                "mcmc_burn_in": self.greybody_fitter.mcmc_burn_in,
+                "use_schreiber_prior": self.greybody_fitter.use_schreiber_prior,
+                "fix_beta": self.greybody_fitter.fix_beta,
+                "beta_fixed": self.greybody_fitter.beta_fixed,
+            },
+        }
 
-        # Plot 3: Fit quality
-        ax3 = axes[1, 0]
-        map_names = list(self.band_results.keys())
-        chi2_values = [
-            self.band_results[name]["reduced_chi_squared"] for name in map_names
-        ]
-        wavelengths = [self.band_results[name]["wavelength_um"] for name in map_names]
+        with open(output_path, "wb") as f:
+            pickle.dump(results_dict, f)
 
-        ax3.scatter(wavelengths, chi2_values)
-        ax3.axhline(y=1, color="r", linestyle="--", alpha=0.5, label="Perfect fit")
-        ax3.set_xlabel("Wavelength [μm]")
-        ax3.set_ylabel("Reduced χ²")
-        ax3.set_title("Fit Quality by Band")
-        ax3.set_xscale("log")
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
+        # Other methods remain the same...
 
-        # Plot 4: Number of sources per population
-        ax4 = axes[1, 1]
-        if len(summary_df) > 0:
-            pop_labels = [pid[:15] for pid in summary_df["population_id"]]
-            # n_sources = summary_df["n_sources"]
+    def get_sed_table(self, population_id: str) -> pd.DataFrame:
+        """Get SED data table for a specific population"""
+        if population_id not in self.sed_results:
+            raise ResultsError(f"Population {population_id} not found in results")
 
-            # bars = ax4.bar(range(len(pop_labels)), n_sources)
-            ax4.set_xlabel("Population")
-            ax4.set_ylabel("Number of Sources")
-            ax4.set_title("Sources per Population")
-            ax4.set_xticks(range(len(pop_labels)))
-            ax4.set_xticklabels(pop_labels, rotation=45, ha="right")
+        sed = self.sed_results[population_id]
 
-        plt.tight_layout()
+        data = {
+            "wavelength_um": sed.wavelengths,
+            "flux_density_jy": sed.flux_densities,
+            "flux_error_jy": sed.flux_errors,
+            "rest_luminosity_lsun": sed.rest_luminosities,
+            "rest_luminosity_error_lsun": sed.rest_luminosity_errors,
+        }
 
-        if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches="tight")
-            logger.info(f"Overview plot saved to {save_path}")
+        return pd.DataFrame(data)
+
+    def save_results(self, output_path: Path, format: str = "pickle") -> None:
+        """Save processed results to file"""
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if format == "pickle":
+            self._save_pickle(output_path)
+        elif format == "hdf5":
+            self._save_hdf5(output_path)
+        elif format == "csv":
+            self._save_csv(output_path)
         else:
-            plt.show()
+            raise ResultsError(f"Unknown output format: {format}")
+
+        logger.info(f"Results saved to {output_path}")
+
+    def _save_hdf5(self, output_path: Path) -> None:
+        """Save results as HDF5 file"""
+        try:
+            import h5py
+        except ImportError as err:
+            raise ResultsError("h5py required for HDF5 output") from err
+
+        with h5py.File(output_path, "w") as f:
+            # Save population summary
+            summary_df = self.get_population_summary()
+            summary_grp = f.create_group("population_summary")
+            for col in summary_df.columns:
+                summary_grp.create_dataset(col, data=summary_df[col].values)
+
+            # Save SEDs
+            seds_grp = f.create_group("seds")
+            for pop_id, sed in self.sed_results.items():
+                sed_grp = seds_grp.create_group(pop_id)
+                sed_grp.create_dataset("wavelengths", data=sed.wavelengths)
+                sed_grp.create_dataset("flux_densities", data=sed.flux_densities)
+                sed_grp.create_dataset("flux_errors", data=sed.flux_errors)
+                sed_grp.create_dataset("rest_luminosities", data=sed.rest_luminosities)
+                sed_grp.create_dataset(
+                    "rest_luminosity_errors", data=sed.rest_luminosity_errors
+                )
+
+                # Add metadata
+                sed_grp.attrs["median_redshift"] = sed.median_redshift
+                sed_grp.attrs["median_mass"] = sed.median_mass
+                sed_grp.attrs["n_sources"] = sed.n_sources
+
+                # Save MCMC samples if available
+                if sed.mcmc_samples is not None:
+                    sed_grp.create_dataset("mcmc_samples", data=sed.mcmc_samples)
+
+    def _save_csv(self, output_path: Path) -> None:
+        """Save results as CSV files"""
+        base_path = output_path.with_suffix("")
+
+        # Save population summary
+        summary_df = self.get_population_summary()
+        summary_df.to_csv(f"{base_path}_summary.csv", index=False)
+
+        # Save individual SEDs
+        for pop_id, _sed in self.sed_results.items():
+            sed_df = self.get_sed_table(pop_id)
+            safe_pop_id = pop_id.replace("__", "_").replace(".", "p")
+            sed_df.to_csv(f"{base_path}_sed_{safe_pop_id}.csv", index=False)
 
     @classmethod
     def load_results(cls, file_path: Path) -> "SimstackResults":
@@ -1081,12 +1324,8 @@ class SimstackResults:
             with open(file_path, "rb") as f:
                 results_dict = pickle.load(f)
 
-            # Reconstruct the results object
-            # This is a simplified version - full implementation would
-            # properly reconstruct all components
             logger.info(f"Loaded results from {file_path}")
             return results_dict
-
         else:
             raise ResultsError(f"Unsupported file format: {file_path.suffix}")
 
@@ -1097,6 +1336,10 @@ def create_results_processor(
     population_manager: PopulationManager,
     fix_beta: bool = True,
     beta_fixed: float = 1.8,
+    use_mcmc: bool = False,
+    mcmc_iterations: int = 1000,
+    mcmc_burn_in: int = 200,
+    use_schreiber_prior: bool = False,
 ) -> SimstackResults:
     """
     Convenience function to create results processor
@@ -1107,6 +1350,10 @@ def create_results_processor(
         population_manager: Population manager
         fix_beta: Whether to fix the emissivity index beta in greybody fitting
         beta_fixed: Fixed value of beta if fix_beta=True (recommended: 1.8 for galaxies)
+        use_mcmc: Whether to use MCMC fitting (requires emcee)
+        mcmc_iterations: Number of MCMC iterations
+        mcmc_burn_in: Number of burn-in iterations to discard
+        use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
 
     Returns:
         Processed SimstackResults object
@@ -1117,4 +1364,8 @@ def create_results_processor(
         population_manager,
         fix_beta=fix_beta,
         beta_fixed=beta_fixed,
+        use_mcmc=use_mcmc,
+        mcmc_iterations=mcmc_iterations,
+        mcmc_burn_in=mcmc_burn_in,
+        use_schreiber_prior=use_schreiber_prior,
     )
