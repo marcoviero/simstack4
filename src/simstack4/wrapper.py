@@ -225,6 +225,7 @@ class SimstackWrapper:
         mcmc_iterations: int = 1000,
         mcmc_burn_in: int = 200,
         use_schreiber_prior: bool = False,
+        save_csv_path: str | None = None,
     ) -> None:
         """Run ONLY the analysis/SED fitting (requires stacking results)"""
         if not self.stacking_results:
@@ -260,11 +261,110 @@ class SimstackWrapper:
                 "processed_results": self.processed_results,
             }
 
+            if save_csv_path is not None:
+                self._save_results_to_csv(save_csv_path)
+
             logger.info("✓ Analysis completed successfully!")
 
         except Exception as e:
             logger.error(f"Analysis pipeline failed: {e}")
             raise SimstackError(f"Analysis failed: {e}") from e
+
+    def _save_results_to_csv(self, csv_output_path: str | None = None) -> None:
+        """
+        Save analysis results to CSV file(s)
+
+        Parameters:
+        -----------
+        csv_output_path : str, optional
+            Base path for CSV files. If None, uses output path from config
+        """
+        try:
+            from pathlib import Path
+
+            # Determine output path
+            if csv_output_path is None:
+                # Use the same directory as other outputs
+                if hasattr(self.config, "output") and hasattr(
+                    self.config.output, "results_dir"
+                ):
+                    output_dir = Path(self.config.output.results_dir)
+                else:
+                    # Fallback to current directory
+                    output_dir = Path(".")
+
+                # Create base filename from config or timestamp
+                base_name = getattr(self.config.io, "shortname", "simstack_results")
+                csv_output_path = output_dir / f"{base_name}_results.csv"
+            else:
+                csv_output_path = Path(csv_output_path)
+
+            # Ensure output directory exists
+            csv_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Save main population summary
+            summary_df = self.processed_results.get_population_summary()
+            summary_path = csv_output_path.with_suffix(".csv")
+            summary_df.to_csv(summary_path, index=False)
+            logger.info(f"✓ Population summary saved to: {summary_path}")
+
+            # Save individual SEDs for each population
+            sed_dir = csv_output_path.parent / f"{csv_output_path.stem}_seds"
+            sed_dir.mkdir(exist_ok=True)
+
+            for pop_id in self.processed_results.sed_results.keys():
+                try:
+                    sed_df = self.processed_results.get_sed_table(pop_id)
+                    # Clean population ID for filename
+                    safe_pop_id = (
+                        pop_id.replace("__", "_").replace(".", "p").replace("/", "_")
+                    )
+                    sed_path = sed_dir / f"sed_{safe_pop_id}.csv"
+                    sed_df.to_csv(sed_path, index=False)
+                    logger.info(f"✓ SED for {pop_id} saved to: {sed_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to save SED for population {pop_id}: {e}")
+
+            # Save band-by-band results
+            if (
+                hasattr(self.processed_results, "band_results")
+                and self.processed_results.band_results
+            ):
+                band_data = []
+                for (
+                    band_name,
+                    band_data_dict,
+                ) in self.processed_results.band_results.items():
+                    for i, pop_label in enumerate(band_data_dict["population_labels"]):
+                        row = {
+                            "band": band_name,
+                            "wavelength_um": band_data_dict["wavelength_um"],
+                            "population": pop_label,
+                            "flux_density_jy": band_data_dict["flux_densities_jy"][i],
+                            "flux_error_jy": band_data_dict["flux_errors_jy"][i],
+                            "chi_squared": band_data_dict.get("chi_squared", np.nan),
+                            "reduced_chi_squared": band_data_dict.get(
+                                "reduced_chi_squared", np.nan
+                            ),
+                            "n_sources": band_data_dict["n_sources_per_pop"][i],
+                        }
+                        band_data.append(row)
+
+                if band_data:
+                    import pandas as pd
+
+                    band_df = pd.DataFrame(band_data)
+                    band_path = csv_output_path.with_name(
+                        f"{csv_output_path.stem}_bands.csv"
+                    )
+                    band_df.to_csv(band_path, index=False)
+                    logger.info(f"✓ Band results saved to: {band_path}")
+
+            logger.info(f"✓ All CSV files saved to: {csv_output_path.parent}")
+
+        except Exception as e:
+            logger.error(f"Failed to save CSV files: {e}")
+            raise SimstackError(f"CSV export failed: {e}") from e
 
     def save_stacking_results(self, filepath: str | Path) -> None:
         """Save raw stacking results as JSON with embedded config"""
@@ -691,7 +791,7 @@ class SimstackWrapper:
 
         return True
 
-    def save_analysis_results(self, filepath: str | Path) -> None:
+    def _save_analysis_results(self, filepath: str | Path) -> None:
         """Save analysis results"""
         if not self.processed_results:
             raise SimstackError("No analysis results to save")
@@ -718,6 +818,7 @@ class SimstackWrapper:
         mcmc_iterations: int = 1000,
         mcmc_burn_in: int = 200,
         use_schreiber_prior: bool = False,
+        save_csv_path: str | None = None,
     ) -> SimstackResults:
         """
         Public method to run ONLY analysis (requires stacking results)
@@ -737,6 +838,7 @@ class SimstackWrapper:
             mcmc_iterations=mcmc_iterations,
             mcmc_burn_in=mcmc_burn_in,
             use_schreiber_prior=use_schreiber_prior,
+            save_csv_path=save_csv_path,
         )
         return self.processed_results
 
@@ -746,6 +848,7 @@ class SimstackWrapper:
         mcmc_iterations: int = 1000,
         mcmc_burn_in: int = 200,
         use_schreiber_prior: bool = False,
+        save_path: str | None = None,
     ) -> SimstackResults:
         """
         Run both stacking and analysis
@@ -762,6 +865,7 @@ class SimstackWrapper:
             mcmc_iterations=mcmc_iterations,
             mcmc_burn_in=mcmc_burn_in,
             use_schreiber_prior=use_schreiber_prior,
+            save_path=save_path,
         )
         return self.processed_results
 
@@ -861,6 +965,7 @@ def run_stacking_only(
 def run_analysis_only(
     stacking_results_path: str | Path,
     save_path: str | Path = None,
+    save_csv_path: str | Path = None,
     use_mcmc: bool = False,
     mcmc_iterations: int = 1000,
     mcmc_burn_in: int = 200,
@@ -887,9 +992,10 @@ def run_analysis_only(
         mcmc_iterations=mcmc_iterations,
         mcmc_burn_in=mcmc_burn_in,
         use_schreiber_prior=use_schreiber_prior,
+        save_csv_path=save_csv_path,
     )
 
     if save_path:
-        wrapper.save_analysis_results(save_path)
+        wrapper._save_analysis_results(save_path)
 
     return results

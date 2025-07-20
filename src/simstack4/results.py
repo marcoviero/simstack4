@@ -1013,7 +1013,12 @@ class SimstackResults:
                 self.derived_quantities[pop_label] = derived
 
             except Exception as e:
-                logger.warning(f"Failed to process population {pop_label}: {e}")
+                logger.error(f"Failed to process population {pop_label}: {e}")
+                import traceback
+
+                logger.error(traceback.format_exc())
+                # Continue with next population instead of stopping
+                continue
 
         # Process band-by-band results
         self._process_band_results()
