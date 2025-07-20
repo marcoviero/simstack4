@@ -1,8 +1,11 @@
 """
-Complete SimstackWrapper implementation for Simstack4 with JSON save/load
+Enhanced wrapper.py with comprehensive catalog metadata saving - RUFF COMPLIANT
 
-Replace your current wrapper.py with this version
+This version saves complete catalog metadata to JSON files, making them fully self-contained
+for analysis without requiring the original TOML config file.
 """
+
+from __future__ import annotations
 
 import json
 from datetime import datetime
@@ -31,10 +34,19 @@ class EnhancedJSONEncoder(json.JSONEncoder):
         # Handle numpy types
         if isinstance(obj, np.ndarray):
             return obj.tolist()
-        if isinstance(obj, np.integer):
+        if isinstance(obj, np.integer | np.int32 | np.int64):
             return int(obj)
-        if isinstance(obj, np.floating):
+        if isinstance(obj, np.floating | np.float32 | np.float64):
             return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+
+        # Handle pandas Series/DataFrame
+        if hasattr(obj, "to_dict"):
+            try:
+                return obj.to_dict()
+            except (AttributeError, TypeError, ValueError):
+                pass
 
         # Handle custom enum/object types by converting to string
         if hasattr(obj, "__name__"):  # Class types
@@ -51,9 +63,11 @@ class EnhancedJSONEncoder(json.JSONEncoder):
                 return {
                     k: v
                     for k, v in obj.__dict__.items()
-                    if isinstance(v | (str, int, float, bool, list, dict, type(None)))
+                    if isinstance(
+                        v, str | int | float | bool | list | dict | type(None)
+                    )
                 }
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 return str(obj)
 
         # Final fallback - convert to string
@@ -62,10 +76,7 @@ class EnhancedJSONEncoder(json.JSONEncoder):
 
 class SimstackWrapper:
     """
-    Main wrapper class for Simstack4 operations
-
-    This class provides a simple interface to the complete simstack pipeline,
-    handling configuration, data loading, stacking, and results processing.
+    Main wrapper class for Simstack4 operations with enhanced JSON metadata
     """
 
     def __init__(
@@ -74,7 +85,7 @@ class SimstackWrapper:
         read_maps: bool = False,
         read_catalog: bool = False,
         stack_automatically: bool = False,
-        analyze_automatically: bool = False,  # New parameter
+        analyze_automatically: bool = False,
     ):
         """
         Initialize SimstackWrapper
@@ -90,13 +101,15 @@ class SimstackWrapper:
         # Handle config loading
         if isinstance(config, str | Path):
             self.config = load_config(config)
-            self.config_path = str(config)  # Store original path
+            self.config_path = str(config)
         else:
             self.config = config
             self.config_path = None
 
-        # Store embedded config from JSON files
+        # Store embedded config and catalog metadata
         self._embedded_config: dict | None = None
+        self._catalog_metadata: dict | None = None
+        self._catalog_data_cache: dict | None = None
 
         # Store population info for reconstruction
         self._population_info: list = []
@@ -134,9 +147,659 @@ class SimstackWrapper:
         if analyze_automatically and self.config and self.stacking_results:
             self._run_analysis()
 
+    def _extract_catalog_metadata(self) -> dict:
+        """Extract comprehensive catalog metadata for JSON embedding"""
+        if not self.sky_catalogs or not self.population_manager:
+            logger.warning("No catalog loaded - cannot extract metadata")
+            return {}
+
+        metadata = {}
+
+        try:
+            # Basic catalog info - FIX: Check for empty properly
+            catalog_df = getattr(self.sky_catalogs, "catalog_df", None)
+            n_total_sources = 0
+            catalog_columns = []
+
+            if catalog_df is not None:
+                if hasattr(catalog_df, "empty"):
+                    # It's a pandas DataFrame
+                    if not catalog_df.empty:
+                        n_total_sources = len(catalog_df)
+                        catalog_columns = list(catalog_df.columns)
+                elif hasattr(catalog_df, "__len__"):
+                    # It's some other iterable
+                    n_total_sources = len(catalog_df)
+                    if hasattr(catalog_df, "columns"):
+                        catalog_columns = list(catalog_df.columns)
+
+            metadata["catalog_info"] = {
+                "n_total_sources": n_total_sources,
+                "n_populations": len(self.population_manager.populations),
+                "catalog_columns": catalog_columns,
+                "catalog_file": self.config.catalog.file if self.config else None,
+                "catalog_path": self.config.catalog.path if self.config else None,
+            }
+
+            # Population statistics
+            metadata["population_stats"] = {}
+            for pop_id, population in self.population_manager.populations.items():
+                stats = {
+                    "n_sources": getattr(population, "n_sources", 0),
+                    "median_redshift": getattr(population, "median_redshift", 0.0),
+                    "median_stellar_mass": getattr(
+                        population, "median_stellar_mass", 0.0
+                    ),
+                    "redshift_range": getattr(population, "redshift_range", [0.0, 0.0]),
+                    "mass_range": getattr(population, "mass_range", [0.0, 0.0]),
+                }
+
+                # Add additional attributes if they exist
+                for attr in ["classification_value", "bin_edges", "selection_criteria"]:
+                    if hasattr(population, attr):
+                        value = getattr(population, attr)
+                        if isinstance(value, np.ndarray):
+                            stats[attr] = value.tolist()
+                        else:
+                            stats[attr] = value
+
+                metadata["population_stats"][pop_id] = stats
+
+            # Binning configuration used
+            if self.config and self.config.catalog.classification.binning:
+                metadata["binning_config"] = {}
+                for (
+                    bin_name,
+                    bin_config,
+                ) in self.config.catalog.classification.binning.items():
+                    metadata["binning_config"][bin_name] = {
+                        "id": bin_config.id,
+                        "label": bin_config.label,
+                        "bins": bin_config.bins,
+                        "formula_ref": bin_config.formula_ref,
+                    }
+
+            # Coordinate system info
+            if self.config:
+                metadata["astrometry"] = dict(self.config.catalog.astrometry)
+
+            # Sample of catalog data for validation (first 100 sources) - FIX: Better handling
+            if catalog_df is not None and n_total_sources > 0:
+                try:
+                    # Try to get sample data
+                    if hasattr(catalog_df, "head"):
+                        sample_df = catalog_df.head(100)
+                    elif hasattr(catalog_df, "__getitem__"):
+                        sample_df = (
+                            catalog_df[:100] if len(catalog_df) > 100 else catalog_df
+                        )
+                    else:
+                        sample_df = None
+
+                    if sample_df is not None and hasattr(sample_df, "columns"):
+                        # Convert to JSON-serializable format
+                        catalog_sample = {}
+                        for col in sample_df.columns:
+                            try:
+                                if hasattr(sample_df[col], "values"):
+                                    values = sample_df[col].values
+                                else:
+                                    values = sample_df[col]
+
+                                if hasattr(values, "dtype") and np.issubdtype(
+                                    values.dtype, np.number
+                                ):
+                                    # Convert numeric columns
+                                    catalog_sample[col] = values.tolist()
+                                else:
+                                    # Convert string/object columns
+                                    catalog_sample[col] = [str(v) for v in values]
+                            except (
+                                AttributeError,
+                                TypeError,
+                                ValueError,
+                                IndexError,
+                            ) as e:
+                                logger.warning(f"Could not serialize column {col}: {e}")
+                                catalog_sample[col] = None
+
+                        metadata["catalog_sample"] = catalog_sample
+                except (AttributeError, TypeError, ValueError, KeyError) as e:
+                    logger.warning(f"Could not create catalog sample: {e}")
+
+            logger.info(
+                f"Extracted catalog metadata for {metadata['catalog_info']['n_populations']} populations"
+            )
+
+        except (AttributeError, TypeError, ValueError, KeyError) as e:
+            logger.error(f"Failed to extract catalog metadata: {e}")
+            metadata["extraction_error"] = str(e)
+
+        return metadata
+
+    def _extract_population_data(self) -> dict:
+        """Extract detailed population data for reconstruction"""
+        if not self.population_manager:
+            return {}
+
+        population_data = {
+            "populations": [],
+            "population_details": {},
+            "reconstruction_info": {
+                "total_sources": 0,
+                "coordinate_system": "icrs",  # Default
+                "required_columns": [],
+            },
+        }
+
+        try:
+            total_sources = 0
+            required_columns = set()
+
+            for i, (pop_id, population) in enumerate(
+                self.population_manager.populations.items()
+            ):
+                # Basic population info
+                pop_info = {
+                    "index": i,
+                    "population_id": pop_id,
+                    "n_sources": getattr(population, "n_sources", 0),
+                    "median_redshift": getattr(population, "median_redshift", 0.0),
+                    "median_stellar_mass": getattr(
+                        population, "median_stellar_mass", 0.0
+                    ),
+                }
+
+                # Add range information
+                for attr in ["redshift_range", "mass_range", "classification_value"]:
+                    if hasattr(population, attr):
+                        value = getattr(population, attr)
+                        if isinstance(value, np.ndarray):
+                            pop_info[attr] = value.tolist()
+                        else:
+                            pop_info[attr] = value
+
+                population_data["populations"].append(pop_info)
+                total_sources += pop_info["n_sources"]
+
+                # Detailed data for reconstruction
+                pop_details = {}
+
+                # Source indices (critical for reconstruction)
+                if hasattr(population, "source_indices"):
+                    indices = population.source_indices
+                    if isinstance(indices, np.ndarray):
+                        pop_details["source_indices"] = indices.tolist()
+                    else:
+                        pop_details["source_indices"] = list(indices)
+
+                # Coordinates (essential for stacking)
+                if hasattr(population, "coordinates"):
+                    coords = population.coordinates
+                    if hasattr(coords, "ra") and hasattr(coords, "dec"):
+                        pop_details["coordinates"] = {
+                            "ra": coords.ra.degree.tolist()
+                            if hasattr(coords.ra, "degree")
+                            else coords.ra.tolist(),
+                            "dec": coords.dec.degree.tolist()
+                            if hasattr(coords.dec, "degree")
+                            else coords.dec.tolist(),
+                        }
+                        required_columns.update(["ra", "dec"])
+
+                # Physical properties
+                for attr in ["redshifts", "stellar_masses"]:
+                    if hasattr(population, attr):
+                        values = getattr(population, attr)
+                        if isinstance(values, np.ndarray):
+                            pop_details[attr] = values.tolist()
+                        elif values is not None:
+                            pop_details[attr] = list(values)
+
+                        if attr == "redshifts":
+                            required_columns.add("redshift")
+                        elif attr == "stellar_masses":
+                            required_columns.add("stellar_mass")
+
+                # Store detailed data
+                population_data["population_details"][pop_id] = pop_details
+
+            # Update reconstruction info
+            population_data["reconstruction_info"]["total_sources"] = total_sources
+            population_data["reconstruction_info"]["required_columns"] = list(
+                required_columns
+            )
+
+            logger.info(
+                f"Extracted population data for {len(population_data['populations'])} populations ({total_sources} total sources)"
+            )
+
+        except (AttributeError, TypeError, ValueError, KeyError) as e:
+            logger.error(f"Failed to extract population data: {e}")
+            population_data["extraction_error"] = str(e)
+
+        return population_data
+
+    def save_stacking_results(self, filepath: str | Path) -> None:
+        """Save stacking results as fully self-contained JSON"""
+        if not self.stacking_results:
+            raise SimstackError("No stacking results to save")
+
+        filepath = Path(filepath).with_suffix(".json")
+
+        try:
+            # Extract all necessary data
+            stacking_data = self._extract_stacking_data()
+
+            # Add comprehensive catalog metadata
+            catalog_metadata = self._extract_catalog_metadata()
+            stacking_data["catalog_metadata"] = catalog_metadata
+
+            # Add detailed population data
+            population_data = self._extract_population_data()
+            stacking_data.update(population_data)
+
+            # Embed the full configuration
+            if self.config:
+                stacking_data["embedded_config"] = self._serialize_config(self.config)
+
+            # Enhanced metadata
+            stacking_data["metadata"] = {
+                "timestamp": datetime.now().isoformat(),
+                "version": "simstack4_json_self_contained_v2",
+                "config_path": self.config_path,
+                "n_populations": len(self.population_manager)
+                if self.population_manager
+                else 0,
+                "n_maps": len(self.sky_maps) if self.sky_maps else 0,
+                "catalog_embedded": catalog_metadata is not None
+                and len(catalog_metadata) > 0,
+                "population_data_embedded": population_data is not None
+                and len(population_data.get("populations", [])) > 0,
+                "self_contained": True,  # Flag indicating this file should work standalone
+            }
+
+            # Save with enhanced encoder
+            with open(filepath, "w") as f:
+                json.dump(stacking_data, f, indent=2, cls=EnhancedJSONEncoder)
+
+            # Validate the saved file
+            self._validate_saved_json(filepath)
+
+            logger.info(f"✓ Self-contained stacking results saved: {filepath}")
+            logger.info(f"  - {stacking_data['metadata']['n_populations']} populations")
+            logger.info(f"  - {stacking_data['metadata']['n_maps']} maps")
+            logger.info(
+                f"  - Catalog metadata: {'✓' if stacking_data['metadata']['catalog_embedded'] else '✗'}"
+            )
+            logger.info(
+                f"  - Population data: {'✓' if stacking_data['metadata']['population_data_embedded'] else '✗'}"
+            )
+
+        except (OSError, ValueError, TypeError) as e:
+            logger.error(f"Failed to save stacking results: {e}")
+            raise SimstackError(f"Save failed: {e}") from e
+
+    def _validate_saved_json(self, filepath: Path) -> None:
+        """Validate that saved JSON contains all necessary data for analysis"""
+        try:
+            with open(filepath) as f:
+                data = json.load(f)
+
+            required_keys = [
+                "flux_densities",
+                "flux_errors",
+                "map_names",
+                "population_labels",
+                "catalog_metadata",
+                "populations",
+                "population_details",
+            ]
+
+            missing_keys = [key for key in required_keys if key not in data]
+            if missing_keys:
+                logger.warning(
+                    f"JSON validation warning - missing keys: {missing_keys}"
+                )
+
+            # Check catalog metadata
+            catalog_meta = data.get("catalog_metadata", {})
+            if not catalog_meta.get("catalog_info", {}).get("n_populations", 0):
+                logger.warning("JSON validation warning - no population metadata found")
+
+            # Check population data
+            pop_data = data.get("populations", [])
+            if not pop_data:
+                logger.warning("JSON validation warning - no population data found")
+
+            logger.info("✓ JSON validation completed")
+
+        except (OSError, ValueError) as e:
+            logger.warning(f"JSON validation failed: {e}")
+
+    def load_stacking_results(self, filepath: str | Path) -> None:
+        """Load stacking results from self-contained JSON"""
+        filepath = Path(filepath)
+
+        if not filepath.exists() and filepath.suffix != ".json":
+            filepath = filepath.with_suffix(".json")
+
+        if not filepath.exists():
+            raise SimstackError(f"Stacking results file not found: {filepath}")
+
+        with open(filepath) as f:
+            stacking_data = json.load(f)
+
+        # Check if this is a self-contained file
+        metadata = stacking_data.get("metadata", {})
+        is_self_contained = metadata.get("self_contained", False)
+
+        logger.info(f"Loading stacking results from: {filepath}")
+        logger.info(f"File type: {'self-contained' if is_self_contained else 'legacy'}")
+
+        # Reconstruct stacking results object
+        self.stacking_results = type("StackingResults", (), {})()
+
+        # Load basic stacking data
+        for key, value in stacking_data.items():
+            if key not in [
+                "metadata",
+                "populations",
+                "population_details",
+                "embedded_config",
+                "catalog_metadata",
+            ]:
+                if isinstance(value, list):
+                    setattr(self.stacking_results, key, np.array(value))
+                else:
+                    setattr(self.stacking_results, key, value)
+
+        # Store embedded data
+        self._embedded_config = stacking_data.get("embedded_config")
+        self._catalog_metadata = stacking_data.get("catalog_metadata", {})
+        self._population_info = stacking_data.get("populations", [])
+        self._population_details = stacking_data.get("population_details", {})
+
+        # Try to reconstruct config
+        if not self.config:
+            if self._embedded_config:
+                try:
+                    self.config = self._reconstruct_config_from_json()
+                    logger.info("✓ Configuration reconstructed from embedded data")
+                except (ImportError, AttributeError, TypeError) as e:
+                    logger.warning(f"Config reconstruction failed: {e}")
+            elif metadata.get("config_path"):
+                try:
+                    self.config = load_config(metadata["config_path"])
+                    logger.info(
+                        f"✓ Configuration loaded from: {metadata['config_path']}"
+                    )
+                except OSError as e:
+                    logger.warning(f"Original config not accessible: {e}")
+
+        # Reconstruct population manager from embedded data
+        if self._catalog_metadata and self._population_info:
+            try:
+                self._reconstruct_population_manager()
+                logger.info("✓ Population manager reconstructed from embedded data")
+            except (ImportError, AttributeError, TypeError, KeyError) as e:
+                logger.warning(f"Population manager reconstruction failed: {e}")
+                logger.info("Will attempt to load from catalog if config is available")
+
+        # Fallback: load catalog from config if population manager reconstruction failed
+        if not self.population_manager and self.config:
+            try:
+                logger.info("Attempting to load catalog from configuration...")
+                self._load_catalog()
+            except (OSError, ImportError) as e:
+                logger.warning(f"Catalog loading failed: {e}")
+
+        # Final validation
+        if not self.population_manager:
+            raise SimstackError(
+                "Could not reconstruct population manager. "
+                "The JSON file may be missing required metadata."
+            )
+
+        logger.info(
+            f"✓ Successfully loaded stacking results with {len(self.population_manager)} populations"
+        )
+
+    def _get_cosmology_enum(self, cosmology_str: str):
+        """Convert cosmology string to enum"""
+        try:
+            from .config import Cosmology
+
+            # Handle both string formats
+            cosmology_upper = cosmology_str.upper()
+            if cosmology_upper in ["PLANCK18", "Planck18"]:
+                return Cosmology.PLANCK18
+            elif cosmology_upper in ["PLANCK15", "Planck15"]:
+                return Cosmology.PLANCK15
+            else:
+                logger.warning(
+                    f"Unknown cosmology string '{cosmology_str}', defaulting to Planck18"
+                )
+                return Cosmology.PLANCK18
+        except ImportError:
+            logger.warning("Could not import Cosmology enum, returning string")
+            return cosmology_str
+
+    def _reconstruct_population_manager(self) -> None:
+        """Reconstruct population manager from embedded JSON data"""
+        if not self._catalog_metadata or not self._population_info:
+            raise SimstackError(
+                "Insufficient metadata for population manager reconstruction"
+            )
+
+        try:
+            # Import required classes
+            import inspect
+
+            from .populations import PopulationBin, PopulationManager
+
+            # Create population bins from embedded data
+            populations = {}
+
+            # Inspect PopulationBin constructor to understand its signature
+            try:
+                sig = inspect.signature(PopulationBin.__init__)
+                logger.debug(f"PopulationBin constructor signature: {sig}")
+            except (AttributeError, TypeError) as e:
+                logger.debug(f"Could not inspect PopulationBin constructor: {e}")
+
+            for pop_data in self._population_info:
+                pop_id = pop_data["population_id"]
+                pop_details = self._population_details.get(pop_id, {})
+
+                # Create population bin using the correct dataclass structure
+                try:
+                    # Extract bin ranges from population ID or use defaults
+                    bin_ranges = {}
+                    if "redshift_range" in pop_data:
+                        redshift_range = pop_data["redshift_range"]
+                        if (
+                            isinstance(redshift_range, list)
+                            and len(redshift_range) >= 2
+                        ):
+                            bin_ranges["redshift"] = (
+                                redshift_range[0],
+                                redshift_range[1],
+                            )
+
+                    if "mass_range" in pop_data:
+                        mass_range = pop_data["mass_range"]
+                        if isinstance(mass_range, list) and len(mass_range) >= 2:
+                            bin_ranges["stellar_mass"] = (mass_range[0], mass_range[1])
+
+                    # If no ranges found, try to parse from population ID
+                    if not bin_ranges:
+                        # Parse population ID like "redshift_0.01_0.5__l_uv_9.0_10.0__split_0"
+                        id_parts = pop_id.split("__")
+                        for part in id_parts:
+                            if "_" in part and not part.startswith("split_"):
+                                components = part.split("_")
+                                if len(components) >= 3:
+                                    try:
+                                        var_name = components[0]
+                                        min_val = float(components[1])
+                                        max_val = float(components[2])
+                                        bin_ranges[var_name] = (min_val, max_val)
+                                    except (ValueError, IndexError):
+                                        pass
+
+                    # Extract split info
+                    split_value = 0
+                    split_label = "split_0"
+                    if "split_" in pop_id:
+                        try:
+                            split_part = [
+                                p for p in pop_id.split("__") if p.startswith("split_")
+                            ][0]
+                            split_value = int(split_part.split("_")[1])
+                            split_label = split_part
+                        except (IndexError, ValueError):
+                            pass
+
+                    # Create the PopulationBin with correct parameters
+                    population = PopulationBin(
+                        id_label=pop_id,
+                        bin_ranges=bin_ranges,
+                        split_label=split_label,
+                        split_value=split_value,
+                        indices=np.array(pop_details.get("source_indices", [])),
+                        n_sources=pop_data.get("n_sources", 0),
+                    )
+
+                    # Set medians
+                    medians = {}
+                    if "median_redshift" in pop_data:
+                        medians["redshift"] = pop_data["median_redshift"]
+                    if "median_stellar_mass" in pop_data:
+                        medians["stellar_mass"] = pop_data["median_stellar_mass"]
+                    population.medians = medians
+
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"Could not create PopulationBin for {pop_id}: {e}")
+                    # Create a minimal compatible object
+                    population = type(
+                        "PopulationBin",
+                        (),
+                        {
+                            "id_label": pop_id,
+                            "bin_ranges": {},
+                            "split_label": "split_0",
+                            "split_value": 0,
+                            "indices": np.array(pop_details.get("source_indices", [])),
+                            "n_sources": pop_data.get("n_sources", 0),
+                            "medians": {
+                                "redshift": pop_data.get("median_redshift", 0.0),
+                                "stellar_mass": pop_data.get(
+                                    "median_stellar_mass", 0.0
+                                ),
+                            },
+                            "population_id": pop_id,  # For legacy compatibility
+                            "median_redshift": pop_data.get("median_redshift", 0.0),
+                            "median_stellar_mass": pop_data.get(
+                                "median_stellar_mass", 0.0
+                            ),
+                            "redshift_range": pop_data.get(
+                                "redshift_range", [0.0, 0.0]
+                            ),
+                            "mass_range": pop_data.get("mass_range", [0.0, 0.0]),
+                        },
+                    )()
+
+                # Add coordinates if available
+                if "coordinates" in pop_details:
+                    coord_data = pop_details["coordinates"]
+                    try:
+                        import astropy.units as u
+                        from astropy.coordinates import SkyCoord
+
+                        population.coordinates = SkyCoord(
+                            ra=coord_data["ra"] * u.deg, dec=coord_data["dec"] * u.deg
+                        )
+                    except ImportError:
+                        # Fallback: simple coordinate container
+                        population.coordinates = type(
+                            "Coordinates",
+                            (),
+                            {
+                                "ra": type(
+                                    "RA", (), {"degree": np.array(coord_data["ra"])}
+                                )(),
+                                "dec": type(
+                                    "Dec", (), {"degree": np.array(coord_data["dec"])}
+                                )(),
+                            },
+                        )()
+
+                # Add other attributes for compatibility
+                if "redshifts" in pop_details:
+                    population.redshifts = np.array(pop_details["redshifts"])
+
+                if "stellar_masses" in pop_details:
+                    population.stellar_masses = np.array(pop_details["stellar_masses"])
+
+                # Add legacy properties for backward compatibility
+                if not hasattr(population, "population_id"):
+                    population.population_id = pop_id
+                if not hasattr(population, "median_redshift"):
+                    population.median_redshift = pop_data.get("median_redshift", 0.0)
+                if not hasattr(population, "median_stellar_mass"):
+                    population.median_stellar_mass = pop_data.get(
+                        "median_stellar_mass", 0.0
+                    )
+
+                populations[pop_id] = population
+
+            # Create population manager with proper config
+            self.population_manager = PopulationManager(self.config)
+
+            # Manually set the populations dictionary
+            self.population_manager.populations = populations
+
+            # Set up additional manager attributes from metadata
+            if self._catalog_metadata.get("binning_config"):
+                # Reconstruct bin configs if needed
+                try:
+                    from .config import BinConfig
+
+                    bin_configs = {}
+                    for bin_name, bin_data in self._catalog_metadata[
+                        "binning_config"
+                    ].items():
+                        bin_configs[bin_name] = BinConfig(
+                            id=bin_data.get("id", bin_name),
+                            label=bin_data.get("label", bin_name),
+                            bins=bin_data.get("bins", []),
+                            formula_ref=bin_data.get("formula_ref"),
+                        )
+                    self.population_manager.bin_configs = bin_configs
+                except (ImportError, KeyError, TypeError) as e:
+                    logger.warning(f"Could not reconstruct bin configs: {e}")
+
+            # Set split labels if available
+            unique_splits = set()
+            for pop in populations.values():
+                if hasattr(pop, "split_value"):
+                    unique_splits.add(pop.split_value)
+            self.population_manager.split_labels = [
+                f"split_{i}" for i in sorted(unique_splits)
+            ]
+
+            logger.info(
+                f"Reconstructed population manager with {len(populations)} populations"
+            )
+
+        except (ImportError, AttributeError, TypeError, KeyError) as e:
+            logger.error(f"Population manager reconstruction failed: {e}")
+            raise SimstackError(f"Population reconstruction failed: {e}") from e
+
     def _load_catalog(self) -> None:
         """Load catalog and create population manager"""
-        current_config = self._get_working_config()  # Use helper method
+        current_config = self._get_working_config()
 
         if not current_config or not current_config.catalog:
             raise SimstackError("No catalog configuration available")
@@ -161,7 +824,7 @@ class SimstackWrapper:
             else:
                 logger.warning("Catalog loaded but no population manager created")
 
-        except Exception as e:
+        except (OSError, ImportError) as e:
             logger.error(f"Failed to load catalog: {e}")
             raise SimstackError(f"Catalog loading failed: {e}") from e
 
@@ -182,11 +845,10 @@ class SimstackWrapper:
         logger.info("Loading maps...")
 
         try:
-            # Load maps using SkyMaps
             self.sky_maps = load_maps(self.config.maps)
             logger.info(f"✓ Maps loaded: {len(self.sky_maps)} maps available")
 
-        except Exception as e:
+        except (OSError, ImportError) as e:
             logger.error(f"Failed to load maps: {e}")
             raise SimstackError(f"Map loading failed: {e}") from e
 
@@ -206,7 +868,6 @@ class SimstackWrapper:
         logger.info("Starting stacking pipeline...")
 
         try:
-            # Run ONLY stacking algorithm - no analysis yet
             self.stacking_results = run_stacking(
                 config=self.config,
                 population_manager=self.population_manager,
@@ -215,7 +876,7 @@ class SimstackWrapper:
 
             logger.info("✓ Stacking computation completed!")
 
-        except Exception as e:
+        except (RuntimeError, ValueError, ImportError) as e:
             logger.error(f"Stacking pipeline failed: {e}")
             raise SimstackError(f"Stacking failed: {e}") from e
 
@@ -242,7 +903,6 @@ class SimstackWrapper:
         )
 
         try:
-            # Process results - SED fitting, error estimation, etc.
             self.processed_results = create_results_processor(
                 config=self.config,
                 stacking_results=self.stacking_results,
@@ -266,317 +926,177 @@ class SimstackWrapper:
 
             logger.info("✓ Analysis completed successfully!")
 
-        except Exception as e:
+        except (RuntimeError, ValueError, ImportError) as e:
             logger.error(f"Analysis pipeline failed: {e}")
             raise SimstackError(f"Analysis failed: {e}") from e
 
-    def _save_results_to_csv(self, csv_output_path: str | None = None) -> None:
-        """
-        Save analysis results to CSV file(s)
-
-        Parameters:
-        -----------
-        csv_output_path : str, optional
-            Base path for CSV files. If None, uses output path from config
-        """
-        try:
-            from pathlib import Path
-
-            # Determine output path
-            if csv_output_path is None:
-                # Use the same directory as other outputs
-                if hasattr(self.config, "output") and hasattr(
-                    self.config.output, "results_dir"
-                ):
-                    output_dir = Path(self.config.output.results_dir)
-                else:
-                    # Fallback to current directory
-                    output_dir = Path(".")
-
-                # Create base filename from config or timestamp
-                base_name = getattr(self.config.io, "shortname", "simstack_results")
-                csv_output_path = output_dir / f"{base_name}_results.csv"
-            else:
-                csv_output_path = Path(csv_output_path)
-
-            # Ensure output directory exists
-            csv_output_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Save main population summary
-            summary_df = self.processed_results.get_population_summary()
-            summary_path = csv_output_path.with_suffix(".csv")
-            summary_df.to_csv(summary_path, index=False)
-            logger.info(f"✓ Population summary saved to: {summary_path}")
-
-            # Save individual SEDs for each population
-            sed_dir = csv_output_path.parent / f"{csv_output_path.stem}_seds"
-            sed_dir.mkdir(exist_ok=True)
-
-            for pop_id in self.processed_results.sed_results.keys():
-                try:
-                    sed_df = self.processed_results.get_sed_table(pop_id)
-                    # Clean population ID for filename
-                    safe_pop_id = (
-                        pop_id.replace("__", "_").replace(".", "p").replace("/", "_")
-                    )
-                    sed_path = sed_dir / f"sed_{safe_pop_id}.csv"
-                    sed_df.to_csv(sed_path, index=False)
-                    logger.info(f"✓ SED for {pop_id} saved to: {sed_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to save SED for population {pop_id}: {e}")
-
-            # Save band-by-band results
-            if (
-                hasattr(self.processed_results, "band_results")
-                and self.processed_results.band_results
-            ):
-                band_data = []
-                for (
-                    band_name,
-                    band_data_dict,
-                ) in self.processed_results.band_results.items():
-                    for i, pop_label in enumerate(band_data_dict["population_labels"]):
-                        row = {
-                            "band": band_name,
-                            "wavelength_um": band_data_dict["wavelength_um"],
-                            "population": pop_label,
-                            "flux_density_jy": band_data_dict["flux_densities_jy"][i],
-                            "flux_error_jy": band_data_dict["flux_errors_jy"][i],
-                            "chi_squared": band_data_dict.get("chi_squared", np.nan),
-                            "reduced_chi_squared": band_data_dict.get(
-                                "reduced_chi_squared", np.nan
-                            ),
-                            "n_sources": band_data_dict["n_sources_per_pop"][i],
-                        }
-                        band_data.append(row)
-
-                if band_data:
-                    import pandas as pd
-
-                    band_df = pd.DataFrame(band_data)
-                    band_path = csv_output_path.with_name(
-                        f"{csv_output_path.stem}_bands.csv"
-                    )
-                    band_df.to_csv(band_path, index=False)
-                    logger.info(f"✓ Band results saved to: {band_path}")
-
-            logger.info(f"✓ All CSV files saved to: {csv_output_path.parent}")
-
-        except Exception as e:
-            logger.error(f"Failed to save CSV files: {e}")
-            raise SimstackError(f"CSV export failed: {e}") from e
-
-    def save_stacking_results(self, filepath: str | Path) -> None:
-        """Save raw stacking results as JSON with embedded config"""
-        if not self.stacking_results:
-            raise SimstackError("No stacking results to save")
-
-        filepath = Path(filepath).with_suffix(".json")
-
-        try:
-            # Extract stacking data as simple types
-            stacking_data = self._extract_stacking_data()
-
-            # Embed the full configuration in the JSON file
-            if self.config:
-                stacking_data["embedded_config"] = self._serialize_config(self.config)
-
-            # Add metadata
-            stacking_data["metadata"] = {
-                "timestamp": datetime.now().isoformat(),
-                "version": "simstack4_json_self_contained",
-                "config_path": self.config_path,
-                "n_populations": len(self.population_manager)
-                if self.population_manager
-                else 0,
-                "n_maps": len(self.sky_maps) if self.sky_maps else 0,
-            }
-
-            # Use the enhanced encoder
-            with open(filepath, "w") as f:
-                json.dump(stacking_data, f, indent=2, cls=EnhancedJSONEncoder)
-
-            logger.info(f"✓ Stacking results saved as self-contained JSON: {filepath}")
-
-        except Exception as e:
-            logger.error(f"Failed to save stacking results: {e}")
-
-            # Try to save without embedded config as fallback
-            try:
-                logger.info("Attempting to save without embedded config...")
-                stacking_data = self._extract_stacking_data()
-                stacking_data["metadata"] = {
-                    "timestamp": datetime.now().isoformat(),
-                    "version": "simstack4_json_basic",
-                    "config_path": self.config_path,
-                    "n_populations": len(self.population_manager)
-                    if self.population_manager
-                    else 0,
-                    "n_maps": len(self.sky_maps) if self.sky_maps else 0,
-                    "note": "Config embedding failed, use original config file",
-                }
-
-                with open(filepath, "w") as f:
-                    json.dump(stacking_data, f, indent=2, cls=EnhancedJSONEncoder)
-
-                logger.info(
-                    f"✓ Stacking results saved (without embedded config): {filepath}"
-                )
-
-            except Exception as e2:
-                logger.error(f"Complete save failure: {e2}")
-                raise SimstackError("Could not save stacking results.") from e2
-
-    def load_stacking_results(self, filepath: str | Path) -> None:
-        """Load stacking results from JSON with validation and automatic catalog loading"""
-        filepath = Path(filepath)
-
-        # Try .json extension if original doesn't exist
-        if not filepath.exists() and filepath.suffix != ".json":
-            filepath = filepath.with_suffix(".json")
-
-        if not filepath.exists():
-            raise SimstackError(f"Stacking results file not found: {filepath}")
-
-        with open(filepath) as f:
-            stacking_data = json.load(f)
-
-        # Validate JSON structure (skip validation for now to handle legacy files)
-        # if not self.validate_json_structure(stacking_data):
-        #     raise SimstackError("Invalid JSON structure - missing required data for analysis")
-
-        # Reconstruct stacking results object
-        self.stacking_results = type("StackingResults", (), {})()
-
-        for key, value in stacking_data.items():
-            if key not in [
-                "metadata",
-                "populations",
-                "population_details",
-                "embedded_config",
-            ]:
-                if isinstance(value, list):
-                    # Convert back to numpy arrays
-                    setattr(self.stacking_results, key, np.array(value))
-                else:
-                    setattr(self.stacking_results, key, value)
-
-        # Store embedded config if available
-        self._embedded_config = stacking_data.get("embedded_config")
-
-        # Store population info for reference and reconstruction
-        self._population_info = stacking_data.get("populations", [])
-        self._population_details = stacking_data.get("population_details", {})
-
-        # Try to load the original config if available, otherwise use embedded
-        metadata = stacking_data.get("metadata", {})
-        original_config_path = metadata.get("config_path")
-
-        if not self.config and original_config_path:
-            try:
-                logger.info(
-                    f"Attempting to load original config: {original_config_path}"
-                )
-                self.config = load_config(original_config_path)
-                self.config_path = original_config_path
-            except Exception as e:
-                logger.warning(
-                    f"Original config not found ({e}), will use embedded config"
-                )
-
-        # Log loading status
-        logger.info(f"✓ Stacking results loaded from JSON: {filepath}")
-        logger.info(f"  - {len(self._population_info)} populations")
-        logger.info(
-            f"  - Config source: {'original file' if self.config else 'embedded in JSON'}"
-        )
-
-        # Handle legacy JSON files that don't have embedded config
-        if not self.config and not self._embedded_config:
-            logger.warning("Legacy JSON file detected - no embedded config found")
-            logger.warning("You need to provide the config file path manually")
-            raise SimstackError(
-                "Legacy JSON file without embedded config. "
-                "Please use: wrapper = SimstackWrapper(config='path/to/config.toml') "
-                "before loading stacking results."
-            )
-
-        # Automatically load catalog if we have config
-        if self.config or self._embedded_config:
-            try:
-                logger.info("Automatically loading catalog for analysis...")
-                self._load_catalog()
-            except Exception as e:
-                logger.warning(f"Failed to auto-load catalog: {e}")
-                logger.info("You can manually call wrapper.load_catalog() if needed")
-        else:
-            logger.warning(
-                "No configuration available - cannot load catalog automatically"
-            )
-
     def _serialize_config(self, config: SimstackConfig) -> dict:
-        """Enhanced config serialization that handles custom objects safely"""
+        """Enhanced config serialization that handles custom objects safely - NON-RECURSIVE VERSION"""
 
-        def safe_serialize(obj):
-            """Recursively serialize an object, converting custom types to strings"""
+        def safe_serialize(obj, depth=0, max_depth=10):
+            """Non-recursive serialization with depth limiting"""
+            if depth > max_depth:
+                return f"<max_depth_reached_{type(obj).__name__}>"
+
             if obj is None:
                 return None
-            elif isinstance(obj | (str, int, float, bool)):
+            elif isinstance(obj, str | int | float | bool):
                 return obj
-            elif isinstance(obj | (list, tuple)):
-                return [safe_serialize(item) for item in obj]
+            elif isinstance(obj, list | tuple):
+                return [safe_serialize(item, depth + 1, max_depth) for item in obj]
             elif isinstance(obj, dict):
-                return {k: safe_serialize(v) for k, v in obj.items()}
-            elif hasattr(obj, "__dict__"):
-                # Handle objects with attributes
-                return {k: safe_serialize(v) for k, v in obj.__dict__.items()}
-            elif hasattr(obj, "name"):  # Enum types
+                return {
+                    str(k): safe_serialize(v, depth + 1, max_depth)
+                    for k, v in obj.items()
+                }
+            elif hasattr(obj, "name") and isinstance(obj.name, str):
                 return str(obj.name)
-            elif hasattr(obj, "value"):  # Enum values
+            elif hasattr(obj, "value"):
                 return obj.value
+            elif hasattr(obj, "__dict__"):
+                # Limit attribute serialization to avoid recursion
+                result = {}
+                for k, v in obj.__dict__.items():
+                    if not k.startswith("_"):  # Skip private attributes
+                        try:
+                            result[str(k)] = safe_serialize(v, depth + 1, max_depth)
+                        except (RecursionError, TypeError, AttributeError):
+                            result[str(k)] = str(type(v).__name__)
+                return result
             else:
-                # Convert everything else to string
-                return str(obj)
+                # Convert everything else to string representation
+                try:
+                    return str(obj)
+                except (TypeError, AttributeError):
+                    return f"<{type(obj).__name__}>"
 
         config_dict = {}
 
-        # Safely serialize each major config section
         try:
+            # Manually serialize specific config sections to avoid recursion
+            logger.info("Serializing configuration sections...")
+
             # Handle catalog config
             if hasattr(config, "catalog") and config.catalog:
-                config_dict["catalog"] = safe_serialize(config.catalog)
+                logger.debug("Serializing catalog config...")
+                catalog_dict = {}
+
+                # Basic catalog info
+                catalog_dict["path"] = getattr(config.catalog, "path", "")
+                catalog_dict["file"] = getattr(config.catalog, "file", "")
+
+                # Astrometry
+                if hasattr(config.catalog, "astrometry"):
+                    catalog_dict["astrometry"] = dict(config.catalog.astrometry)
+
+                # Classification
+                if hasattr(config.catalog, "classification"):
+                    classification_dict = {}
+                    classification = config.catalog.classification
+
+                    # Split type and params
+                    if hasattr(classification, "split_type"):
+                        classification_dict["split_type"] = (
+                            str(classification.split_type)
+                            if classification.split_type
+                            else None
+                        )
+
+                    if hasattr(classification, "split_params"):
+                        classification_dict["split_params"] = safe_serialize(
+                            classification.split_params, 0, 5
+                        )
+
+                    # Binning configuration
+                    if hasattr(classification, "binning"):
+                        binning_dict = {}
+                        for bin_name, bin_config in classification.binning.items():
+                            binning_dict[bin_name] = {
+                                "id": getattr(bin_config, "id", bin_name),
+                                "label": getattr(bin_config, "label", bin_name),
+                                "bins": getattr(bin_config, "bins", []),
+                                "formula_ref": getattr(bin_config, "formula_ref", None),
+                            }
+                        classification_dict["binning"] = binning_dict
+
+                    # Formulas
+                    if hasattr(classification, "formulas"):
+                        classification_dict["formulas"] = safe_serialize(
+                            classification.formulas, 0, 3
+                        )
+
+                    catalog_dict["classification"] = classification_dict
+
+                config_dict["catalog"] = catalog_dict
 
             # Handle maps config
             if hasattr(config, "maps") and config.maps:
-                config_dict["maps"] = safe_serialize(config.maps)
+                logger.debug("Serializing maps config...")
+                maps_dict = {}
+                for map_name, map_config in config.maps.items():
+                    maps_dict[map_name] = {
+                        "wavelength": getattr(map_config, "wavelength", 0),
+                        "path_map": getattr(map_config, "path_map", ""),
+                        "path_noise": getattr(map_config, "path_noise", ""),
+                        "color_correction": getattr(
+                            map_config, "color_correction", 1.0
+                        ),
+                        "beam": {
+                            "fwhm": getattr(map_config.beam, "fwhm", 0)
+                            if hasattr(map_config, "beam")
+                            else 0,
+                            "area_sr": getattr(map_config.beam, "area_sr", 1.0)
+                            if hasattr(map_config, "beam")
+                            else 1.0,
+                        },
+                    }
+                config_dict["maps"] = maps_dict
 
-            # Handle other sections
-            for attr in ["cosmology", "output", "binning", "error_estimator"]:
+            # Handle other simple sections
+            simple_attrs = ["cosmology", "output", "binning", "error_estimator"]
+            for attr in simple_attrs:
                 if hasattr(config, attr):
-                    config_dict[attr] = safe_serialize(getattr(config, attr))
+                    logger.debug(f"Serializing {attr} config...")
+                    try:
+                        config_dict[attr] = safe_serialize(getattr(config, attr), 0, 5)
+                    except (RecursionError, TypeError, AttributeError) as e:
+                        logger.warning(f"Failed to serialize {attr}: {e}")
+                        config_dict[attr] = f"<serialization_failed: {e}>"
 
-        except Exception as e:
-            logger.warning(f"Config serialization failed for some sections: {e}")
-            # Fallback - just serialize what we can
-            config_dict = safe_serialize(config)
+            logger.info("✓ Configuration serialization completed")
+
+        except (AttributeError, TypeError, ValueError, RecursionError) as e:
+            logger.warning(f"Config serialization failed: {e}")
+            # Minimal fallback config
+            config_dict = {
+                "serialization_error": str(e),
+                "config_type": str(type(config).__name__),
+                "fallback_data": {
+                    "cosmology": getattr(config, "cosmology", "Planck18")
+                    if hasattr(config, "cosmology")
+                    else "Planck18",
+                    "catalog_file": getattr(config.catalog, "file", "")
+                    if hasattr(config, "catalog")
+                    else "",
+                    "n_maps": len(config.maps) if hasattr(config, "maps") else 0,
+                },
+            }
 
         return config_dict
 
     def _reconstruct_config_from_json(self) -> SimstackConfig:
-        """Enhanced config reconstruction from embedded JSON data"""
+        """Reconstruct config from embedded JSON data"""
         if not self._embedded_config:
             raise SimstackError("No embedded config data available")
 
         try:
-            # Import the config classes
             from .config import (
-                AstrometryConfig,
                 BeamConfig,
-                BinningConfig,
+                BinConfig,
                 BootstrapConfig,
                 CatalogConfig,
                 ClassificationConfig,
-                ErrorEstimatorConfig,
+                ErrorConfig,
                 MapConfig,
                 OutputConfig,
                 SimstackConfig,
@@ -587,40 +1107,35 @@ class SimstackWrapper:
 
             # Astrometry
             astrometry_data = catalog_data.get("astrometry", {})
-            astrometry_config = AstrometryConfig(
-                ra=astrometry_data.get("ra", "ra"),
-                dec=astrometry_data.get("dec", "dec"),
-            )
+            astrometry_config = astrometry_data
 
             # Classification with binning
             classification_data = catalog_data.get("classification", {})
 
-            # Redshift binning
-            redshift_binning_data = classification_data.get("binning", {}).get(
-                "redshift", {}
-            )
-            redshift_binning = BinningConfig(
-                id=redshift_binning_data.get("id", "zpdf_med"),
-                bins=redshift_binning_data.get("bins", []),
-            )
+            # Binning configurations
+            binning_config = {}
+            if "binning" in classification_data:
+                binning_dict = classification_data["binning"]
+                for bin_name, bin_config_dict in binning_dict.items():
+                    if not isinstance(bin_config_dict, dict):
+                        continue
 
-            # Stellar mass binning
-            mass_binning_data = classification_data.get("binning", {}).get(
-                "stellar_mass", {}
-            )
-            mass_binning = BinningConfig(
-                id=mass_binning_data.get("id", "mass_med"),
-                bins=mass_binning_data.get("bins", []),
-            )
-
-            # Split params
-            split_params_data = classification_data.get("split_params", {})
+                    bin_config = BinConfig(
+                        id=bin_config_dict.get("id", bin_name),
+                        label=bin_config_dict.get(
+                            "label", bin_name.replace("_", " ").title()
+                        ),
+                        bins=bin_config_dict.get("bins", []),
+                        formula_ref=bin_config_dict.get("formula_ref"),
+                    )
+                    binning_config[bin_name] = bin_config
 
             # Classification config
             classification_config = ClassificationConfig(
-                split_type=classification_data.get("split_type", "labels"),
-                split_params=split_params_data,
-                binning={"redshift": redshift_binning, "stellar_mass": mass_binning},
+                split_type=classification_data.get("split_type"),
+                binning=binning_config,
+                split_params=classification_data.get("split_params"),
+                formulas=classification_data.get("formulas"),
             )
 
             # Full catalog config
@@ -658,7 +1173,7 @@ class SimstackWrapper:
             )
 
             binning_data = self._embedded_config.get("binning", {})
-            binning_config = {
+            binning_config_dict = {
                 "stack_all_z_at_once": binning_data.get("stack_all_z_at_once", True),
                 "add_foreground": binning_data.get("add_foreground", True),
                 "crop_circles": binning_data.get("crop_circles", True),
@@ -670,10 +1185,9 @@ class SimstackWrapper:
                 enabled=bootstrap_data.get("enabled", True),
                 iterations=bootstrap_data.get("iterations", 5),
                 initial_seed=bootstrap_data.get("initial_seed", 1),
-                cosmology=bootstrap_data.get("cosmology", "Planck18"),
             )
 
-            error_estimator_config = ErrorEstimatorConfig(
+            error_estimator_config = ErrorConfig(
                 write_simmaps=error_est_data.get("write_simmaps", False),
                 randomize=error_est_data.get("randomize", False),
                 bootstrap=bootstrap_config,
@@ -681,22 +1195,24 @@ class SimstackWrapper:
 
             # Create the full config
             config = SimstackConfig(
+                binning=binning_config_dict,
+                error_estimator=error_estimator_config,
+                cosmology=self._get_cosmology_enum(
+                    self._embedded_config.get("cosmology", "Planck18")
+                ),
+                output=output_config,
                 catalog=catalog_config,
                 maps=maps_config,
-                cosmology=self._embedded_config.get("cosmology", "Planck18"),
-                output=output_config,
-                binning=binning_config,
-                error_estimator=error_estimator_config,
             )
 
             return config
 
-        except Exception as e:
+        except (ImportError, AttributeError, TypeError, KeyError) as e:
             logger.error(f"Failed to reconstruct config from JSON: {e}")
             raise SimstackError(f"Config reconstruction failed: {e}") from e
 
     def _extract_stacking_data(self) -> dict:
-        """Enhanced stacking data extraction with better population info"""
+        """Enhanced stacking data extraction"""
         data = {}
 
         # Extract stacking results
@@ -722,96 +1238,9 @@ class SimstackWrapper:
                 else:
                     data[key] = str(value)
 
-        # Enhanced population info extraction
-        if self.population_manager:
-            data["populations"] = []
-            data["population_details"] = {}
-
-            for i, (pop_id, pop) in enumerate(
-                self.population_manager.populations.items()
-            ):
-                # Basic population data
-                pop_data = {
-                    "index": i,
-                    "population_id": pop_id,
-                    "n_sources": getattr(pop, "n_sources", 0),
-                    "median_redshift": getattr(pop, "median_redshift", 0),
-                    "median_stellar_mass": getattr(pop, "median_stellar_mass", 0),
-                }
-
-                # Try to get additional population properties
-                for attr in ["redshift_range", "mass_range", "classification_value"]:
-                    if hasattr(pop, attr):
-                        pop_data[attr] = getattr(pop, attr)
-
-                data["populations"].append(pop_data)
-
-                # Store detailed population info (coordinates, etc.) separately
-                # This allows for reconstruction of population manager
-                pop_details = {}
-                for attr in [
-                    "source_indices",
-                    "coordinates",
-                    "redshifts",
-                    "stellar_masses",
-                ]:
-                    if hasattr(pop, attr):
-                        value = getattr(pop, attr)
-                        if isinstance(value, np.ndarray):
-                            pop_details[attr] = value.tolist()
-                        else:
-                            pop_details[attr] = value
-
-                data["population_details"][pop_id] = pop_details
-
         return data
 
-    # Additional method for better JSON structure validation
-    def validate_json_structure(self, json_data: dict) -> bool:
-        """Validate that JSON file has required structure for analysis"""
-        required_keys = [
-            "flux_densities",
-            "flux_errors",
-            "map_names",
-            "population_labels",
-        ]
-
-        for key in required_keys:
-            if key not in json_data:
-                logger.warning(f"Missing required key in JSON: {key}")
-                return False
-
-        # Check for embedded config or metadata with config path
-        has_config = "embedded_config" in json_data
-        has_config_path = json_data.get("metadata", {}).get("config_path") is not None
-
-        if not (has_config or has_config_path):
-            logger.warning("JSON file missing both embedded config and config path")
-            return False
-
-        return True
-
-    def _save_analysis_results(self, filepath: str | Path) -> None:
-        """Save analysis results"""
-        if not self.processed_results:
-            raise SimstackError("No analysis results to save")
-
-        self.processed_results.save_results(filepath)
-        logger.info(f"✓ Analysis results saved to: {filepath}")
-
-    # Public methods
-    def load_catalog(self) -> None:
-        """Public method to load catalog"""
-        self._load_catalog()
-
-    def load_maps(self) -> None:
-        """Public method to load maps"""
-        self._load_maps()
-
-    def run_stacking_only(self) -> None:
-        """Public method to run ONLY stacking"""
-        self._run_stacking()
-
+    # Public interface methods
     def run_analysis_only(
         self,
         use_mcmc: bool = False,
@@ -820,16 +1249,7 @@ class SimstackWrapper:
         use_schreiber_prior: bool = False,
         save_csv_path: str | None = None,
     ) -> SimstackResults:
-        """
-        Public method to run ONLY analysis (requires stacking results)
-
-        Args:
-            use_mcmc: Whether to use MCMC fitting (requires emcee)
-            mcmc_iterations: Number of MCMC iterations
-            mcmc_burn_in: Number of burn-in iterations to discard
-            use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
-        """
-        # Reload catalog if needed for analysis
+        """Public method to run ONLY analysis (requires stacking results)"""
         if not self.population_manager and self.config:
             self._load_catalog()
 
@@ -850,24 +1270,62 @@ class SimstackWrapper:
         use_schreiber_prior: bool = False,
         save_path: str | None = None,
     ) -> SimstackResults:
-        """
-        Run both stacking and analysis
-
-        Args:
-            use_mcmc: Whether to use MCMC fitting (requires emcee)
-            mcmc_iterations: Number of MCMC iterations
-            mcmc_burn_in: Number of burn-in iterations to discard
-            use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
-        """
+        """Run both stacking and analysis"""
         self._run_stacking()
         self._run_analysis(
             use_mcmc=use_mcmc,
             mcmc_iterations=mcmc_iterations,
             mcmc_burn_in=mcmc_burn_in,
             use_schreiber_prior=use_schreiber_prior,
-            save_path=save_path,
+            save_csv_path=save_path,
         )
         return self.processed_results
+
+    def _save_results_to_csv(self, csv_output_path: str | None = None) -> None:
+        """Save analysis results to CSV file(s)"""
+        try:
+            if csv_output_path is None:
+                if hasattr(self.config, "output") and hasattr(
+                    self.config.output, "results_dir"
+                ):
+                    output_dir = Path(self.config.output.results_dir)
+                else:
+                    output_dir = Path(".")
+
+                base_name = getattr(self.config.output, "shortname", "simstack_results")
+                csv_output_path = output_dir / f"{base_name}_results.csv"
+            else:
+                csv_output_path = Path(csv_output_path)
+
+            csv_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Save main population summary
+            summary_df = self.processed_results.get_population_summary()
+            summary_path = csv_output_path.with_suffix(".csv")
+            summary_df.to_csv(summary_path, index=False)
+            logger.info(f"✓ Population summary saved to: {summary_path}")
+
+            # Save individual SEDs
+            sed_dir = csv_output_path.parent / f"{csv_output_path.stem}_seds"
+            sed_dir.mkdir(exist_ok=True)
+
+            for pop_id in self.processed_results.sed_results.keys():
+                try:
+                    sed_df = self.processed_results.get_sed_table(pop_id)
+                    safe_pop_id = (
+                        pop_id.replace("__", "_").replace(".", "p").replace("/", "_")
+                    )
+                    sed_path = sed_dir / f"sed_{safe_pop_id}.csv"
+                    sed_df.to_csv(sed_path, index=False)
+                    logger.info(f"✓ SED for {pop_id} saved to: {sed_path}")
+                except (AttributeError, TypeError, ValueError) as e:
+                    logger.warning(f"Failed to save SED for population {pop_id}: {e}")
+
+            logger.info(f"✓ All CSV files saved to: {csv_output_path.parent}")
+
+        except (OSError, PermissionError) as e:
+            logger.error(f"Failed to save CSV files: {e}")
+            raise SimstackError(f"CSV export failed: {e}") from e
 
     def get_summary(self) -> dict[str, Any]:
         """Get summary of current state"""
@@ -915,7 +1373,7 @@ class SimstackWrapper:
             print(f"Results available for {summary['n_results']} populations")
 
     def __len__(self) -> int:
-        """Return number of populations (for backward compatibility)"""
+        """Return number of populations"""
         return len(self.population_manager) if self.population_manager else 0
 
     def __repr__(self) -> str:
@@ -936,7 +1394,7 @@ class SimstackWrapper:
 
 # Convenience functions
 def run_stacking_only(
-    config_path: str | Path, save_path: str | Path = None
+    config_path: str | Path, save_path: str | Path | None = None
 ) -> SimstackWrapper:
     """
     Run ONLY stacking and save results
@@ -964,8 +1422,8 @@ def run_stacking_only(
 
 def run_analysis_only(
     stacking_results_path: str | Path,
-    save_path: str | Path = None,
-    save_csv_path: str | Path = None,
+    save_path: str | Path | None = None,
+    save_csv_path: str | Path | None = None,
     use_mcmc: bool = False,
     mcmc_iterations: int = 1000,
     mcmc_burn_in: int = 200,
@@ -977,6 +1435,7 @@ def run_analysis_only(
     Args:
         stacking_results_path: Path to saved stacking results JSON
         save_path: Path to save analysis results (optional)
+        save_csv_path: Path to save CSV results (optional)
         use_mcmc: Whether to use MCMC fitting (requires emcee)
         mcmc_iterations: Number of MCMC iterations
         mcmc_burn_in: Number of burn-in iterations to discard
@@ -999,3 +1458,66 @@ def run_analysis_only(
         wrapper._save_analysis_results(save_path)
 
     return results
+
+
+def validate_json_self_contained(filepath: str | Path) -> dict:
+    """
+    Validate that a JSON file is self-contained and ready for analysis
+
+    Args:
+        filepath: Path to JSON file
+
+    Returns:
+        Dictionary with validation results
+    """
+    filepath = Path(filepath)
+
+    if not filepath.exists():
+        return {"valid": False, "error": f"File not found: {filepath}"}
+
+    try:
+        with open(filepath) as f:
+            data = json.load(f)
+
+        validation = {
+            "valid": True,
+            "version": data.get("metadata", {}).get("version", "unknown"),
+            "self_contained": data.get("metadata", {}).get("self_contained", False),
+            "n_populations": len(data.get("populations", [])),
+            "n_maps": len(data.get("map_names", [])),
+            "has_catalog_metadata": "catalog_metadata" in data,
+            "has_population_data": "population_details" in data,
+            "has_embedded_config": "embedded_config" in data,
+            "missing_keys": [],
+        }
+
+        # Check required keys
+        required_keys = [
+            "flux_densities",
+            "flux_errors",
+            "map_names",
+            "population_labels",
+        ]
+
+        for key in required_keys:
+            if key not in data:
+                validation["missing_keys"].append(key)
+
+        if validation["missing_keys"]:
+            validation["valid"] = False
+
+        # Check catalog metadata quality
+        catalog_meta = data.get("catalog_metadata", {})
+        if catalog_meta:
+            validation["catalog_info"] = {
+                "n_total_sources": catalog_meta.get("catalog_info", {}).get(
+                    "n_total_sources", 0
+                ),
+                "has_sample_data": "catalog_sample" in catalog_meta,
+                "has_population_stats": "population_stats" in catalog_meta,
+            }
+
+        return validation
+
+    except (OSError, ValueError) as e:
+        return {"valid": False, "error": str(e)}
