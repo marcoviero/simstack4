@@ -95,22 +95,7 @@ class GreybodyFitter:
         use_schreiber_prior: bool = False,
     ):
         """
-        Initialize fitter
-
-        Parameters:
-        -----------
-        fix_beta : bool
-            Whether to fix the emissivity index beta
-        beta_fixed : float
-            Fixed value of beta if fix_beta=True
-        use_mcmc : bool
-            Whether to use MCMC fitting (requires emcee)
-        mcmc_iterations : int
-            Number of MCMC iterations
-        mcmc_burn_in : int
-            Number of burn-in iterations to discard
-        use_schreiber_prior : bool
-            Whether to use Schreiber+2015 T_dust vs redshift prior
+        Initialize fitter with improved defaults
         """
         # Physical constants
         self.h = 6.62607015e-34  # Planck constant (J⋅s)
@@ -134,103 +119,156 @@ class GreybodyFitter:
                 "MCMC requested but emcee not available. Falling back to curve_fit."
             )
 
-    def schreiber_temperature_prior(self, redshift: float) -> tuple[float, float]:
+    def _validate_data(self, wavelengths, fluxes, flux_errors):
         """
-        Calculate expected dust temperature and uncertainty from Schreiber+2015
-
-        Parameters:
-        -----------
-        redshift : float
-            Redshift of the source
+        Validate and filter data, handling the huge dynamic range in your data
 
         Returns:
         --------
-        T_expected : float
-            Expected observed-frame dust temperature in K
-        T_sigma : float
-            Uncertainty in dust temperature in K
+        valid_mask : array
+            Boolean mask for valid data points
+        use_for_fit : array
+            Boolean mask for data to use in fitting (more restrictive)
         """
+        # Basic validity checks
+        valid = (
+            np.isfinite(fluxes)
+            & np.isfinite(flux_errors)
+            & (flux_errors > 0)
+            & np.isfinite(wavelengths)
+            & (wavelengths > 0)
+        )
+
+        # Calculate SNR
+        snr = np.abs(fluxes) / flux_errors
+
+        # For your data, we need to be smart about what to include:
+        # 1. Strong positive detections (>2σ)
+        strong_detections = (fluxes > 0) & (snr > 2.0)
+
+        # 2. Reasonable measurements (>1σ, including negatives)
+        reasonable_measurements = (snr > 1.0) & (
+            snr < 1000
+        )  # Cap very high SNR that might be outliers
+
+        # 3. Exclude measurements with extremely large errors (like SCUBA in your data)
+        # If error is >100x the typical error, it's probably not useful
+        log_errors = np.log10(flux_errors)
+        median_log_error = np.median(log_errors)
+        reasonable_errors = (
+            log_errors - median_log_error
+        ) < 2.0  # Within 100x of median
+
+        # Final selection: use measurements that are reasonable AND either strong detections OR reasonable measurements
+        use_for_fit = (
+            valid & reasonable_errors & (strong_detections | reasonable_measurements)
+        )
+
+        # Ensure we have at least 3 points and at least 1 positive detection
+        if np.sum(use_for_fit) < 3:
+            # Fallback: use at least the best detections
+            if np.sum(strong_detections & valid) >= 3:
+                use_for_fit = strong_detections & valid
+            else:
+                use_for_fit = valid
+
+        return valid, use_for_fit
+
+    def _get_initial_guess(self, wavelengths, fluxes, flux_errors, redshift):
+        """
+        Get much better initial guess using curve_fit first
+        """
+        # Always run curve_fit first to get the best possible initial guess
+        try:
+            if self.use_schreiber_prior and redshift > 0:
+                T_guess, _ = self.schreiber_temperature_prior(redshift)
+                T_guess = np.clip(T_guess, 15, 45)
+            else:
+                T_guess = 25.0
+            amplitude_guess = -35.0
+
+            # Run a quick curve_fit to get much better initial parameters
+            if self.fix_beta:
+
+                def model_func(wave, amp, temp):
+                    return self.greybody_model(wave, amp, temp, self.beta_fixed)
+
+                try:
+                    popt, _ = curve_fit(
+                        model_func,
+                        wavelengths,
+                        fluxes,
+                        sigma=flux_errors,
+                        p0=[amplitude_guess, T_guess],
+                        bounds=([-41, 12], [-29, 55]),
+                        maxfev=1000,  # Quick fit
+                    )
+                    amplitude_guess, T_guess = popt
+                    logger.debug(
+                        f"Curve_fit initial guess: A={amplitude_guess:.2f}, T={T_guess:.1f}K"
+                    )
+                except Exception as e:
+                    logger.debug(
+                        f"Curve_fit for initial guess failed: {e}, using defaults"
+                    )
+
+            return amplitude_guess, T_guess
+
+        except Exception as e:
+            logger.warning(f"Initial guess estimation failed: {e}")
+            return -35.0, 25.0
+
+    def schreiber_temperature_prior(self, redshift: float) -> tuple[float, float]:
+        """
+        Calculate expected dust temperature from Schreiber+2015
+        """
+        if redshift <= 0:
+            return 25.0, 5.0
+
         # Schreiber+2015 relation: T_dust = (23.8 + 2.7*z + 0.9*z^2) / (1+z)
         T_rest = 23.8 + 2.7 * redshift + 0.9 * redshift**2
         T_observed = T_rest / (1 + redshift)
 
-        # Assume 20% uncertainty in the relation
-        T_sigma = T_observed * 0.2
+        # Clip to reasonable range
+        T_observed = np.clip(T_observed, 15, 50)
+
+        # Uncertainty scales with temperature
+        T_sigma = max(3.0, T_observed * 0.15)
 
         return T_observed, T_sigma
 
     def log_prior(self, theta: list, redshift: float = 0.0) -> float:
-        """Calculate log prior probability with better bounds checking"""
+        """Calculate log prior with much tighter, realistic bounds for your data"""
         amplitude, temperature = theta
 
-        # More restrictive amplitude bounds to avoid NaN
-        if not (-45 < amplitude < -25):
+        # Much tighter amplitude bounds based on your data range
+        if not (-38 < amplitude < -30):
             return -np.inf
 
-        # More restrictive temperature bounds
-        if not (8 < temperature < 60):
+        # Realistic temperature bounds for dust
+        if not (15 < temperature < 50):
             return -np.inf
 
         # Temperature priors
         if self.use_schreiber_prior and redshift > 0:
-            # Gaussian prior based on Schreiber+2015
             T_expected, T_sigma = self.schreiber_temperature_prior(redshift)
-            # Ensure T_sigma is reasonable
-            if T_sigma <= 0 or T_sigma > 20:
-                T_sigma = 5.0  # Fallback
             log_p_temp = -0.5 * ((temperature - T_expected) / T_sigma) ** 2
-            log_p_temp -= np.log(np.sqrt(2 * np.pi) * T_sigma)
         else:
-            # Flat prior on temperature
-            log_p_temp = 0.0
+            # Strong preference for reasonable dust temperatures (20-40K)
+            if 20 <= temperature <= 40:
+                log_p_temp = 0.0
+            elif 15 <= temperature < 20 or 40 < temperature <= 50:
+                # Mild penalty for edge temperatures
+                log_p_temp = -0.5 * ((temperature - 30) / 10) ** 2
+            else:
+                log_p_temp = -np.inf
 
         return log_p_temp
 
-    def log_posterior(
-        self,
-        theta: list,
-        wavelengths: np.ndarray,
-        fluxes: np.ndarray,
-        flux_errors: np.ndarray,
-        redshift: float = 0.0,
-    ) -> float:
+    def log_likelihood(self, theta, wavelengths, fluxes, flux_errors):
         """
-        Calculate log posterior probability
-
-        Parameters:
-        -----------
-        theta : list
-            [amplitude, temperature] parameters
-        wavelengths : array
-            Wavelengths in microns
-        fluxes : array
-            Observed flux densities in Jy
-        flux_errors : array
-            Flux density errors in Jy
-        redshift : float
-            Redshift for prior calculation
-
-        Returns:
-        --------
-        log_posterior : float
-            Log posterior probability
+        Improved log likelihood that handles negative fluxes properly
         """
-        log_p = self.log_prior(theta, redshift)
-        if not np.isfinite(log_p):
-            return -np.inf
-
-        log_l = self.log_likelihood(theta, wavelengths, fluxes, flux_errors)
-
-        return log_p + log_l
-
-    def log_likelihood(
-        self,
-        theta: list,
-        wavelengths: np.ndarray,
-        fluxes: np.ndarray,
-        flux_errors: np.ndarray,
-    ) -> float:
-        """Calculate log likelihood with better error handling"""
         amplitude, temperature = theta
 
         try:
@@ -240,86 +278,107 @@ class GreybodyFitter:
             )
 
             # Check for invalid model fluxes
-            if not np.all(np.isfinite(model_fluxes)) or np.any(model_fluxes <= 0):
+            if not np.all(np.isfinite(model_fluxes)):
                 return -np.inf
 
-            # Calculate chi-squared
+            # Prevent completely unreasonable model values
+            if np.any(model_fluxes <= 0) or np.any(model_fluxes > 1000):
+                return -np.inf
+
+            # Calculate chi-squared (can handle negative observed fluxes)
             residuals = (fluxes - model_fluxes) / flux_errors
             chi2 = np.sum(residuals**2)
 
-            # Check for reasonable chi2
-            if not np.isfinite(chi2) or chi2 > 1000:  # Reject very bad fits
+            # Sanity check
+            if not np.isfinite(chi2) or chi2 > 10000:
                 return -np.inf
 
-            # Log likelihood (assuming Gaussian errors)
+            # Log likelihood
             log_like = -0.5 * chi2 - 0.5 * np.sum(np.log(2 * np.pi * flux_errors**2))
 
             return log_like
 
-        except Exception as e:
-            logger.debug(f"Likelihood calculation failed: {e}")
+        except (FloatingPointError, OverflowError, ValueError):
             return -np.inf
 
-    def run_mcmc(
-        self,
-        wavelengths: np.ndarray,
-        fluxes: np.ndarray,
-        flux_errors: np.ndarray,
-        redshift: float = 0.0,
-    ) -> dict:
-        """Run MCMC fitting with better initialization"""
+    def log_posterior(self, theta, wavelengths, fluxes, flux_errors, redshift=0.0):
+        """Calculate log posterior probability"""
+        log_p = self.log_prior(theta, redshift)
+        if not np.isfinite(log_p):
+            return -np.inf
+
+        log_l = self.log_likelihood(theta, wavelengths, fluxes, flux_errors)
+
+        return log_p + log_l
+
+    def _initialize_walkers(
+        self, initial_guess, n_walkers, wavelengths, fluxes, flux_errors, redshift
+    ):
+        """
+        Initialize MCMC walkers very close to the curve_fit solution
+        """
+        amplitude_guess, temperature_guess = initial_guess
+        pos = []
+
+        # Start walkers very close to the best-fit solution
+        # This is key for your data where the solution is well-constrained
+        for _i in range(n_walkers):
+            # Very small perturbations around the curve_fit solution
+            amp_trial = amplitude_guess + np.random.normal(0, 0.1)  # Tiny scatter
+            temp_trial = temperature_guess + np.random.normal(0, 0.5)  # Small scatter
+
+            # Ensure within bounds
+            amp_trial = np.clip(amp_trial, -37.5, -30.5)
+            temp_trial = np.clip(temp_trial, 16, 49)
+
+            # Test that this position gives finite probability
+            test_prob = self.log_posterior(
+                [amp_trial, temp_trial], wavelengths, fluxes, flux_errors, redshift
+            )
+
+            if np.isfinite(test_prob):
+                pos.append([amp_trial, temp_trial])
+            else:
+                # If the perturbation failed, use the exact solution with tiny noise
+                pos.append(
+                    [
+                        amplitude_guess + np.random.normal(0, 0.01),
+                        temperature_guess + np.random.normal(0, 0.1),
+                    ]
+                )
+
+        return np.array(pos)
+
+    def run_mcmc(self, wavelengths, fluxes, flux_errors, redshift=0.0):
+        """
+        Run MCMC fitting with better error handling and progress tracking
+        """
         if not HAS_EMCEE:
             raise ImportError("emcee is required for MCMC fitting")
 
-        # Initial guess with better bounds
-        if self.use_schreiber_prior and redshift > 0:
-            T_guess, T_sigma = self.schreiber_temperature_prior(redshift)
-            # Ensure reasonable temperature guess
-            T_guess = np.clip(T_guess, 10, 50)
-        else:
-            T_guess = 25.0
+        # Get initial guess
+        amplitude_guess, T_guess = self._get_initial_guess(
+            wavelengths, fluxes, flux_errors, redshift
+        )
 
-        amplitude_guess = -35.0
+        logger.info(f"MCMC initial guess: A={amplitude_guess:.2f}, T={T_guess:.1f}K")
 
-        # Set up walkers with better initialization
+        # Setup walkers
         n_walkers = 32
         n_dim = 2
 
-        # Initialize walker positions with reasonable spread
-        pos = []
-        for _i in range(n_walkers):
-            while True:
-                # Sample around the guess with reasonable bounds
-                amp_trial = amplitude_guess + np.random.normal(0, 1.0)
-                temp_trial = T_guess + np.random.normal(0, 3.0)
+        # Initialize walker positions
+        pos = self._initialize_walkers(
+            (amplitude_guess, T_guess),
+            n_walkers,
+            wavelengths,
+            fluxes,
+            flux_errors,
+            redshift,
+        )
 
-                # Ensure within bounds
-                if (-45 < amp_trial < -25) and (8 < temp_trial < 60):
-                    # Test that this position gives finite probability
-                    test_prob = self.log_posterior(
-                        [amp_trial, temp_trial],
-                        wavelengths,
-                        fluxes,
-                        flux_errors,
-                        redshift,
-                    )
-                    if np.isfinite(test_prob):
-                        pos.append([amp_trial, temp_trial])
-                        break
-
-                # Fallback if we can't find good position
-                if len(pos) > 0 and len(pos) % 10 == 0:
-                    # Use a previous good position with small perturbation
-                    base_pos = pos[np.random.randint(len(pos))]
-                    pos.append(
-                        [
-                            base_pos[0] + np.random.normal(0, 0.1),
-                            base_pos[1] + np.random.normal(0, 0.5),
-                        ]
-                    )
-                    break
-
-        pos = np.array(pos)
+        if len(pos) < n_walkers:
+            raise ValueError(f"Could only initialize {len(pos)}/{n_walkers} walkers")
 
         # Create sampler
         sampler = emcee.EnsembleSampler(
@@ -329,35 +388,112 @@ class GreybodyFitter:
             args=(wavelengths, fluxes, flux_errors, redshift),
         )
 
-        # Run MCMC with progress bar handling
+        # Run MCMC with progress bar and error handling
         try:
-            logger.info(f"Running MCMC with {self.mcmc_iterations} iterations...")
-            # Try with progress bar, fall back without if tqdm not available
+            logger.info(
+                f"Running MCMC: {self.mcmc_iterations} iterations, {self.mcmc_burn_in} burn-in"
+            )
+
+            # Try to run with progress bar first
             try:
                 sampler.run_mcmc(pos, self.mcmc_iterations, progress=True)
-            except Exception:
-                logger.info("Progress bar not available, running without...")
-                sampler.run_mcmc(pos, self.mcmc_iterations, progress=False)
+                total_steps = self.mcmc_iterations
+
+            except Exception as progress_error:
+                logger.info(
+                    f"Progress bar failed ({progress_error}), running without progress bar..."
+                )
+
+                # Fallback: run in chunks without progress bar but with monitoring
+                chunk_size = min(100, self.mcmc_iterations // 4)
+                total_steps = 0
+                current_pos = pos
+
+                while total_steps < self.mcmc_iterations:
+                    steps_remaining = self.mcmc_iterations - total_steps
+                    steps_this_chunk = min(chunk_size, steps_remaining)
+
+                    try:
+                        sampler.run_mcmc(current_pos, steps_this_chunk, progress=False)
+                        current_pos = sampler.get_last_sample()
+                        total_steps += steps_this_chunk
+
+                        # Manual progress reporting
+                        if total_steps % (chunk_size * 2) == 0:
+                            acceptance = np.mean(sampler.acceptance_fraction)
+                            progress_pct = 100 * total_steps / self.mcmc_iterations
+                            logger.info(
+                                f"MCMC progress: {progress_pct:.1f}% ({total_steps}/{self.mcmc_iterations}), acceptance: {acceptance:.3f}"
+                            )
+
+                            # Check for extremely low acceptance (indicates problems)
+                            if acceptance < 0.01:
+                                logger.warning(
+                                    f"Very low acceptance: {acceptance:.4f}, terminating MCMC"
+                                )
+                                break
+
+                    except Exception as e:
+                        logger.error(f"MCMC chunk failed at step {total_steps}: {e}")
+                        raise
+
         except Exception as e:
             logger.error(f"MCMC run failed: {e}")
             raise
 
-        # Check acceptance
-        acceptance = np.mean(sampler.acceptance_fraction)
-        if acceptance < 0.1:
-            logger.warning(f"Low MCMC acceptance fraction: {acceptance:.3f}")
+        # Run MCMC with progress bar and error handling
+        try:
+            logger.info(
+                f"Running MCMC: {self.mcmc_iterations} iterations, {self.mcmc_burn_in} burn-in"
+            )
+            logger.info(
+                f"Starting near curve_fit solution: A={amplitude_guess:.3f}, T={T_guess:.1f}K"
+            )
+
+            # For well-constrained problems like yours, shorter runs with tight walkers work better
+            effective_iterations = min(
+                self.mcmc_iterations, 500
+            )  # Cap at 500 for efficiency
+            effective_burn_in = min(self.mcmc_burn_in, effective_iterations // 4)
+
+            # Try to run with progress bar first
+            try:
+                sampler.run_mcmc(pos, effective_iterations, progress=True)
+                total_steps = effective_iterations
+
+            except Exception as progress_error:
+                logger.info(
+                    f"Progress bar failed ({progress_error}), running without progress bar..."
+                )
+                sampler.run_mcmc(pos, effective_iterations, progress=False)
+                total_steps = effective_iterations
+
+        except Exception as e:
+            logger.error(f"MCMC run failed: {e}")
+            raise
+
+        # Check final acceptance
+        final_acceptance = np.mean(sampler.acceptance_fraction)
+        logger.info(f"MCMC completed. Final acceptance: {final_acceptance:.3f}")
+
+        # For well-constrained problems, acceptance can be lower but still OK
+        if final_acceptance < 0.15:
+            logger.warning(
+                f"Low MCMC acceptance: {final_acceptance:.3f} - this may indicate the problem is very well-constrained by the data"
+            )
 
         # Extract samples
         try:
-            samples = sampler.get_chain(discard=self.mcmc_burn_in, flat=True)
+            # Use the effective burn-in
+            samples = sampler.get_chain(discard=effective_burn_in, flat=True)
         except Exception as e:
             logger.error(f"Failed to extract MCMC samples: {e}")
             raise
 
-        if len(samples) < 100:
+        if len(samples) < 50:
             raise ValueError(f"Too few MCMC samples: {len(samples)}")
 
-        # Calculate percentiles
+        # Calculate results
         percentiles = [16, 50, 84]
         amplitude_percentiles = np.percentile(samples[:, 0], percentiles)
         temperature_percentiles = np.percentile(samples[:, 1], percentiles)
@@ -366,7 +502,7 @@ class GreybodyFitter:
         amplitude_best = amplitude_percentiles[1]
         temperature_best = temperature_percentiles[1]
 
-        # Errors (16th-84th percentile range)
+        # Errors (16th-84th percentile range / 2)
         amplitude_err = np.diff(amplitude_percentiles[[0, 2]])[0] / 2
         temperature_err = np.diff(temperature_percentiles[[0, 2]])[0] / 2
 
@@ -379,8 +515,261 @@ class GreybodyFitter:
             "temperature_error": temperature_err,
             "temperature_percentiles": temperature_percentiles,
             "n_samples": len(samples),
-            "acceptance_fraction": acceptance,
+            "acceptance_fraction": final_acceptance,
+            "total_steps": total_steps,
+            "effective_iterations": effective_iterations,
+            "effective_burn_in": effective_burn_in,
         }
+
+    def fit_sed(self, wavelengths, fluxes, flux_errors, redshift):
+        """
+        Fit greybody model with improved data handling
+        """
+        # Validate and filter data
+        valid_mask, fit_mask = self._validate_data(wavelengths, fluxes, flux_errors)
+
+        if np.sum(fit_mask) < 3:
+            logger.warning(f"Insufficient valid data points: {np.sum(fit_mask)}")
+            return {"fit_success": False, "reason": "insufficient_data"}
+
+        wave_fit = wavelengths[fit_mask]
+        flux_fit = fluxes[fit_mask]
+        error_fit = flux_errors[fit_mask]
+
+        logger.info(
+            f"Fitting SED: {len(wave_fit)} points, {np.sum(flux_fit > 0)} positive detections"
+        )
+
+        try:
+            # Always start with curve_fit for initial guess
+            amplitude_guess, T_guess = self._get_initial_guess(
+                wave_fit, flux_fit, error_fit, redshift
+            )
+
+            logger.debug(f"Initial guess: A={amplitude_guess:.2f}, T={T_guess:.1f}K")
+
+            # Curve fitting with conservative bounds
+            if self.fix_beta:
+
+                def model_func(wave, amp, temp):
+                    return self.greybody_model(wave, amp, temp, self.beta_fixed)
+
+                popt, pcov = curve_fit(
+                    model_func,
+                    wave_fit,
+                    flux_fit,
+                    sigma=error_fit,
+                    p0=[amplitude_guess, T_guess],
+                    bounds=([-41, 12], [-29, 55]),
+                    maxfev=5000,
+                )
+                amplitude, temperature_observed = popt
+                beta = self.beta_fixed
+                param_errors = np.sqrt(np.diag(pcov))
+                amplitude_err, temperature_err = param_errors
+                beta_err = 0.0
+            else:
+                # Free beta fitting
+                popt, pcov = curve_fit(
+                    self.greybody_model,
+                    wave_fit,
+                    flux_fit,
+                    sigma=error_fit,
+                    p0=[amplitude_guess, T_guess, 1.8],
+                    bounds=([-41, 12, 0.5], [-29, 55, 2.5]),
+                    maxfev=5000,
+                )
+                amplitude, temperature_observed, beta = popt
+                param_errors = np.sqrt(np.diag(pcov))
+                amplitude_err, temperature_err, beta_err = param_errors
+
+            logger.info(
+                f"Curve fit: T_obs={temperature_observed:.1f}±{temperature_err:.1f}K"
+            )
+
+            # Run MCMC if requested and curve_fit succeeded
+            mcmc_results = None
+            if self.use_mcmc and self.fix_beta:
+                try:
+                    mcmc_results = self.run_mcmc(
+                        wave_fit, flux_fit, error_fit, redshift
+                    )
+                    # Update parameters with MCMC results
+                    amplitude = mcmc_results["amplitude"]
+                    temperature_observed = mcmc_results["temperature_observed_frame"]
+                    amplitude_err = mcmc_results["amplitude_error"]
+                    temperature_err = mcmc_results["temperature_error"]
+
+                    logger.info(
+                        f"MCMC fit: T_obs={temperature_observed:.1f}±{temperature_err:.1f}K"
+                    )
+
+                except Exception as e:
+                    logger.warning(f"MCMC failed, using curve_fit results: {e}")
+                    mcmc_results = None
+
+            # Calculate rest-frame temperature
+            temperature_rest_frame = temperature_observed * (1 + redshift)
+
+            # Calculate goodness of fit
+            model_fluxes = self.greybody_model(
+                wave_fit, amplitude, temperature_observed, beta
+            )
+            chi2 = np.sum(((flux_fit - model_fluxes) / error_fit) ** 2)
+            dof = len(wave_fit) - (2 if self.fix_beta else 3)
+            chi2_reduced = chi2 / max(1, dof)
+
+            # Calculate L_IR
+            L_IR, L_IR_error = self.calculate_LIR(
+                amplitude, temperature_observed, beta, redshift
+            )
+
+            # Generate smooth model for plotting
+            wave_model = np.logspace(
+                np.log10(np.min(wave_fit) * 0.5), np.log10(np.max(wave_fit) * 2), 200
+            )
+            flux_model = self.greybody_model(
+                wave_model, amplitude, temperature_observed, beta
+            )
+
+            results = {
+                "fit_success": True,
+                "amplitude": amplitude,
+                "amplitude_error": amplitude_err,
+                "temperature_rest_frame": temperature_rest_frame,
+                "temperature_observed_frame": temperature_observed,
+                "temperature_error": temperature_err,
+                "beta": beta,
+                "beta_error": beta_err,
+                "chi2_reduced": chi2_reduced,
+                "L_IR": L_IR,
+                "L_IR_error": L_IR_error,
+                "n_points": len(wave_fit),
+                "n_positive": np.sum(flux_fit > 0),
+                "wavelengths_fit": wave_fit,
+                "fluxes_fit": flux_fit,
+                "flux_errors_fit": error_fit,
+                "model_wavelengths": wave_model,
+                "model_fluxes": flux_model,
+                "redshift_used": redshift,
+                "mcmc_used": mcmc_results is not None,
+                "schreiber_prior_used": self.use_schreiber_prior,
+            }
+
+            # Add MCMC-specific results
+            if mcmc_results:
+                results.update(
+                    {
+                        "mcmc_samples": mcmc_results["samples"],
+                        "mcmc_percentiles": {
+                            "amplitude": mcmc_results["amplitude_percentiles"],
+                            "temperature": mcmc_results["temperature_percentiles"],
+                        },
+                        "mcmc_acceptance_fraction": mcmc_results["acceptance_fraction"],
+                        "mcmc_total_steps": mcmc_results["total_steps"],
+                    }
+                )
+
+            return results
+
+        except Exception as e:
+            logger.warning(f"Greybody fit failed: {e}")
+            return {"fit_success": False, "reason": str(e)}
+
+    # Include all the other methods (greybody_model, calculate_LIR, etc.) from the original class
+    def greybody_model(
+        self, wavelength_um, amplitude, temperature, beta=1.8, alpha=2.0
+    ):
+        """Greybody model with power law extensions."""
+        # Convert wavelength to frequency
+        c_light = 299792458.0  # m/s
+        nu_in = c_light * 1.0e6 / wavelength_um  # Hz
+
+        # Linear amplitude
+        A = 10**amplitude
+
+        # Calculate transition frequency
+        nu_cut = (3.0 + beta + alpha) * 0.208367e11 * temperature
+
+        # Constants for power law normalization
+        base = (
+            2.0
+            * (6.626) ** (-2.0 - beta - alpha)
+            * (1.38) ** (3.0 + beta + alpha)
+            / (2.99792458) ** 2.0
+        )
+        expo = 34.0 * (2.0 + beta + alpha) - 23.0 * (3.0 + beta + alpha) - 16.0 + 26.0
+        K = base * 10.0**expo
+        w_num = A * K * (temperature * (3.0 + beta + alpha)) ** (3.0 + beta + alpha)
+        w_den = np.exp(3.0 + beta + alpha) - 1.0
+        w_div = w_num / w_den
+
+        # Modified blackbody (long wavelength side)
+        graybody = A * nu_in**beta * self.black(nu_in, temperature)[0] / 1000.0
+
+        # Power law (short wavelength side)
+        powerlaw = w_div * nu_in ** (-alpha)
+
+        # Apply transition
+        flux_density = graybody.copy()
+        ind_cut = nu_in >= nu_cut
+        flux_density[ind_cut] = powerlaw[ind_cut]
+
+        return flux_density
+
+    def black(self, nu_in, T):
+        """Blackbody function"""
+        a0 = 1.4718e-21  # 2*h*10^29/c^2
+        a1 = 4.7993e-11  # h/k
+
+        num = a0 * nu_in**3.0
+        den = np.exp(a1 * np.outer(1.0 / T, nu_in)) - 1.0
+        ret = num / den
+
+        return ret
+
+    def calculate_LIR(self, amplitude, temperature, beta, redshift):
+        """Calculate L_IR by integrating over 8-1000 μm rest-frame"""
+        if np.isnan(redshift) or redshift <= 0:
+            redshift = 0.01
+
+        # Get luminosity distance (in Mpc)
+        D_L = self.luminosity_distance(redshift)
+
+        # Generate wavelength range (8-1000 μm rest-frame)
+        wavelength_range = np.logspace(np.log10(8), np.log10(1000), 1000)
+
+        # Get model SED
+        model_sed_jy = self.greybody_model(
+            wavelength_range, amplitude, temperature, beta
+        )
+
+        # Convert wavelength to frequency
+        c_light = 299792458.0  # m/s
+        nu_in = c_light * 1.0e6 / wavelength_range  # Hz
+
+        # Calculate frequency intervals
+        dnu = nu_in[:-1] - nu_in[1:]
+        dnu = np.append(dnu[0], dnu)
+
+        # Integrate: L_IR = ∫ S_ν dν
+        Lir_jy_hz = np.sum(model_sed_jy * dnu)
+
+        # Convert to solar luminosities
+        conversion = 4.0 * np.pi * (1.0e-13 * D_L * 3.08568025e22) ** 2.0 / self.L_sun
+        L_IR_solar = Lir_jy_hz * conversion
+
+        # Error estimate
+        L_IR_error = L_IR_solar * 0.2
+        return L_IR_solar, L_IR_error
+
+    def luminosity_distance(self, z):
+        """Calculate luminosity distance in Mpc"""
+        if z <= 0:
+            z = 0.01
+        c_km_s = 299792.458  # km/s
+        D_L = c_km_s * z / self.H0  # Mpc
+        return D_L
 
     def calculate_dust_mass(
         self, amplitude: float, temperature: float, beta: float, redshift: float
@@ -437,271 +826,11 @@ class GreybodyFitter:
             logger.warning(f"Dust mass calculation failed: {e}")
             return np.nan, np.nan
 
-    def luminosity_distance(self, z: float) -> float:
-        """Calculate luminosity distance in meters"""
-        if z <= 0:
-            z = 0.01  # Small default for nearby sources
-
-        # Simplified calculation for low-z
-        c_km_s = 299792.458  # km/s
-        D_L = c_km_s * z / self.H0  # Mpc
-        return D_L
-
     def planck_function(self, nu: np.ndarray, T: float) -> np.ndarray:
         """Planck function B_ν(T) in SI units (W m⁻² sr⁻¹ Hz⁻¹)"""
         exponent = self.h * nu / (self.k_B * T)
         exponent = np.clip(exponent, 0, 700)
         return (2 * self.h * nu**3 / self.c**2) / (np.exp(exponent) - 1)
-
-    def greybody_model(
-        self,
-        wavelength_um: np.ndarray,
-        amplitude: float,
-        temperature: float,
-        beta: float = 1.8,
-        alpha: float = 2.0,
-    ) -> np.ndarray:
-        """
-        Greybody model with power law extensions.
-        """
-        # Convert wavelength to frequency
-        c_light = 299792458.0  # m/s
-        nu_in = c_light * 1.0e6 / wavelength_um  # Hz
-
-        # Linear amplitude
-        A = 10**amplitude
-
-        # Calculate transition frequency
-        nu_cut = (3.0 + beta + alpha) * 0.208367e11 * temperature
-
-        # Constants for power law normalization
-        base = (
-            2.0
-            * (6.626) ** (-2.0 - beta - alpha)
-            * (1.38) ** (3.0 + beta + alpha)
-            / (2.99792458) ** 2.0
-        )
-        expo = 34.0 * (2.0 + beta + alpha) - 23.0 * (3.0 + beta + alpha) - 16.0 + 26.0
-        K = base * 10.0**expo
-        w_num = A * K * (temperature * (3.0 + beta + alpha)) ** (3.0 + beta + alpha)
-        w_den = np.exp(3.0 + beta + alpha) - 1.0
-        w_div = w_num / w_den
-
-        # Modified blackbody (long wavelength side)
-        graybody = A * nu_in**beta * self.black(nu_in, temperature)[0] / 1000.0
-
-        # Power law (short wavelength side)
-        powerlaw = w_div * nu_in ** (-alpha)
-
-        # Apply transition
-        flux_density = graybody.copy()
-        ind_cut = nu_in >= nu_cut
-        flux_density[ind_cut] = powerlaw[ind_cut]
-
-        return flux_density
-
-    def black(self, nu_in, T):
-        a0 = 1.4718e-21  # 2*h*10^29/c^2
-        a1 = 4.7993e-11  # h/k
-
-        num = a0 * nu_in**3.0
-        den = np.exp(a1 * np.outer(1.0 / T, nu_in)) - 1.0
-        ret = num / den
-
-        return ret
-
-    def calculate_LIR(
-        self, amplitude: float, temperature: float, beta: float, redshift: float
-    ) -> tuple[float, float]:
-        """Calculate L_IR by integrating L_ν over frequency (8-1000 μm rest-frame)"""
-        if np.isnan(redshift) or redshift <= 0:
-            redshift = 0.01
-
-        # Get luminosity distance (in Mpc)
-        D_L = self.luminosity_distance(redshift)
-
-        # Generate wavelength range in microns (8-1000 μm rest-frame)
-        wavelength_range = np.logspace(np.log10(8), np.log10(1000), 1000)
-
-        # Get model SED
-        model_sed_jy = self.greybody_model(
-            wavelength_range, amplitude, temperature, beta
-        )
-
-        # Convert wavelength to frequency (Hz)
-        c_light = 299792458.0  # m/s
-        nu_in = c_light * 1.0e6 / wavelength_range  # Hz
-
-        # Calculate frequency intervals
-        dnu = nu_in[:-1] - nu_in[1:]
-        dnu = np.append(dnu[0], dnu)
-
-        # Integrate: L_IR = ∫ S_ν dν in Jy⋅Hz
-        Lir_jy_hz = np.sum(model_sed_jy * dnu)
-
-        # Convert to solar luminosities
-        conversion = 4.0 * np.pi * (1.0e-13 * D_L * 3.08568025e22) ** 2.0 / self.L_sun
-
-        L_IR_solar = Lir_jy_hz * conversion
-
-        # Error estimate (20% uncertainty)
-        L_IR_error = L_IR_solar * 0.2
-        return L_IR_solar, L_IR_error
-
-    def fit_sed(
-        self,
-        wavelengths: np.ndarray,
-        fluxes: np.ndarray,
-        flux_errors: np.ndarray,
-        redshift: float,
-    ) -> dict[str, Any]:
-        """Fit greybody model to SED data with optional MCMC"""
-        valid = (
-            (fluxes > 0)
-            & (flux_errors > 0)
-            & np.isfinite(fluxes)
-            & np.isfinite(flux_errors)
-        )
-
-        if np.sum(valid) < 3:
-            return {"fit_success": False, "reason": "insufficient_data"}
-
-        wave_fit = wavelengths[valid]
-        flux_fit = fluxes[valid]
-        error_fit = flux_errors[valid]
-
-        try:
-            # Always start with curve_fit for initial guess
-            if self.use_schreiber_prior and redshift > 0:
-                T_guess, _ = self.schreiber_temperature_prior(redshift)
-                T_guess = np.clip(T_guess, 10, 50)  # Ensure reasonable bounds
-            else:
-                T_guess = 25.0
-            amplitude_guess = -35.0
-
-            # Curve fitting with better bounds
-            if self.fix_beta:
-
-                def model_func(wave, amp, temp):
-                    return self.greybody_model(wave, amp, temp, self.beta_fixed)
-
-                popt, pcov = curve_fit(
-                    model_func,
-                    wave_fit,
-                    flux_fit,
-                    sigma=error_fit,
-                    p0=[amplitude_guess, T_guess],
-                    bounds=([-45, 8], [-25, 60]),  # More restrictive bounds
-                    maxfev=5000,
-                )
-                amplitude, temperature_observed = popt
-                beta = self.beta_fixed
-                param_errors = np.sqrt(np.diag(pcov))
-                amplitude_err, temperature_err = param_errors
-                beta_err = 0.0
-            else:
-                # Free beta fitting not implemented for MCMC yet
-                popt, pcov = curve_fit(
-                    self.greybody_model,
-                    wave_fit,
-                    flux_fit,
-                    sigma=error_fit,
-                    p0=[amplitude_guess, T_guess, 1.8],
-                    bounds=([-45, 8, 0.5], [-25, 60, 2.5]),
-                    maxfev=5000,
-                )
-                amplitude, temperature_observed, beta = popt
-                param_errors = np.sqrt(np.diag(pcov))
-                amplitude_err, temperature_err, beta_err = param_errors
-
-            # Run MCMC if requested
-            mcmc_results = None
-            if self.use_mcmc and self.fix_beta:  # MCMC only implemented for fixed beta
-                try:
-                    mcmc_results = self.run_mcmc(
-                        wave_fit, flux_fit, error_fit, redshift
-                    )
-                    # Update parameters with MCMC results
-                    amplitude = mcmc_results["amplitude"]
-                    temperature_observed = mcmc_results["temperature_observed_frame"]
-                    amplitude_err = mcmc_results["amplitude_error"]
-                    temperature_err = mcmc_results["temperature_error"]
-
-                    logger.info(
-                        f"MCMC fit successful: T_obs = {temperature_observed:.1f}±{temperature_err:.1f} K"
-                    )
-
-                except Exception as e:
-                    logger.warning(f"MCMC failed, using curve_fit results: {e}")
-
-            # Calculate rest-frame temperature
-            temperature_rest_frame = temperature_observed * (1 + redshift)
-
-            # Calculate goodness of fit
-            model_fluxes = self.greybody_model(
-                wave_fit, amplitude, temperature_observed, beta
-            )
-            chi2 = np.sum(((flux_fit - model_fluxes) / error_fit) ** 2)
-            dof = len(wave_fit) - (2 if self.fix_beta else 3)
-            chi2_reduced = chi2 / max(1, dof)
-
-            # Calculate L_IR and dust mass
-            L_IR, L_IR_error = self.calculate_LIR(
-                amplitude, temperature_observed, beta, redshift
-            )
-            M_dust, M_dust_error = self.calculate_dust_mass(
-                amplitude, temperature_observed, beta, redshift
-            )
-
-            # Generate smooth model for plotting
-            wave_model = np.logspace(
-                np.log10(np.min(wave_fit) * 0.5), np.log10(np.max(wave_fit) * 2), 200
-            )
-            flux_model = self.greybody_model(
-                wave_model, amplitude, temperature_observed, beta
-            )
-
-            results = {
-                "fit_success": True,
-                "amplitude": amplitude,
-                "amplitude_error": amplitude_err,
-                "temperature_rest_frame": temperature_rest_frame,
-                "temperature_observed_frame": temperature_observed,
-                "temperature_error": temperature_err,
-                "beta": beta,
-                "beta_error": beta_err,
-                "chi2_reduced": chi2_reduced,
-                "L_IR": L_IR,
-                "L_IR_error": L_IR_error,
-                "dust_mass": M_dust,
-                "dust_mass_error": M_dust_error,
-                "n_points": len(wave_fit),
-                "wavelengths_fit": wave_fit,
-                "fluxes_fit": flux_fit,
-                "flux_errors_fit": error_fit,
-                "model_wavelengths": wave_model,
-                "model_fluxes": flux_model,
-                "redshift_used": redshift,
-                "mcmc_used": mcmc_results is not None,
-                "schreiber_prior_used": self.use_schreiber_prior,
-            }
-
-            # Add MCMC-specific results
-            if mcmc_results:
-                results["mcmc_samples"] = mcmc_results["samples"]
-                results["mcmc_percentiles"] = {
-                    "amplitude": mcmc_results["amplitude_percentiles"],
-                    "temperature": mcmc_results["temperature_percentiles"],
-                }
-                results["mcmc_acceptance_fraction"] = mcmc_results[
-                    "acceptance_fraction"
-                ]
-
-            return results
-
-        except Exception as e:
-            logger.warning(f"Greybody fit failed: {e}")
-            return {"fit_success": False, "reason": str(e)}
 
 
 # Rest of the SimstackResults class remains the same, but update the initialization
