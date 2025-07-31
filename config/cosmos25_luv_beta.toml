@@ -12,8 +12,9 @@ randomize = false             # For null-testing: shuffle (x,y) when building la
 
 [error_estimator.bootstrap]
 enabled = true                # Use bootstrap method for error estimation
-iterations = 10              # Number of bootstrap iterations
+iterations = 25              # Number of bootstrap iterations
 initial_seed = 1              # Seed for random shuffling (ensures consistency across bands)
+split_fraction = 0.5
 
 # Top-level simple settings
 cosmology = "Planck18"        # Options: "Planck15", "Planck18"

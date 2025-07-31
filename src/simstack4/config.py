@@ -58,6 +58,7 @@ class BootstrapConfig:
 
     enabled: bool = True
     iterations: int = 150
+    split_fraction: float = 0.5
     initial_seed: int = 1
 
 
@@ -223,6 +224,7 @@ class SimstackConfig:
             bootstrap = BootstrapConfig(
                 enabled=bootstrap_dict.get("enabled", True),
                 iterations=bootstrap_dict.get("iterations", 150),
+                split_fraction=bootstrap_dict.get("split_fraction", 0.8),
                 initial_seed=bootstrap_dict.get("initial_seed", 1),
             )
             error_estimator = ErrorConfig(
