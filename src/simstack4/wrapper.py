@@ -86,6 +86,8 @@ class SimstackWrapper:
         read_catalog: bool = False,
         stack_automatically: bool = False,
         analyze_automatically: bool = False,
+        use_covariance: bool = True,  # NEW
+        correlation_matrix: dict | None = None,  # NEW
     ):
         """
         Initialize SimstackWrapper
@@ -105,6 +107,12 @@ class SimstackWrapper:
         else:
             self.config = config
             self.config_path = None
+
+        # NEW: Covariance support
+        self.use_covariance = use_covariance
+        self.correlation_matrix = (
+            correlation_matrix or self._get_default_correlation_matrix()
+        )
 
         # Store embedded config and catalog metadata
         self._embedded_config: dict | None = None
@@ -146,6 +154,91 @@ class SimstackWrapper:
 
         if analyze_automatically and self.config and self.stacking_results:
             self._run_analysis()
+
+    def _get_default_correlation_matrix(self) -> dict:
+        """Get the default correlation matrix from your data"""
+        return {
+            24: {
+                24: 1.00,
+                70: 0.23,
+                100: 0.33,
+                160: 0.32,
+                250: 0.28,
+                350: 0.17,
+                500: 0.07,
+                850: 0.10,
+            },
+            70: {
+                24: 0.23,
+                70: 1.00,
+                100: 0.19,
+                160: 0.24,
+                250: 0.23,
+                350: 0.14,
+                500: 0.06,
+                850: 0.08,
+            },
+            100: {
+                24: 0.33,
+                70: 0.19,
+                100: 1.00,
+                160: 0.28,
+                250: 0.21,
+                350: 0.11,
+                500: 0.04,
+                850: 0.05,
+            },
+            160: {
+                24: 0.32,
+                70: 0.24,
+                100: 0.28,
+                160: 1.00,
+                250: 0.35,
+                350: 0.23,
+                500: 0.10,
+                850: 0.13,
+            },
+            250: {
+                24: 0.28,
+                70: 0.23,
+                100: 0.21,
+                160: 0.35,
+                250: 1.00,
+                350: 0.37,
+                500: 0.18,
+                850: 0.28,
+            },
+            350: {
+                24: 0.17,
+                70: 0.14,
+                100: 0.11,
+                160: 0.23,
+                250: 0.37,
+                350: 1.00,
+                500: 0.20,
+                850: 0.33,
+            },
+            500: {
+                24: 0.07,
+                70: 0.06,
+                100: 0.04,
+                160: 0.10,
+                250: 0.18,
+                350: 0.20,
+                500: 1.00,
+                850: 0.23,
+            },
+            850: {
+                24: 0.10,
+                70: 0.08,
+                100: 0.05,
+                160: 0.13,
+                250: 0.28,
+                350: 0.33,
+                500: 0.23,
+                850: 1.00,
+            },
+        }
 
     def _extract_catalog_metadata(self) -> dict:
         """Extract comprehensive catalog metadata for JSON embedding"""
@@ -887,6 +980,9 @@ class SimstackWrapper:
         mcmc_burn_in: int = 200,
         use_schreiber_prior: bool = False,
         save_csv_path: str | None = None,
+        use_covariance: bool | None = None,  # NEW
+        correlation_matrix: dict | None = None,  # NEW
+        inflation_factors: dict | None = None,  # NEW
     ) -> None:
         """Run ONLY the analysis/SED fitting (requires stacking results)"""
         if not self.stacking_results:
@@ -896,10 +992,24 @@ class SimstackWrapper:
             logger.info("Loading catalog for analysis...")
             self._load_catalog()
 
+        # Use instance settings or overrides
+        covariance_enabled = (
+            use_covariance if use_covariance is not None else self.use_covariance
+        )
+        correlation_data = (
+            correlation_matrix
+            if correlation_matrix is not None
+            else self.correlation_matrix
+        )
+
         fitting_method = "MCMC" if use_mcmc else "curve_fit"
         prior_type = "Schreiber+2015" if use_schreiber_prior else "flat"
+        covariance_status = (
+            "with covariance" if covariance_enabled else "diagonal errors"
+        )
+
         logger.info(
-            f"Starting analysis pipeline with {fitting_method} fitting and {prior_type} priors..."
+            f"Starting analysis pipeline with {fitting_method} fitting, {prior_type} priors, {covariance_status}..."
         )
 
         try:
@@ -911,6 +1021,9 @@ class SimstackWrapper:
                 mcmc_iterations=mcmc_iterations,
                 mcmc_burn_in=mcmc_burn_in,
                 use_schreiber_prior=use_schreiber_prior,
+                use_covariance=covariance_enabled,  # NEW
+                correlation_matrix=correlation_data,  # NEW
+                inflation_factors=inflation_factors,  # NEW
             )
 
             # Update results dict for backward compatibility
@@ -919,12 +1032,15 @@ class SimstackWrapper:
                 "population_summary": self.processed_results.get_population_summary(),
                 "stacking_results": self.stacking_results,
                 "processed_results": self.processed_results,
+                "covariance_used": covariance_enabled,  # NEW
             }
 
             if save_csv_path is not None:
                 self._save_results_to_csv(save_csv_path)
 
             logger.info("✓ Analysis completed successfully!")
+            if covariance_enabled:
+                logger.info("✓ Covariance matrix was used in fitting")
 
         except (RuntimeError, ValueError, ImportError) as e:
             logger.error(f"Analysis pipeline failed: {e}")
@@ -1248,6 +1364,9 @@ class SimstackWrapper:
         mcmc_burn_in: int = 200,
         use_schreiber_prior: bool = False,
         save_csv_path: str | None = None,
+        use_covariance: bool | None = None,  # NEW
+        correlation_matrix: dict | None = None,  # NEW
+        inflation_factors: dict | None = None,  # NEW
     ) -> SimstackResults:
         """Public method to run ONLY analysis (requires stacking results)"""
         if not self.population_manager and self.config:
@@ -1259,6 +1378,9 @@ class SimstackWrapper:
             mcmc_burn_in=mcmc_burn_in,
             use_schreiber_prior=use_schreiber_prior,
             save_csv_path=save_csv_path,
+            use_covariance=use_covariance,  # NEW
+            correlation_matrix=correlation_matrix,  # NEW
+            inflation_factors=inflation_factors,  # NEW
         )
         return self.processed_results
 

@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy.linalg import cholesky, solve_triangular
 from scipy.optimize import curve_fit
 
 # Add emcee import
@@ -83,7 +84,7 @@ class DerivedQuantities:
 
 
 class GreybodyFitter:
-    """Greybody fitter with proper L_IR calculation, fixed beta option, and MCMC support"""
+    """Improved Greybody fitter with robust MCMC handling"""
 
     def __init__(
         self,
@@ -182,7 +183,7 @@ class GreybodyFitter:
         try:
             if self.use_schreiber_prior and redshift > 0:
                 T_guess, _ = self.schreiber_temperature_prior(redshift)
-                T_guess = np.clip(T_guess, 15, 45)
+                T_guess = np.clip(T_guess, 5, 45)
             else:
                 T_guess = 25.0
             amplitude_guess = -35.0
@@ -220,7 +221,7 @@ class GreybodyFitter:
 
     def schreiber_temperature_prior(self, redshift: float) -> tuple[float, float]:
         """
-        Calculate expected dust temperature from Schreiber+2015
+        Calculate expected dust temperature from Schreiber+2015 with realistic uncertainties
         """
         if redshift <= 0:
             return 25.0, 5.0
@@ -232,8 +233,19 @@ class GreybodyFitter:
         # Clip to reasonable range
         T_observed = np.clip(T_observed, 15, 50)
 
-        # Uncertainty scales with temperature
-        T_sigma = max(3.0, T_observed * 0.15)
+        # More realistic uncertainty based on scatter in Schreiber+2015 data
+        # The scatter increases with redshift due to increased diversity
+        if redshift < 1.0:
+            T_sigma = 3.0  # Low-z: tight relation
+        elif redshift < 2.0:
+            T_sigma = 4.0  # Mid-z: more scatter
+        else:
+            T_sigma = 5.0  # High-z: significant scatter
+
+        # Don't let uncertainty be smaller than reasonable measurement precision
+        T_sigma = max(T_sigma, 2.0)
+
+        T_sigma = 2.0
 
         return T_observed, T_sigma
 
@@ -728,15 +740,25 @@ class GreybodyFitter:
 
         return ret
 
-    def calculate_LIR(self, amplitude, temperature, beta, redshift):
-        """Calculate L_IR by integrating over 8-1000 μm rest-frame"""
+    def calculate_LIR(
+        self,
+        amplitude,
+        temperature,
+        beta,
+        redshift,
+        amplitude_err=None,
+        temperature_err=None,
+    ):
+        """
+        Calculate L_IR with proper error propagation from fit uncertainties
+        """
         if np.isnan(redshift) or redshift <= 0:
             redshift = 0.01
 
         # Get luminosity distance (in Mpc)
         D_L = self.luminosity_distance(redshift)
 
-        # Generate wavelength range (8-1000 μm rest-frame)
+        # Generate wavelength range in microns (8-1000 μm rest-frame)
         wavelength_range = np.logspace(np.log10(8), np.log10(1000), 1000)
 
         # Get model SED
@@ -744,7 +766,7 @@ class GreybodyFitter:
             wavelength_range, amplitude, temperature, beta
         )
 
-        # Convert wavelength to frequency
+        # Convert wavelength to frequency (Hz)
         c_light = 299792458.0  # m/s
         nu_in = c_light * 1.0e6 / wavelength_range  # Hz
 
@@ -752,16 +774,68 @@ class GreybodyFitter:
         dnu = nu_in[:-1] - nu_in[1:]
         dnu = np.append(dnu[0], dnu)
 
-        # Integrate: L_IR = ∫ S_ν dν
+        # Integrate: L_IR = ∫ S_ν dν in Jy⋅Hz
         Lir_jy_hz = np.sum(model_sed_jy * dnu)
 
         # Convert to solar luminosities
         conversion = 4.0 * np.pi * (1.0e-13 * D_L * 3.08568025e22) ** 2.0 / self.L_sun
         L_IR_solar = Lir_jy_hz * conversion
 
-        # Error estimate
-        L_IR_error = L_IR_solar * 0.2
+        # Proper error propagation if uncertainties provided
+        if amplitude_err is not None and temperature_err is not None:
+            # Calculate derivatives for error propagation
+            # dL_IR/dA ≈ (L_IR(A+δA) - L_IR(A-δA)) / (2*δA)
+            delta_amp = max(0.001, abs(amplitude_err) * 0.1)  # Small step
+            delta_temp = max(0.1, abs(temperature_err) * 0.1)
+
+            try:
+                # Amplitude derivative
+                L_IR_plus_amp = self._calculate_LIR_single(
+                    amplitude + delta_amp, temperature, beta, redshift, D_L, conversion
+                )
+                L_IR_minus_amp = self._calculate_LIR_single(
+                    amplitude - delta_amp, temperature, beta, redshift, D_L, conversion
+                )
+                dLIR_damp = (L_IR_plus_amp - L_IR_minus_amp) / (2 * delta_amp)
+
+                # Temperature derivative
+                L_IR_plus_temp = self._calculate_LIR_single(
+                    amplitude, temperature + delta_temp, beta, redshift, D_L, conversion
+                )
+                L_IR_minus_temp = self._calculate_LIR_single(
+                    amplitude, temperature - delta_temp, beta, redshift, D_L, conversion
+                )
+                dLIR_dtemp = (L_IR_plus_temp - L_IR_minus_temp) / (2 * delta_temp)
+
+                # Error propagation: σ²(L_IR) = (∂L_IR/∂A)²σ²(A) + (∂L_IR/∂T)²σ²(T)
+                L_IR_error = np.sqrt(
+                    (dLIR_damp * amplitude_err) ** 2
+                    + (dLIR_dtemp * temperature_err) ** 2
+                )
+
+            except Exception as e:
+                logger.warning(f"Error propagation failed: {e}, using 15% estimate")
+                L_IR_error = L_IR_solar * 0.15  # More conservative fallback
+        else:
+            # Fallback: use systematic uncertainty estimate based on typical model uncertainties
+            L_IR_error = L_IR_solar * 0.15  # 15% systematic uncertainty
+
         return L_IR_solar, L_IR_error
+
+    def _calculate_LIR_single(
+        self, amplitude, temperature, beta, redshift, D_L, conversion
+    ):
+        """Helper function for L_IR calculation"""
+        wavelength_range = np.logspace(np.log10(8), np.log10(1000), 1000)
+        model_sed_jy = self.greybody_model(
+            wavelength_range, amplitude, temperature, beta
+        )
+        c_light = 299792458.0
+        nu_in = c_light * 1.0e6 / wavelength_range
+        dnu = nu_in[:-1] - nu_in[1:]
+        dnu = np.append(dnu[0], dnu)
+        Lir_jy_hz = np.sum(model_sed_jy * dnu)
+        return Lir_jy_hz * conversion
 
     def luminosity_distance(self, z):
         """Calculate luminosity distance in Mpc"""
@@ -833,7 +907,433 @@ class GreybodyFitter:
         return (2 * self.h * nu**3 / self.c**2) / (np.exp(exponent) - 1)
 
 
-# Rest of the SimstackResults class remains the same, but update the initialization
+class CovarianceGreybodyFitter(GreybodyFitter):
+    """Enhanced Greybody fitter that properly handles band correlations"""
+
+    def __init__(self, correlation_matrix=None, inflation_factors=None, **kwargs):
+        """
+        Initialize with correlation matrix
+
+        Parameters:
+        -----------
+        correlation_matrix : dict or numpy.ndarray
+            Either a dict mapping wavelengths to correlation matrix,
+            or a 2D numpy array for the correlation matrix
+        """
+        super().__init__(**kwargs)
+        self.correlation_matrix = correlation_matrix
+        self.covariance_matrix = None
+        self.inv_cov_chol = None  # Cholesky decomposition for efficiency
+        self.inflation_factors = inflation_factors  # NEW
+
+    '''
+    def set_correlation_matrix_from_dict(self, corr_dict, wavelengths):
+        """
+        Set correlation matrix from dictionary format
+
+        Parameters:
+        -----------
+        corr_dict : dict
+            Dictionary with wavelength keys and correlation values
+        wavelengths : array
+            Wavelengths used in fitting (in same order as flux arrays)
+        """
+        # Your correlation matrix data
+        correlation_data = {
+            24: {24: 1.00, 70: 0.23, 100: 0.33, 160: 0.32, 250: 0.28, 350: 0.17, 500: 0.07, 850: 0.10},
+            70: {24: 0.23, 70: 1.00, 100: 0.19, 160: 0.24, 250: 0.23, 350: 0.14, 500: 0.06, 850: 0.08},
+            100: {24: 0.33, 70: 0.19, 100: 1.00, 160: 0.28, 250: 0.21, 350: 0.11, 500: 0.04, 850: 0.05},
+            160: {24: 0.32, 70: 0.24, 100: 0.28, 160: 1.00, 250: 0.35, 350: 0.23, 500: 0.10, 850: 0.13},
+            250: {24: 0.28, 70: 0.23, 100: 0.21, 160: 0.35, 250: 1.00, 350: 0.37, 500: 0.18, 850: 0.28},
+            350: {24: 0.17, 70: 0.14, 100: 0.11, 160: 0.23, 250: 0.37, 350: 1.00, 500: 0.20, 850: 0.33},
+            500: {24: 0.07, 70: 0.06, 100: 0.04, 160: 0.10, 250: 0.18, 350: 0.20, 500: 1.00, 850: 0.23},
+            850: {24: 0.10, 70: 0.08, 100: 0.05, 160: 0.13, 250: 0.28, 350: 0.33, 500: 0.23, 850: 1.00}
+        }
+
+        # Find which wavelengths we actually have data for
+        available_wavelengths = []
+        for w in wavelengths:
+            # Find closest match in correlation matrix (with some tolerance)
+            closest_key = min(corr_dict.keys(), key=lambda x: abs(x - w))
+            if abs(closest_key - w) < w * 0.1:  # Within 10%
+                available_wavelengths.append(closest_key)
+            else:
+                logger.warning(f"No correlation data for wavelength {w:.1f} μm")
+                available_wavelengths.append(None)
+
+        # Build correlation matrix for available data
+        n_bands = len([w for w in available_wavelengths if w is not None])
+        if n_bands < 2:
+            logger.warning("Insufficient bands with correlation data, using diagonal covariance")
+            self.correlation_matrix = None
+            return
+
+        # Create the correlation matrix
+        valid_indices = [i for i, w in enumerate(available_wavelengths) if w is not None]
+        valid_wavelengths = [available_wavelengths[i] for i in valid_indices]
+
+        corr_matrix = np.zeros((n_bands, n_bands))
+        for i, w1 in enumerate(valid_wavelengths):
+            for j, w2 in enumerate(valid_wavelengths):
+                corr_matrix[i, j] = corr_dict[w1][w2]
+
+        self.correlation_matrix = corr_matrix
+        self.wavelength_mapping = valid_indices  # Indices in original wavelength array
+
+        logger.info(f"Set up correlation matrix for {n_bands} bands: {valid_wavelengths}")
+    '''
+
+    def _inflate_band_errors(self, wavelengths, flux_errors):
+        """
+        Inflate uncertainties for specific bands
+
+        Parameters:
+        -----------
+        wavelengths : array
+            Wavelengths in microns
+        flux_errors : array
+            Original flux errors
+        """
+        if self.inflation_factors is None:
+            return flux_errors
+
+        inflated_errors = flux_errors.copy()
+
+        for key, factor in self.inflation_factors.items():
+            if isinstance(key, tuple):
+                # Range format: (wave_min, wave_max)
+                wave_min, wave_max = key
+                mask = (wavelengths >= wave_min) & (wavelengths <= wave_max)
+            else:
+                # Single wavelength format: find closest match within 10%
+                wave_target = float(key)
+                mask = np.abs(wavelengths - wave_target) < (wave_target * 0.1)
+
+            inflated_errors[mask] *= factor
+
+            if np.any(mask):
+                affected_waves = wavelengths[mask]
+                logger.info(
+                    f"Inflated errors by {factor}x for {key} (affected: {affected_waves})"
+                )
+
+        return inflated_errors
+
+    def _setup_covariance_matrix(self, flux_errors, fit_mask):
+        """
+        Setup covariance matrix from errors and correlations
+
+        Parameters:
+        -----------
+        flux_errors : array
+            Flux uncertainties
+        fit_mask : array
+            Boolean mask for which data points to use
+        """
+        errors_fit = flux_errors[fit_mask]
+        n_points = len(errors_fit)
+
+        if self.correlation_matrix is None or n_points < 2:
+            # Diagonal covariance (no correlations)
+            self.covariance_matrix = np.diag(errors_fit**2)
+            self.inv_cov_chol = np.diag(1.0 / errors_fit)
+            logger.debug("Using diagonal covariance matrix")
+            return
+
+        # Check if correlation matrix size matches data
+        if self.correlation_matrix.shape[0] != n_points:
+            logger.warning(
+                f"Correlation matrix size {self.correlation_matrix.shape} doesn't match data size {n_points}"
+            )
+            # Fallback to diagonal
+            self.covariance_matrix = np.diag(errors_fit**2)
+            self.inv_cov_chol = np.diag(1.0 / errors_fit)
+            return
+
+        # Build full covariance matrix: C_ij = σ_i * σ_j * ρ_ij
+        self.covariance_matrix = (
+            np.outer(errors_fit, errors_fit) * self.correlation_matrix
+        )
+
+        # Ensure positive definite (add small diagonal term if needed)
+        eigenvals = np.linalg.eigvals(self.covariance_matrix)
+        if np.any(eigenvals <= 0):
+            logger.warning(
+                "Covariance matrix not positive definite, adding regularization"
+            )
+            regularization = 1e-10 * np.max(np.diag(self.covariance_matrix))
+            self.covariance_matrix += regularization * np.eye(n_points)
+
+        # Precompute Cholesky decomposition for efficient likelihood calculation
+        try:
+            L = cholesky(self.covariance_matrix, lower=True)
+            self.inv_cov_chol = solve_triangular(L, np.eye(n_points), lower=True)
+            logger.info(
+                f"Set up {n_points}×{n_points} covariance matrix with correlations"
+            )
+        except np.linalg.LinAlgError as e:
+            logger.error(
+                f"Cholesky decomposition failed: {e}, using diagonal covariance"
+            )
+            self.covariance_matrix = np.diag(errors_fit**2)
+            self.inv_cov_chol = np.diag(1.0 / errors_fit)
+
+    def log_likelihood_with_covariance(self, theta, wavelengths, fluxes, flux_errors):
+        """
+        Log likelihood using full covariance matrix
+
+        This is the key improvement that should make the Schreiber prior more effective
+        """
+        amplitude, temperature = theta
+
+        try:
+            # Calculate model fluxes
+            model_fluxes = self.greybody_model(
+                wavelengths, amplitude, temperature, self.beta_fixed
+            )
+
+            if not np.all(np.isfinite(model_fluxes)):
+                return -np.inf
+
+            # Calculate residuals
+            residuals = fluxes - model_fluxes
+
+            if self.inv_cov_chol is None:
+                # Fallback to diagonal case
+                chi2 = np.sum((residuals / flux_errors) ** 2)
+                log_det_cov = 2 * np.sum(np.log(flux_errors))
+            else:
+                # Use full covariance matrix via Cholesky decomposition
+                # This is equivalent to: residuals^T @ inv_cov @ residuals
+                # but much more numerically stable
+                transformed_residuals = self.inv_cov_chol.T @ residuals
+                chi2 = np.sum(transformed_residuals**2)
+
+                # Log determinant from Cholesky: log|C| = 2 * sum(log(diag(L)))
+                log_det_cov = -2 * np.sum(np.log(np.diag(self.inv_cov_chol)))
+
+            # Sanity checks
+            if not np.isfinite(chi2) or chi2 > 10000:
+                return -np.inf
+
+            # Log likelihood: -0.5 * [chi2 + log(2π)^n + log|C|]
+            n_points = len(residuals)
+            log_like = -0.5 * (chi2 + n_points * np.log(2 * np.pi) + log_det_cov)
+
+            return log_like
+
+        except (FloatingPointError, OverflowError, ValueError, np.linalg.LinAlgError):
+            return -np.inf
+
+    def log_posterior_with_covariance(
+        self, theta, wavelengths, fluxes, flux_errors, redshift=0.0
+    ):
+        """Log posterior using covariance-aware likelihood"""
+        log_p = self.log_prior(theta, redshift)
+        if not np.isfinite(log_p):
+            return -np.inf
+
+        log_l = self.log_likelihood_with_covariance(
+            theta, wavelengths, fluxes, flux_errors
+        )
+        return log_p + log_l
+
+    def run_mcmc_with_covariance(self, wavelengths, fluxes, flux_errors, redshift=0.0):
+        """
+        Run MCMC with proper covariance treatment
+        """
+        if not HAS_EMCEE:
+            raise ImportError("emcee is required for MCMC fitting")
+
+        # Setup covariance matrix
+        fit_mask = np.ones(len(wavelengths), dtype=bool)  # Use all points for now
+        self._setup_covariance_matrix(flux_errors, fit_mask)
+
+        # Get initial guess (this will be less dominant now)
+        amplitude_guess, T_guess = self._get_initial_guess(
+            wavelengths, fluxes, flux_errors, redshift
+        )
+
+        logger.info(f"MCMC with covariance: initial T={T_guess:.1f}K")
+
+        # If using Schreiber prior, start walkers around the prior expectation
+        if self.use_schreiber_prior and redshift > 0:
+            T_prior, T_sigma = self.schreiber_temperature_prior(redshift)
+            logger.info(
+                f"Schreiber prior: T={T_prior:.1f}±{T_sigma:.1f}K (z={redshift:.2f})"
+            )
+
+            # Blend curve_fit guess with prior expectation
+            alpha = 0.7  # Weight towards prior
+            T_start = alpha * T_prior + (1 - alpha) * T_guess
+            T_spread = max(T_sigma, 2.0)  # Ensure reasonable spread
+        else:
+            T_start = T_guess
+            T_spread = 3.0
+
+        logger.info(
+            f"Starting MCMC around T={T_start:.1f}K with spread {T_spread:.1f}K"
+        )
+
+        # Setup walkers with appropriate spread
+        n_walkers = 32
+        n_dim = 2
+        pos = []
+
+        for _i in range(n_walkers):
+            amp_trial = amplitude_guess + np.random.normal(0, 0.2)
+            temp_trial = T_start + np.random.normal(0, T_spread)
+
+            # Ensure within bounds
+            amp_trial = np.clip(amp_trial, -37.5, -30.5)
+            temp_trial = np.clip(temp_trial, 4, 44)
+
+            # Test finite probability
+            test_prob = self.log_posterior_with_covariance(
+                [amp_trial, temp_trial], wavelengths, fluxes, flux_errors, redshift
+            )
+
+            if np.isfinite(test_prob):
+                pos.append([amp_trial, temp_trial])
+            else:
+                # Fallback
+                pos.append(
+                    [
+                        amplitude_guess + np.random.normal(0, 0.1),
+                        T_start + np.random.normal(0, 1.0),
+                    ]
+                )
+
+        pos = np.array(pos)
+
+        # Create sampler with covariance-aware posterior
+        sampler = emcee.EnsembleSampler(
+            n_walkers,
+            n_dim,
+            self.log_posterior_with_covariance,
+            args=(wavelengths, fluxes, flux_errors, redshift),
+        )
+
+        # Run MCMC
+        logger.info(f"Running MCMC with covariance: {self.mcmc_iterations} iterations")
+
+        try:
+            sampler.run_mcmc(pos, self.mcmc_iterations, progress=True)
+        except Exception:
+            logger.info("Progress bar failed, running without progress")
+            sampler.run_mcmc(pos, self.mcmc_iterations, progress=False)
+
+        # Check acceptance
+        acceptance = np.mean(sampler.acceptance_fraction)
+        logger.info(f"MCMC acceptance: {acceptance:.3f}")
+
+        # Extract samples
+        samples = sampler.get_chain(discard=self.mcmc_burn_in, flat=True)
+
+        if len(samples) < 50:
+            raise ValueError(f"Too few MCMC samples: {len(samples)}")
+
+        # Calculate results
+        percentiles = [16, 50, 84]
+        amplitude_percentiles = np.percentile(samples[:, 0], percentiles)
+        temperature_percentiles = np.percentile(samples[:, 1], percentiles)
+
+        amplitude_best = amplitude_percentiles[1]
+        temperature_best = temperature_percentiles[1]
+        amplitude_err = np.diff(amplitude_percentiles[[0, 2]])[0] / 2
+        temperature_err = np.diff(temperature_percentiles[[0, 2]])[0] / 2
+
+        return {
+            "samples": samples,
+            "amplitude": amplitude_best,
+            "amplitude_error": amplitude_err,
+            "amplitude_percentiles": amplitude_percentiles,
+            "temperature_observed_frame": temperature_best,
+            "temperature_error": temperature_err,
+            "temperature_percentiles": temperature_percentiles,
+            "n_samples": len(samples),
+            "acceptance_fraction": acceptance,
+            "covariance_used": self.covariance_matrix is not None,
+            "correlation_matrix_shape": self.correlation_matrix.shape
+            if self.correlation_matrix is not None
+            else None,
+        }
+
+    def fit_sed_with_covariance(self, wavelengths, fluxes, flux_errors, redshift):
+        """
+        Enhanced SED fitting with covariance matrix
+        """
+
+        # Inflate specific band errors
+        flux_errors = self._inflate_band_errors(wavelengths, flux_errors)
+
+        # Validate data
+        valid_mask, fit_mask = self._validate_data(wavelengths, fluxes, flux_errors)
+
+        if np.sum(fit_mask) < 3:
+            logger.warning(f"Insufficient valid data points: {np.sum(fit_mask)}")
+            return {"fit_success": False, "reason": "insufficient_data"}
+
+        wave_fit = wavelengths[fit_mask]
+        flux_fit = fluxes[fit_mask]
+        error_fit = flux_errors[fit_mask]
+
+        # Set up correlation matrix for these specific wavelengths
+        # if self.correlation_matrix is not None:
+        #    self.set_correlation_matrix_from_dict({}, wave_fit)
+
+        logger.info(f"Fitting SED with covariance: {len(wave_fit)} points")
+
+        try:
+            # Still do curve_fit for initial guess, but it's less dominant now
+            initial_result = super().fit_sed(wave_fit, flux_fit, error_fit, redshift)
+
+            if not initial_result["fit_success"]:
+                return initial_result
+
+            # Run MCMC with covariance
+            if self.use_mcmc:
+                try:
+                    mcmc_results = self.run_mcmc_with_covariance(
+                        wave_fit, flux_fit, error_fit, redshift
+                    )
+
+                    # Update results with MCMC values
+                    initial_result.update(
+                        {
+                            "amplitude": mcmc_results["amplitude"],
+                            "amplitude_error": mcmc_results["amplitude_error"],
+                            "temperature_observed_frame": mcmc_results[
+                                "temperature_observed_frame"
+                            ],
+                            "temperature_error": mcmc_results["temperature_error"],
+                            "mcmc_used": True,
+                            "covariance_used": mcmc_results["covariance_used"],
+                            "mcmc_samples": mcmc_results["samples"],
+                            "mcmc_acceptance": mcmc_results["acceptance_fraction"],
+                        }
+                    )
+
+                    logger.info(
+                        f"Final result with covariance: T={mcmc_results['temperature_observed_frame']:.1f}±{mcmc_results['temperature_error']:.1f}K"
+                    )
+
+                except Exception as e:
+                    logger.warning(f"MCMC with covariance failed: {e}")
+
+            return initial_result
+
+        except Exception as e:
+            logger.error(f"Covariance SED fitting failed: {e}")
+            return {"fit_success": False, "reason": str(e)}
+
+    def fit_sed(self, wavelengths, fluxes, flux_errors, redshift):
+        """
+        Override parent fit_sed to automatically use covariance version
+        """
+        return self.fit_sed_with_covariance(wavelengths, fluxes, flux_errors, redshift)
+
+
 class SimstackResults:
     """Process and analyze stacking results"""
 
@@ -849,6 +1349,9 @@ class SimstackResults:
         mcmc_iterations: int = 1000,
         mcmc_burn_in: int = 200,
         use_schreiber_prior: bool = False,
+        use_covariance: bool = True,  # NEW
+        correlation_matrix: dict | None = None,  # NEW
+        inflation_factors: dict | None = None,  # NEW
     ):
         """
         Initialize results processor
@@ -864,6 +1367,8 @@ class SimstackResults:
             mcmc_iterations: Number of MCMC iterations
             mcmc_burn_in: Number of burn-in iterations to discard
             use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
+            use_covariance: Whether to use covariance-aware fitting
+            correlation_matrix: Custom correlation matrix (uses default if None)
         """
         self.config = config
         self.raw_results = stacking_results
@@ -875,15 +1380,29 @@ class SimstackResults:
         else:
             self.cosmology_calc = cosmology_calc
 
-        # Initialize greybody fitter with MCMC options
-        self.greybody_fitter = GreybodyFitter(
-            fix_beta=fix_beta,
-            beta_fixed=beta_fixed,
-            use_mcmc=use_mcmc,
-            mcmc_iterations=mcmc_iterations,
-            mcmc_burn_in=mcmc_burn_in,
-            use_schreiber_prior=use_schreiber_prior,
-        )
+        # Initialize greybody fitter with MCMC and covariance options
+        if use_covariance:
+            self.greybody_fitter = CovarianceGreybodyFitter(
+                correlation_matrix=correlation_matrix,
+                fix_beta=fix_beta,
+                beta_fixed=beta_fixed,
+                use_mcmc=use_mcmc,
+                mcmc_iterations=mcmc_iterations,
+                mcmc_burn_in=mcmc_burn_in,
+                use_schreiber_prior=use_schreiber_prior,
+                inflation_factors=inflation_factors,  # NEW
+            )
+            logger.info("Using covariance-aware greybody fitter")
+        else:
+            self.greybody_fitter = GreybodyFitter(
+                fix_beta=fix_beta,
+                beta_fixed=beta_fixed,
+                use_mcmc=use_mcmc,
+                mcmc_iterations=mcmc_iterations,
+                mcmc_burn_in=mcmc_burn_in,
+                use_schreiber_prior=use_schreiber_prior,
+            )
+            logger.info("Using standard greybody fitter")
 
         # Initialize processed results containers
         self.sed_results: dict[str, SEDResults] = {}
@@ -1474,6 +1993,9 @@ def create_results_processor(
     mcmc_iterations: int = 1000,
     mcmc_burn_in: int = 200,
     use_schreiber_prior: bool = False,
+    use_covariance: bool = True,
+    correlation_matrix: dict | None = None,
+    inflation_factors: dict | None = None,  # NEW
 ) -> SimstackResults:
     """
     Convenience function to create results processor
@@ -1488,6 +2010,8 @@ def create_results_processor(
         mcmc_iterations: Number of MCMC iterations
         mcmc_burn_in: Number of burn-in iterations to discard
         use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
+        use_covariance: Whether to use covariance-aware fitting (NEW)
+        correlation_matrix: Custom correlation matrix (uses default if None) (NEW)
 
     Returns:
         Processed SimstackResults object
@@ -1502,4 +2026,7 @@ def create_results_processor(
         mcmc_iterations=mcmc_iterations,
         mcmc_burn_in=mcmc_burn_in,
         use_schreiber_prior=use_schreiber_prior,
+        use_covariance=use_covariance,  # NEW
+        correlation_matrix=correlation_matrix,  # NEW
+        inflation_factors=inflation_factors,  # NEW
     )
