@@ -240,6 +240,183 @@ class SimstackWrapper:
             },
         }
 
+    def estimate_bootstrap_covariance(self):
+        """
+        Estimate bootstrap covariance matrices from loaded stacking results
+        Only called if bootstrap data is available in the JSON
+
+        Returns:
+        --------
+        bootstrap_covariances : dict
+            Dictionary mapping population_id -> covariance matrix
+        """
+        if not self.stacking_results:
+            logger.warning("No stacking results loaded")
+            return {}
+
+        # Check different possible locations for bootstrap data
+        bootstrap_data = None
+
+        # Try different attribute names for bootstrap data
+        for attr_name in [
+            "bootstrap_flux_samples",
+            "bootstrap_iterations",
+            "bootstrap_results",
+            "bootstrap_data",
+            "bootstrap",
+        ]:
+            if hasattr(self.stacking_results, attr_name):
+                bootstrap_data = getattr(self.stacking_results, attr_name)
+                logger.info(f"Found bootstrap data in attribute: {attr_name}")
+                break
+
+        if bootstrap_data is None:
+            logger.info("No bootstrap data found in stacking results")
+            return {}
+
+        # Handle different data structures
+        if isinstance(bootstrap_data, int):
+            logger.info(
+                f"Bootstrap iterations count: {bootstrap_data}, but no iteration data found"
+            )
+            return {}
+
+        if isinstance(bootstrap_data, dict):
+            # Check if it's the map-based structure like yours
+            map_names = list(bootstrap_data.keys())
+            if all(isinstance(bootstrap_data[key], list) for key in map_names):
+                # This looks like: {'mips_24': [...], 'pacs_green': [...], ...}
+                logger.info(
+                    f"Found map-based bootstrap structure with {len(map_names)} bands"
+                )
+
+                # Get number of bootstrap iterations and populations
+                first_map = map_names[0]
+                bootstrap_samples = bootstrap_data[first_map]
+
+                if not bootstrap_samples or len(bootstrap_samples) == 0:
+                    logger.warning("Empty bootstrap samples")
+                    return {}
+
+                # Assume structure is: [iteration][population_index]
+                n_iterations = len(bootstrap_samples)
+                n_populations = len(bootstrap_samples[0]) if bootstrap_samples[0] else 0
+
+                logger.info(
+                    f"Bootstrap structure: {n_iterations} iterations, {n_populations} populations"
+                )
+
+                # Reconstruct iteration-based structure
+                bootstrap_iterations = []
+                for iter_idx in range(n_iterations):
+                    iteration_data = {"flux_densities": {}}
+                    for map_name in map_names:
+                        try:
+                            iteration_data["flux_densities"][map_name] = bootstrap_data[
+                                map_name
+                            ][iter_idx]
+                        except (IndexError, KeyError) as e:
+                            logger.warning(
+                                f"Error accessing bootstrap data for {map_name}, iteration {iter_idx}: {e}"
+                            )
+                            continue
+                    bootstrap_iterations.append(iteration_data)
+
+            elif "iterations" in bootstrap_data:
+                bootstrap_iterations = bootstrap_data["iterations"]
+            elif "results" in bootstrap_data:
+                bootstrap_iterations = bootstrap_data["results"]
+            else:
+                logger.warning(
+                    f"Bootstrap data is dict but unrecognized structure. Keys: {list(bootstrap_data.keys())}"
+                )
+                return {}
+        elif isinstance(bootstrap_data, list):
+            # Bootstrap data is directly a list of iterations
+            bootstrap_iterations = bootstrap_data
+        else:
+            logger.warning(f"Unknown bootstrap data type: {type(bootstrap_data)}")
+            return {}
+
+        if not bootstrap_iterations or len(bootstrap_iterations) == 0:
+            logger.info("No bootstrap iterations found")
+            return {}
+
+        population_labels = self.stacking_results.population_labels
+        map_names = self.stacking_results.map_names
+
+        logger.info(f"Found {len(bootstrap_iterations)} bootstrap iterations")
+        logger.info("Calculating bootstrap covariance matrices...")
+
+        # Calculate covariance for each population
+        bootstrap_covariances = {}
+
+        for pop_idx, pop_id in enumerate(population_labels):
+            if pop_id == "foreground":
+                continue  # Skip foreground
+
+            # Collect flux measurements across bootstrap iterations
+            pop_fluxes = []
+
+            for iteration in bootstrap_iterations:
+                iter_fluxes = []
+                for map_name in map_names:
+                    try:
+                        # Handle different possible structures for iteration data
+                        if isinstance(iteration, dict):
+                            if "flux_densities" in iteration:
+                                flux = iteration["flux_densities"][map_name][pop_idx]
+                            elif map_name in iteration:
+                                flux = iteration[map_name][pop_idx]
+                            else:
+                                logger.warning(
+                                    f"Cannot find flux data for {map_name} in iteration"
+                                )
+                                flux = 0.0
+                        else:
+                            logger.warning(
+                                f"Unexpected iteration structure: {type(iteration)}"
+                            )
+                            flux = 0.0
+
+                        iter_fluxes.append(flux)
+                    except (KeyError, IndexError, TypeError) as e:
+                        logger.warning(
+                            f"Error extracting flux for {map_name}, pop {pop_idx}: {e}"
+                        )
+                        iter_fluxes.append(0.0)
+
+                pop_fluxes.append(iter_fluxes)
+
+            # Convert to numpy array and calculate covariance
+            pop_fluxes = np.array(pop_fluxes)  # Shape: (n_iterations, n_bands)
+
+            if len(pop_fluxes) > 1 and pop_fluxes.shape[1] > 1:
+                # Calculate covariance matrix
+                pop_cov = np.cov(pop_fluxes.T)  # Shape: (n_bands, n_bands)
+
+                # Check for valid covariance matrix
+                if np.all(np.isfinite(pop_cov)) and np.all(np.diag(pop_cov) > 0):
+                    bootstrap_covariances[pop_id] = pop_cov
+
+                    # Log diagonal vs off-diagonal elements
+                    diag_mean = np.mean(np.diag(pop_cov))
+                    off_diag_mean = np.mean(pop_cov[np.triu_indices_from(pop_cov, k=1)])
+                    logger.info(
+                        f"Population {pop_id}: diag={diag_mean:.2e}, off-diag={off_diag_mean:.2e}"
+                    )
+                else:
+                    logger.warning(f"Invalid covariance matrix for population {pop_id}")
+            else:
+                logger.warning(
+                    f"Insufficient bootstrap data for population {pop_id}: shape {pop_fluxes.shape}"
+                )
+
+        logger.info(
+            f"Calculated bootstrap covariances for {len(bootstrap_covariances)} populations"
+        )
+        return bootstrap_covariances
+
     def _extract_catalog_metadata(self) -> dict:
         """Extract comprehensive catalog metadata for JSON embedding"""
         if not self.sky_catalogs or not self.population_manager:
@@ -980,9 +1157,10 @@ class SimstackWrapper:
         mcmc_burn_in: int = 200,
         use_schreiber_prior: bool = False,
         save_csv_path: str | None = None,
-        use_covariance: bool | None = None,  # NEW
-        correlation_matrix: dict | None = None,  # NEW
-        inflation_factors: dict | None = None,  # NEW
+        use_covariance: bool | None = None,
+        correlation_matrix: dict | None = None,
+        inflation_factors: dict | None = None,
+        bootstrap_covariances: dict | None = None,
     ) -> None:
         """Run ONLY the analysis/SED fitting (requires stacking results)"""
         if not self.stacking_results:
@@ -1024,6 +1202,7 @@ class SimstackWrapper:
                 use_covariance=covariance_enabled,  # NEW
                 correlation_matrix=correlation_data,  # NEW
                 inflation_factors=inflation_factors,  # NEW
+                bootstrap_covariances=bootstrap_covariances,  # NEW
             )
 
             # Update results dict for backward compatibility
@@ -1364,13 +1543,53 @@ class SimstackWrapper:
         mcmc_burn_in: int = 200,
         use_schreiber_prior: bool = False,
         save_csv_path: str | None = None,
-        use_covariance: bool | None = None,  # NEW
-        correlation_matrix: dict | None = None,  # NEW
-        inflation_factors: dict | None = None,  # NEW
+        use_covariance: bool | None = None,
+        correlation_matrix: dict | None = None,
+        inflation_factors: dict | None = None,
+        use_bootstrap_covariance: bool = True,
+        use_instrumental_covariance: bool = True,
     ) -> SimstackResults:
         """Public method to run ONLY analysis (requires stacking results)"""
         if not self.population_manager and self.config:
             self._load_catalog()
+
+        # Handle covariance settings
+        if not use_covariance:
+            # Override: no covariance at all
+            use_bootstrap_covariance = False
+            use_instrumental_covariance = False
+            logger.info("Covariance disabled - using diagonal errors only")
+
+        # Estimate bootstrap covariance if requested and available
+        bootstrap_covariances = {}
+        if use_bootstrap_covariance:
+            bootstrap_covariances = self.estimate_bootstrap_covariance()
+            if bootstrap_covariances:
+                logger.info(
+                    f"Will use bootstrap covariance for {len(bootstrap_covariances)} populations"
+                )
+            else:
+                logger.info("No bootstrap covariance available")
+
+        # Set up instrumental correlation matrix
+        instrumental_correlation = None
+        if use_instrumental_covariance:
+            instrumental_correlation = (
+                correlation_matrix
+                if correlation_matrix is not None
+                else self.correlation_matrix
+            )
+            if instrumental_correlation:
+                logger.info("Will use instrumental correlation matrix")
+            else:
+                logger.info("No instrumental correlation matrix available")
+
+        # Log what we're using
+        covariance_components = []
+        if use_instrumental_covariance and instrumental_correlation:
+            covariance_components.append("instrumental")
+        if use_bootstrap_covariance and bootstrap_covariances:
+            covariance_components.append("bootstrap")
 
         self._run_analysis(
             use_mcmc=use_mcmc,
@@ -1378,9 +1597,10 @@ class SimstackWrapper:
             mcmc_burn_in=mcmc_burn_in,
             use_schreiber_prior=use_schreiber_prior,
             save_csv_path=save_csv_path,
-            use_covariance=use_covariance,  # NEW
-            correlation_matrix=correlation_matrix,  # NEW
-            inflation_factors=inflation_factors,  # NEW
+            use_covariance=use_covariance,
+            correlation_matrix=instrumental_correlation,
+            inflation_factors=inflation_factors,
+            bootstrap_covariances=bootstrap_covariances,
         )
         return self.processed_results
 

@@ -926,7 +926,6 @@ class CovarianceGreybodyFitter(GreybodyFitter):
         self.inv_cov_chol = None  # Cholesky decomposition for efficiency
         self.inflation_factors = inflation_factors  # NEW
 
-    '''
     def set_correlation_matrix_from_dict(self, corr_dict, wavelengths):
         """
         Set correlation matrix from dictionary format
@@ -934,54 +933,137 @@ class CovarianceGreybodyFitter(GreybodyFitter):
         Parameters:
         -----------
         corr_dict : dict
-            Dictionary with wavelength keys and correlation values
+            Dictionary with wavelength keys and correlation values (can be empty)
         wavelengths : array
             Wavelengths used in fitting (in same order as flux arrays)
         """
-        # Your correlation matrix data
-        correlation_data = {
-            24: {24: 1.00, 70: 0.23, 100: 0.33, 160: 0.32, 250: 0.28, 350: 0.17, 500: 0.07, 850: 0.10},
-            70: {24: 0.23, 70: 1.00, 100: 0.19, 160: 0.24, 250: 0.23, 350: 0.14, 500: 0.06, 850: 0.08},
-            100: {24: 0.33, 70: 0.19, 100: 1.00, 160: 0.28, 250: 0.21, 350: 0.11, 500: 0.04, 850: 0.05},
-            160: {24: 0.32, 70: 0.24, 100: 0.28, 160: 1.00, 250: 0.35, 350: 0.23, 500: 0.10, 850: 0.13},
-            250: {24: 0.28, 70: 0.23, 100: 0.21, 160: 0.35, 250: 1.00, 350: 0.37, 500: 0.18, 850: 0.28},
-            350: {24: 0.17, 70: 0.14, 100: 0.11, 160: 0.23, 250: 0.37, 350: 1.00, 500: 0.20, 850: 0.33},
-            500: {24: 0.07, 70: 0.06, 100: 0.04, 160: 0.10, 250: 0.18, 350: 0.20, 500: 1.00, 850: 0.23},
-            850: {24: 0.10, 70: 0.08, 100: 0.05, 160: 0.13, 250: 0.28, 350: 0.33, 500: 0.23, 850: 1.00}
-        }
+        # Use the hardcoded correlation data if corr_dict is empty
+        if not corr_dict:
+            correlation_data = {
+                24: {
+                    24: 1.00,
+                    70: 0.23,
+                    100: 0.33,
+                    160: 0.32,
+                    250: 0.28,
+                    350: 0.17,
+                    500: 0.07,
+                    1100: 0.10,
+                },
+                70: {
+                    24: 0.23,
+                    70: 1.00,
+                    100: 0.19,
+                    160: 0.24,
+                    250: 0.23,
+                    350: 0.14,
+                    500: 0.06,
+                    1100: 0.08,
+                },
+                100: {
+                    24: 0.33,
+                    70: 0.19,
+                    100: 1.00,
+                    160: 0.28,
+                    250: 0.21,
+                    350: 0.11,
+                    500: 0.04,
+                    1100: 0.05,
+                },
+                160: {
+                    24: 0.32,
+                    70: 0.24,
+                    100: 0.28,
+                    160: 1.00,
+                    250: 0.35,
+                    350: 0.23,
+                    500: 0.10,
+                    1100: 0.13,
+                },
+                250: {
+                    24: 0.28,
+                    70: 0.23,
+                    100: 0.21,
+                    160: 0.35,
+                    250: 1.00,
+                    350: 0.37,
+                    500: 0.18,
+                    1100: 0.28,
+                },
+                350: {
+                    24: 0.17,
+                    70: 0.14,
+                    100: 0.11,
+                    160: 0.23,
+                    250: 0.37,
+                    350: 1.00,
+                    500: 0.20,
+                    1100: 0.33,
+                },
+                500: {
+                    24: 0.07,
+                    70: 0.06,
+                    100: 0.04,
+                    160: 0.10,
+                    250: 0.18,
+                    350: 0.20,
+                    500: 1.00,
+                    1100: 0.23,
+                },
+                1100: {
+                    24: 0.10,
+                    70: 0.08,
+                    100: 0.05,
+                    160: 0.13,
+                    250: 0.28,
+                    350: 0.33,
+                    500: 0.23,
+                    1100: 1.00,
+                },
+            }
+        else:
+            correlation_data = corr_dict
 
         # Find which wavelengths we actually have data for
         available_wavelengths = []
         for w in wavelengths:
             # Find closest match in correlation matrix (with some tolerance)
-            closest_key = min(corr_dict.keys(), key=lambda x: abs(x - w))
-            if abs(closest_key - w) < w * 0.1:  # Within 10%
-                available_wavelengths.append(closest_key)
+            if correlation_data:  # Only if we have data
+                closest_key = min(correlation_data.keys(), key=lambda x: abs(x - w))
+                if abs(closest_key - w) < w * 0.1:  # Within 10%
+                    available_wavelengths.append(closest_key)
+                else:
+                    logger.warning(f"No correlation data for wavelength {w:.1f} μm")
+                    available_wavelengths.append(None)
             else:
-                logger.warning(f"No correlation data for wavelength {w:.1f} μm")
                 available_wavelengths.append(None)
 
         # Build correlation matrix for available data
         n_bands = len([w for w in available_wavelengths if w is not None])
         if n_bands < 2:
-            logger.warning("Insufficient bands with correlation data, using diagonal covariance")
+            logger.warning(
+                "Insufficient bands with correlation data, using diagonal covariance"
+            )
             self.correlation_matrix = None
             return
 
         # Create the correlation matrix
-        valid_indices = [i for i, w in enumerate(available_wavelengths) if w is not None]
+        valid_indices = [
+            i for i, w in enumerate(available_wavelengths) if w is not None
+        ]
         valid_wavelengths = [available_wavelengths[i] for i in valid_indices]
 
         corr_matrix = np.zeros((n_bands, n_bands))
         for i, w1 in enumerate(valid_wavelengths):
             for j, w2 in enumerate(valid_wavelengths):
-                corr_matrix[i, j] = corr_dict[w1][w2]
+                corr_matrix[i, j] = correlation_data[w1][w2]
 
         self.correlation_matrix = corr_matrix
         self.wavelength_mapping = valid_indices  # Indices in original wavelength array
 
-        logger.info(f"Set up correlation matrix for {n_bands} bands: {valid_wavelengths}")
-    '''
+        logger.info(
+            f"Set up correlation matrix for {n_bands} bands: {valid_wavelengths}"
+        )
 
     def _inflate_band_errors(self, wavelengths, flux_errors):
         """
@@ -1019,43 +1101,58 @@ class CovarianceGreybodyFitter(GreybodyFitter):
 
         return inflated_errors
 
-    def _setup_covariance_matrix(self, flux_errors, fit_mask):
+    def _setup_covariance_matrix(
+        self, flux_errors_filtered, original_fit_mask, bootstrap_cov=None
+    ):
         """
-        Setup covariance matrix from errors and correlations
-
-        Parameters:
-        -----------
-        flux_errors : array
-            Flux uncertainties
-        fit_mask : array
-            Boolean mask for which data points to use
+        Setup covariance matrix with flexible combination of sources
         """
-        errors_fit = flux_errors[fit_mask]
-        n_points = len(errors_fit)
+        n_points = len(flux_errors_filtered)
 
-        if self.correlation_matrix is None or n_points < 2:
-            # Diagonal covariance (no correlations)
-            self.covariance_matrix = np.diag(errors_fit**2)
-            self.inv_cov_chol = np.diag(1.0 / errors_fit)
-            logger.debug("Using diagonal covariance matrix")
-            return
+        # Start with diagonal (no correlations)
+        base_cov = np.diag(flux_errors_filtered**2)
 
-        # Check if correlation matrix size matches data
-        if self.correlation_matrix.shape[0] != n_points:
-            logger.warning(
-                f"Correlation matrix size {self.correlation_matrix.shape} doesn't match data size {n_points}"
+        # Add instrumental correlations if available
+        if (
+            self.correlation_matrix is not None
+            and not isinstance(self.correlation_matrix, dict)
+            and self.correlation_matrix.shape[0] == n_points
+        ):
+            # Replace diagonal with correlated version
+            instrumental_cov = (
+                np.outer(flux_errors_filtered, flux_errors_filtered)
+                * self.correlation_matrix
             )
-            # Fallback to diagonal
-            self.covariance_matrix = np.diag(errors_fit**2)
-            self.inv_cov_chol = np.diag(1.0 / errors_fit)
-            return
+            logger.info(f"Added instrumental correlations: {n_points}×{n_points}")
+        else:
+            instrumental_cov = base_cov
+            logger.debug("Using diagonal covariance (no instrumental correlations)")
 
-        # Build full covariance matrix: C_ij = σ_i * σ_j * ρ_ij
-        self.covariance_matrix = (
-            np.outer(errors_fit, errors_fit) * self.correlation_matrix
-        )
+        # Add bootstrap covariance if provided
+        if bootstrap_cov is not None:
+            bootstrap_cov_filtered = bootstrap_cov[
+                np.ix_(original_fit_mask, original_fit_mask)
+            ]
 
-        # Ensure positive definite (add small diagonal term if needed)
+            if bootstrap_cov_filtered.shape == instrumental_cov.shape:
+                self.covariance_matrix = instrumental_cov + bootstrap_cov_filtered
+
+                # Log contributions
+                inst_trace = np.trace(instrumental_cov)
+                boot_trace = np.trace(bootstrap_cov_filtered)
+                total_trace = np.trace(self.covariance_matrix)
+                logger.info(
+                    f"Combined covariance - Instrumental: {inst_trace:.2e}, Bootstrap: {boot_trace:.2e}, Total: {total_trace:.2e}"
+                )
+            else:
+                logger.warning(
+                    "Bootstrap covariance shape mismatch, using instrumental only"
+                )
+                self.covariance_matrix = instrumental_cov
+        else:
+            self.covariance_matrix = instrumental_cov
+
+        # Rest of method unchanged (positive definite check, Cholesky, etc.)
         eigenvals = np.linalg.eigvals(self.covariance_matrix)
         if np.any(eigenvals <= 0):
             logger.warning(
@@ -1064,19 +1161,16 @@ class CovarianceGreybodyFitter(GreybodyFitter):
             regularization = 1e-10 * np.max(np.diag(self.covariance_matrix))
             self.covariance_matrix += regularization * np.eye(n_points)
 
-        # Precompute Cholesky decomposition for efficient likelihood calculation
         try:
             L = cholesky(self.covariance_matrix, lower=True)
             self.inv_cov_chol = solve_triangular(L, np.eye(n_points), lower=True)
-            logger.info(
-                f"Set up {n_points}×{n_points} covariance matrix with correlations"
-            )
+            logger.info(f"Set up {n_points}×{n_points} covariance matrix")
         except np.linalg.LinAlgError as e:
             logger.error(
                 f"Cholesky decomposition failed: {e}, using diagonal covariance"
             )
-            self.covariance_matrix = np.diag(errors_fit**2)
-            self.inv_cov_chol = np.diag(1.0 / errors_fit)
+            self.covariance_matrix = np.diag(flux_errors_filtered**2)
+            self.inv_cov_chol = np.diag(1.0 / flux_errors_filtered)
 
     def log_likelihood_with_covariance(self, theta, wavelengths, fluxes, flux_errors):
         """
@@ -1259,12 +1353,13 @@ class CovarianceGreybodyFitter(GreybodyFitter):
             else None,
         }
 
-    def fit_sed_with_covariance(self, wavelengths, fluxes, flux_errors, redshift):
+    def fit_sed_with_covariance(
+        self, wavelengths, fluxes, flux_errors, redshift, bootstrap_cov=None
+    ):
         """
-        Enhanced SED fitting with covariance matrix
+        Enhanced SED fitting with covariance matrix (optionally including bootstrap)
         """
-
-        # Inflate specific band errors
+        # Inflate specific band errors FIRST
         flux_errors = self._inflate_band_errors(wavelengths, flux_errors)
 
         # Validate data
@@ -1276,11 +1371,15 @@ class CovarianceGreybodyFitter(GreybodyFitter):
 
         wave_fit = wavelengths[fit_mask]
         flux_fit = fluxes[fit_mask]
-        error_fit = flux_errors[fit_mask]
+        error_fit = flux_errors[fit_mask]  # Already filtered
 
         # Set up correlation matrix for these specific wavelengths
-        # if self.correlation_matrix is not None:
-        #    self.set_correlation_matrix_from_dict({}, wave_fit)
+        if isinstance(self.correlation_matrix, dict) and self.correlation_matrix:
+            logger.info("Converting correlation matrix from dict to numpy array")
+            self.set_correlation_matrix_from_dict(self.correlation_matrix, wave_fit)
+
+        # Setup covariance matrix - pass the already-filtered errors and original mask
+        self._setup_covariance_matrix(error_fit, fit_mask, bootstrap_cov)
 
         logger.info(f"Fitting SED with covariance: {len(wave_fit)} points")
 
@@ -1309,6 +1408,8 @@ class CovarianceGreybodyFitter(GreybodyFitter):
                             "temperature_error": mcmc_results["temperature_error"],
                             "mcmc_used": True,
                             "covariance_used": mcmc_results["covariance_used"],
+                            "bootstrap_covariance_used": bootstrap_cov
+                            is not None,  # NEW
                             "mcmc_samples": mcmc_results["samples"],
                             "mcmc_acceptance": mcmc_results["acceptance_fraction"],
                         }
@@ -1352,6 +1453,7 @@ class SimstackResults:
         use_covariance: bool = True,  # NEW
         correlation_matrix: dict | None = None,  # NEW
         inflation_factors: dict | None = None,  # NEW
+        bootstrap_covariances: dict | None = None,
     ):
         """
         Initialize results processor
@@ -1380,6 +1482,9 @@ class SimstackResults:
         else:
             self.cosmology_calc = cosmology_calc
 
+        # Store bootstrap covariances for use in fitting
+        self.bootstrap_covariances = bootstrap_covariances or {}
+
         # Initialize greybody fitter with MCMC and covariance options
         if use_covariance:
             self.greybody_fitter = CovarianceGreybodyFitter(
@@ -1390,7 +1495,7 @@ class SimstackResults:
                 mcmc_iterations=mcmc_iterations,
                 mcmc_burn_in=mcmc_burn_in,
                 use_schreiber_prior=use_schreiber_prior,
-                inflation_factors=inflation_factors,  # NEW
+                inflation_factors=inflation_factors,
             )
             logger.info("Using covariance-aware greybody fitter")
         else:
@@ -1404,6 +1509,10 @@ class SimstackResults:
             )
             logger.info("Using standard greybody fitter")
 
+        # Store settings for logging
+        self.inflation_factors = inflation_factors
+        self.use_bootstrap_covariance = bool(bootstrap_covariances)
+
         # Initialize processed results containers
         self.sed_results: dict[str, SEDResults] = {}
         self.derived_quantities: dict[str, DerivedQuantities] = {}
@@ -1412,7 +1521,6 @@ class SimstackResults:
         # Process results
         self._process_results()
 
-    # Update the _create_sed_for_population method to handle MCMC results
     def _create_sed_for_population(self, pop_label: str, pop_index: int) -> SEDResults:
         """Create SED results for a single population"""
         # Get population info
@@ -1468,10 +1576,22 @@ class SimstackResults:
                 rest_luminosities[i] = rest_lum
                 rest_luminosity_errors[i] = rest_lum_err
 
+        # Get bootstrap covariance for this population if available
+        bootstrap_cov = self.bootstrap_covariances.get(pop_label, None)
+        if bootstrap_cov is not None:
+            logger.info(
+                f"Using bootstrap covariance for {pop_label}: {bootstrap_cov.shape}"
+            )
+
         # Fit greybody model
-        greybody_results = self.greybody_fitter.fit_sed(
-            wavelengths, flux_densities, flux_errors, z_median
-        )
+        if isinstance(self.greybody_fitter, CovarianceGreybodyFitter):
+            greybody_results = self.greybody_fitter.fit_sed_with_covariance(
+                wavelengths, flux_densities, flux_errors, z_median, bootstrap_cov
+            )
+        else:
+            greybody_results = self.greybody_fitter.fit_sed(
+                wavelengths, flux_densities, flux_errors, z_median
+            )
 
         # Create SED result
         sed_result = SEDResults(
@@ -1995,7 +2115,8 @@ def create_results_processor(
     use_schreiber_prior: bool = False,
     use_covariance: bool = True,
     correlation_matrix: dict | None = None,
-    inflation_factors: dict | None = None,  # NEW
+    inflation_factors: dict | None = None,
+    bootstrap_covariances: dict | None = None,
 ) -> SimstackResults:
     """
     Convenience function to create results processor
@@ -2012,6 +2133,7 @@ def create_results_processor(
         use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
         use_covariance: Whether to use covariance-aware fitting (NEW)
         correlation_matrix: Custom correlation matrix (uses default if None) (NEW)
+        bootstrap_covariances: Dict mapping population_id -> bootstrap covariance matrix
 
     Returns:
         Processed SimstackResults object
@@ -2026,7 +2148,8 @@ def create_results_processor(
         mcmc_iterations=mcmc_iterations,
         mcmc_burn_in=mcmc_burn_in,
         use_schreiber_prior=use_schreiber_prior,
-        use_covariance=use_covariance,  # NEW
-        correlation_matrix=correlation_matrix,  # NEW
-        inflation_factors=inflation_factors,  # NEW
+        use_covariance=use_covariance,
+        correlation_matrix=correlation_matrix,
+        inflation_factors=inflation_factors,
+        bootstrap_covariances=bootstrap_covariances,
     )
