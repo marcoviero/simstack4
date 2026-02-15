@@ -20,6 +20,10 @@ dependencies = [
     "psutil>=7.0.0",
     "seaborn>=0.13.2",
     "pyarrow>=20.0.0",
+    "emcee>=3.1.6",
+    "toml>=0.10.2",
+    "tqdm>=4.67.1",
+    "corner>=2.2.3",
 ]
 readme = "README.md"
 requires-python = ">=3.13"

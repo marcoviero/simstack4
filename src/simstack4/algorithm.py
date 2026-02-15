@@ -6,23 +6,21 @@ multiple population layers to observed maps, replacing the nested loop
 structure from simstack3 with a more efficient matrix-based approach.
 """
 
+import os
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import numpy as np
-from astropy.io import fits
-from astropy.wcs import WCS
+import psutil
 from scipy import linalg
 
 from .config import SimstackConfig
 from .exceptions.simstack_exceptions import (
     AlgorithmError,
-    PopulationError,
     ValidationError,
 )
-from .populations import PopulationBin, PopulationManager
+from .populations import PopulationManager
 from .sky_maps import MapData, SkyMaps
 from .utils import memory_usage_gb, setup_logging
 
@@ -30,11 +28,96 @@ logger = setup_logging()
 
 
 @dataclass
+class BootstrapSplit:
+    """Container for a single bootstrap split of a population"""
+
+    population_id: str
+    split_type: str  # "A" or "B"
+    source_indices: np.ndarray  # Indices into the original catalog
+    n_sources: int
+
+    def __post_init__(self):
+        self.n_sources = len(self.source_indices)
+
+
+class ProgressTracker:
+    """Track and report progress for bootstrap iterations"""
+
+    def __init__(self, total_iterations: int, total_maps: int):
+        self.total_iterations = total_iterations
+        self.total_maps = total_maps
+        self.total_steps = total_iterations * total_maps
+        self.current_step = 0
+        self.start_time = time.time()
+        self.step_times = []
+
+    def update(self, iteration: int, map_name: str, step_description: str = ""):
+        """Update progress and log detailed status"""
+        self.current_step += 1
+        current_time = time.time()
+        elapsed = current_time - self.start_time
+
+        # Calculate progress
+        progress_pct = (self.current_step / self.total_steps) * 100
+
+        # Estimate time remaining
+        if self.current_step > 0:
+            avg_time_per_step = elapsed / self.current_step
+            remaining_steps = self.total_steps - self.current_step
+            eta_seconds = remaining_steps * avg_time_per_step
+            eta_str = self._format_time(eta_seconds)
+        else:
+            eta_str = "calculating..."
+
+        # Memory usage
+        memory_gb = self._get_memory_usage()
+
+        # Log detailed progress
+        logger.info(
+            f"  📍 Iteration {iteration}/{self.total_iterations}, Map: {map_name}"
+        )
+        logger.info(
+            f"     Progress: {progress_pct:.1f}% ({self.current_step}/{self.total_steps})"
+        )
+        logger.info(f"     Elapsed: {self._format_time(elapsed)}, ETA: {eta_str}")
+        logger.info(f"     Memory: {memory_gb:.2f}GB {step_description}")
+
+        # Store timing for better estimates
+        self.step_times.append(
+            current_time - (self.step_times[-1] if self.step_times else self.start_time)
+        )
+
+    def _format_time(self, seconds: float) -> str:
+        """Format time in human readable format"""
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        elif seconds < 3600:
+            return f"{seconds / 60:.1f}m"
+        else:
+            return f"{seconds / 3600:.1f}h"
+
+    def _get_memory_usage(self) -> float:
+        """Get current memory usage in GB"""
+        try:
+            process = psutil.Process(os.getpid())
+            memory_bytes = process.memory_info().rss
+            return memory_bytes / (1024**3)  # Convert to GB
+        except Exception:
+            return memory_usage_gb()  # Fallback to existing method
+
+
+@dataclass
 class StackingResults:
     """Container for stacking results"""
 
-    flux_densities: dict[str, np.ndarray]  # [map_name][population_index]
-    flux_errors: dict[str, np.ndarray]
+    flux_densities: dict[str, np.ndarray]  # [map_name][population_index] - mean values
+    flux_errors: dict[
+        str, np.ndarray
+    ]  # [map_name][population_index] - bootstrap errors
+    flux_errors_systematic: dict[str, np.ndarray]  # Traditional least-squares errors
+    bootstrap_flux_samples: dict[
+        str, np.ndarray
+    ] | None  # [map_name][bootstrap_iter, population_index]
     population_labels: list[str]
     map_names: list[str]
     n_sources: dict[str, int]  # sources per population
@@ -43,6 +126,9 @@ class StackingResults:
     reduced_chi_squared: dict[str, float]
     execution_time: float
     memory_used_gb: float
+    bootstrap_enabled: bool
+    bootstrap_iterations: int
+    bootstrap_split_fraction: float  # What fraction goes to "A" vs "B" (e.g., 0.8 for 80:20)
 
     def __post_init__(self):
         """Calculate derived quantities"""
@@ -69,194 +155,587 @@ class SimstackAlgorithm:
         population_manager: PopulationManager,
         sky_maps: SkyMaps,
     ):
-        """
-        Initialize stacking algorithm
-
-        Args:
-            config: Simstack configuration
-            population_manager: Populated catalog manager
-            sky_maps: Loaded sky maps
-        """
         self.config = config
         self.population_manager = population_manager
         self.sky_maps = sky_maps
-        self.results: StackingResults | None = None
 
         # Algorithm settings
         self.crop_circles = config.binning.crop_circles
         self.add_foreground = config.binning.add_foreground
-        self.stack_all_z = config.binning.stack_all_z_at_once
 
-        # FITS output settings
-        self.write_layer_maps = getattr(config.error_estimator, "write_simmaps", False)
-        self.layer_output_dir = Path(config.output.folder) / "layer_maps"
+        # Bootstrap settings
+        self.bootstrap_enabled = config.error_estimator.bootstrap.enabled
+        self.bootstrap_iterations = config.error_estimator.bootstrap.iterations
+        self.bootstrap_split_fraction = 0.5  # 50:50 split for better balance
+        self.bootstrap_seed = config.error_estimator.bootstrap.initial_seed
 
-        # Create output directory if we're writing layers
-        if self.write_layer_maps:
-            self.layer_output_dir.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Layer maps will be written to: {self.layer_output_dir}")
+        # Progress tracking
+        self.progress_tracker = None
 
-        logger.info("SimstackAlgorithm initialized:")
+        logger.info("Enhanced Bootstrap Stacking Algorithm initialized:")
         logger.info(f"  - {len(population_manager)} populations")
         logger.info(f"  - {len(sky_maps)} maps")
-        logger.info(f"  - Crop circles: {self.crop_circles}")
-        logger.info(f"  - Add foreground: {self.add_foreground}")
-        logger.info(f"  - Write layer maps: {self.write_layer_maps}")
+        logger.info(f"  - Bootstrap enabled: {self.bootstrap_enabled}")
+        if self.bootstrap_enabled:
+            logger.info(f"  - Bootstrap iterations: {self.bootstrap_iterations}")
+            logger.info(
+                f"  - Bootstrap split: {self.bootstrap_split_fraction:.1%}:{1 - self.bootstrap_split_fraction:.1%}"
+            )
+            total_computations = self.bootstrap_iterations * len(sky_maps)
+            logger.info(
+                f"  - Total computations: {total_computations} (iterations × maps)"
+            )
 
-    def save_layer_to_fits(
-        self,
-        data: np.ndarray,
-        wcs: WCS,
-        map_name: str,
-        population_id: str,
-        layer_type: str = "convolved",
-    ) -> None:
-        """
-        Save a population layer to FITS file
+            # Estimate computation time
+            avg_sources_per_pop = np.mean(
+                [
+                    pop.n_sources
+                    for pop in population_manager.populations.values()
+                    if pop.n_sources > 0
+                ]
+            )
+            total_sources = sum(
+                pop.n_sources for pop in population_manager.populations.values()
+            )
+            logger.info(f"  - Total sources: {total_sources:,}")
+            logger.info(f"  - Avg sources/population: {avg_sources_per_pop:.1f}")
 
-        Args:
-            data: 2D array of layer data
-            wcs: World coordinate system
-            map_name: Name of the map (e.g., 'pacs_green')
-            population_id: Population identifier
-            layer_type: Type of layer ('raw', 'convolved', 'mean_subtracted')
-        """
-        if not self.write_layer_maps:
-            return
+            # Rough time estimate (very approximate)
+            if total_sources > 100000:
+                estimated_minutes = (
+                    total_computations * 2
+                )  # ~2 min per computation for large datasets
+                logger.info(
+                    f"  - Estimated runtime: ~{estimated_minutes:.0f} minutes (large dataset)"
+                )
+            elif total_sources > 10000:
+                estimated_minutes = total_computations * 0.5  # ~30s per computation
+                logger.info(
+                    f"  - Estimated runtime: ~{estimated_minutes:.0f} minutes (medium dataset)"
+                )
+            else:
+                estimated_minutes = total_computations * 0.1  # ~6s per computation
+                logger.info(
+                    f"  - Estimated runtime: ~{estimated_minutes:.1f} minutes (small dataset)"
+                )
 
-        try:
-            # Create safe filename
-            safe_pop_id = population_id.replace("__", "_").replace(".", "p")
-            filename = f"{map_name}_{safe_pop_id}_{layer_type}.fits"
-            output_path = self.layer_output_dir / filename
-
-            # Create FITS header from WCS
-            header = wcs.to_header()
-
-            # Add metadata about the layer
-            header["LAYERTYP"] = layer_type
-            header["POPID"] = population_id
-            header["MAPNAME"] = map_name
-            header["BUNIT"] = "Jy/beam" if layer_type == "convolved" else "Jy"
-            header["COMMENT"] = f"Population layer for {population_id}"
-
-            # Add statistics
-            header["DATAMIN"] = np.nanmin(data)
-            header["DATAMAX"] = np.nanmax(data)
-            header["DATAMEAN"] = np.nanmean(data)
-            header["DATASTD"] = np.nanstd(data)
-
-            # Write FITS file
-            fits.writeto(output_path, data, header=header, overwrite=True)
-
-            logger.debug(f"Saved layer: {filename}")
-
-        except Exception as e:
-            logger.warning(f"Failed to save layer {population_id} for {map_name}: {e}")
-
-    def run_stacking(self) -> StackingResults:
-        """
-        Execute the simultaneous stacking algorithm
-
-        Returns:
-            StackingResults object with flux densities and uncertainties
-        """
+    def run_stacking(self):
+        """Execute stacking with enhanced progress tracking"""
         start_time = time.time()
         start_memory = memory_usage_gb()
 
-        logger.info("Starting simultaneous stacking...")
+        logger.info("🚀 Starting enhanced bootstrap stacking analysis...")
+        logger.info(f"📊 Initial memory usage: {start_memory:.2f}GB")
 
         try:
-            # Validate inputs
             self._validate_inputs()
 
-            # Main stacking loop over maps
-            results_dict = {}
+            if self.bootstrap_enabled:
+                # Initialize progress tracker
+                self.progress_tracker = ProgressTracker(
+                    self.bootstrap_iterations, len(self.sky_maps.maps)
+                )
 
-            for map_name in self.sky_maps.maps.keys():
-                logger.info(f"Processing map: {map_name}")
-                map_results = self._stack_single_map(map_name)
-                results_dict[map_name] = map_results
+                results_dict = self._run_bootstrap_stacking()
+            else:
+                logger.info("Running single stacking (no bootstrap)...")
+                results_dict = self._run_single_stacking()
 
             # Compile results
             self.results = self._compile_results(results_dict, start_time, start_memory)
 
-            logger.info(f"Stacking completed in {self.results.execution_time:.1f}s")
-            logger.info(f"Peak memory usage: {self.results.memory_used_gb:.2f}GB")
+            # Final summary
+            total_time = time.time() - start_time
+            final_memory = memory_usage_gb()
+            memory_peak = max(final_memory, start_memory)
 
-            if self.write_layer_maps:
-                logger.info(f"Layer maps saved to: {self.layer_output_dir}")
+            logger.info("✅ Bootstrap stacking completed successfully!")
+            logger.info(f"⏱️  Total execution time: {total_time / 60:.1f} minutes")
+            logger.info(f"💾 Peak memory usage: {memory_peak:.2f}GB")
+            logger.info(f"📈 Memory change: {final_memory - start_memory:+.2f}GB")
+
+            if self.bootstrap_enabled:
+                total_computations = self.bootstrap_iterations * len(self.sky_maps.maps)
+                avg_time_per_computation = total_time / total_computations
+                logger.info(
+                    f"⚡ Average time per computation: {avg_time_per_computation:.1f}s"
+                )
 
             return self.results
 
         except Exception as e:
-            logger.error(f"Stacking failed: {e}")
-            raise AlgorithmError(f"Stacking algorithm failed: {e}") from e
+            logger.error(f"❌ Bootstrap stacking failed: {e}")
+            raise AlgorithmError(f"Bootstrap stacking failed: {e}") from e
 
-    def _validate_inputs(self) -> None:
-        """Validate that inputs are compatible for stacking"""
-        if len(self.population_manager) == 0:
-            raise ValidationError("No populations found in catalog")
+    def _run_bootstrap_stacking(self) -> dict[str, dict[str, Any]]:
+        """Run bootstrap stacking with detailed progress tracking"""
+        bootstrap_results = {map_name: [] for map_name in self.sky_maps.maps.keys()}
 
-        if len(self.sky_maps) == 0:
-            raise ValidationError("No maps loaded")
+        logger.info("🔄 Starting bootstrap iterations...")
+        logger.info("=" * 60)
 
-        # Check memory requirements
-        n_populations = len(self.population_manager)
-        # n_maps = len(self.sky_maps)
+        for bootstrap_iter in range(self.bootstrap_iterations):
+            iter_start_time = time.time()
 
-        # Get typical map size
-        first_map = next(iter(self.sky_maps.maps.values()))
-        map_pixels = first_map.shape[0] * first_map.shape[1]
-
-        # Estimate memory for layer matrix (n_populations x map_pixels)
-        layer_memory_gb = (n_populations * map_pixels * 8) / 1e9  # 8 bytes per float64
-
-        if layer_memory_gb > 8.0:  # More than 8GB
-            logger.warning(
-                f"Large memory requirement estimated: {layer_memory_gb:.1f}GB"
+            logger.info(
+                f"🎯 BOOTSTRAP ITERATION {bootstrap_iter + 1}/{self.bootstrap_iterations}"
             )
-            if not self.stack_all_z:
-                logger.info(
-                    "Consider setting stack_all_z_at_once=False for memory efficiency"
+            logger.info("-" * 40)
+
+            # Create bootstrap splits for this iteration
+            logger.info("📝 Creating bootstrap splits...")
+            split_start_time = time.time()
+            bootstrap_splits = self._create_bootstrap_splits(
+                seed=self.bootstrap_seed + bootstrap_iter
+            )
+            split_time = time.time() - split_start_time
+            logger.info(f"   ✓ Splits created in {split_time:.1f}s")
+
+            # Log split statistics
+            total_A = sum(splits["A"].n_sources for splits in bootstrap_splits.values())
+            total_B = sum(splits["B"].n_sources for splits in bootstrap_splits.values())
+            logger.info(
+                f"   📊 Split A: {total_A:,} sources, Split B: {total_B:,} sources"
+            )
+
+            # Process each map
+            for map_idx, map_name in enumerate(self.sky_maps.maps.keys()):
+                map_start_time = time.time()
+
+                # Update progress tracker
+                self.progress_tracker.update(
+                    bootstrap_iter + 1,
+                    map_name,
+                    f"(map {map_idx + 1}/{len(self.sky_maps.maps)})",
                 )
 
-    def _stack_single_map(self, map_name: str) -> dict[str, Any]:
-        """
-        Stack a single map using simultaneous fitting
+                logger.info(f"🗺️  Processing map: {map_name}")
 
-        Args:
-            map_name: Name of the map to stack
+                # Run stacking for this map
+                map_results = self._stack_single_map_with_bootstrap_splits(
+                    map_name, bootstrap_splits
+                )
 
-        Returns:
-            Dictionary with stacking results for this map
-        """
+                # Store results
+                bootstrap_results[map_name].append(map_results["total_flux_densities"])
+
+                map_time = time.time() - map_start_time
+                logger.info(f"   ✓ Map {map_name} completed in {map_time:.1f}s")
+
+                # Memory check
+                current_memory = memory_usage_gb()
+                logger.info(f"   💾 Current memory: {current_memory:.2f}GB")
+
+            iter_time = time.time() - iter_start_time
+            logger.info(
+                f"✅ Iteration {bootstrap_iter + 1} completed in {iter_time / 60:.1f} minutes"
+            )
+            logger.info("-" * 40)
+
+        logger.info("🔄 All bootstrap iterations completed!")
+        logger.info("📊 Computing bootstrap statistics...")
+
+        # Calculate bootstrap statistics
+        final_results = {}
+        for map_name in self.sky_maps.maps.keys():
+            logger.info(f"   📈 Processing statistics for {map_name}...")
+
+            bootstrap_fluxes = np.array(bootstrap_results[map_name])
+
+            mean_fluxes = np.mean(bootstrap_fluxes, axis=0)
+            bootstrap_errors = np.std(bootstrap_fluxes, axis=0, ddof=1)
+
+            # Log bootstrap statistics
+            non_fg_mask = ~np.array(
+                [label == "foreground" for label in range(len(mean_fluxes))]
+            )
+            if np.any(non_fg_mask):
+                mean_flux_science = np.mean(np.abs(mean_fluxes[non_fg_mask]))
+                mean_error_science = np.mean(bootstrap_errors[non_fg_mask])
+                snr = (
+                    mean_flux_science / mean_error_science
+                    if mean_error_science > 0
+                    else 0
+                )
+                logger.info(f"      Mean |flux|: {mean_flux_science:.2e} Jy")
+                logger.info(f"      Mean error: {mean_error_science:.2e} Jy")
+                logger.info(f"      Typical S/N: {snr:.1f}")
+
+            # Get systematic errors from full sample
+            full_results = self._stack_single_map_standard(map_name)
+
+            final_results[map_name] = {
+                "flux_densities": mean_fluxes,
+                "flux_errors": bootstrap_errors,
+                "flux_errors_systematic": full_results["flux_errors"],
+                "bootstrap_flux_samples": bootstrap_fluxes,
+                "population_labels": full_results["population_labels"],
+                "fit_statistics": full_results["fit_statistics"],
+                "n_valid_pixels": full_results["n_valid_pixels"],
+            }
+
+        logger.info("✅ Bootstrap statistics computed!")
+        return final_results
+
+    def _create_bootstrap_splits(
+        self, seed: int
+    ) -> dict[str, dict[str, BootstrapSplit]]:
+        """Create bootstrap splits with progress logging"""
+        np.random.seed(seed)
+        bootstrap_splits = {}
+
+        n_pops_with_sources = 0
+        total_sources_split = 0
+
+        for pop_id, population in self.population_manager.populations.items():
+            if population.n_sources == 0:
+                bootstrap_splits[pop_id] = {
+                    "A": BootstrapSplit(pop_id, "A", np.array([]), 0),
+                    "B": BootstrapSplit(pop_id, "B", np.array([]), 0),
+                }
+                continue
+
+            n_pops_with_sources += 1
+            total_sources_split += population.n_sources
+
+            # Get original source indices
+            original_indices = population.indices
+            n_sources = len(original_indices)
+
+            # Calculate split sizes
+            n_A = int(n_sources * self.bootstrap_split_fraction)
+            n_B = n_sources - n_A
+
+            # Randomly permute and split
+            shuffled_indices = np.random.permutation(original_indices)
+            indices_A = shuffled_indices[:n_A]
+            indices_B = shuffled_indices[n_A:]
+
+            # Create bootstrap splits
+            bootstrap_splits[pop_id] = {
+                "A": BootstrapSplit(pop_id, "A", indices_A, n_A),
+                "B": BootstrapSplit(pop_id, "B", indices_B, n_B),
+            }
+
+            # Verify no sources lost
+            assert len(indices_A) + len(indices_B) == n_sources
+            assert len(np.intersect1d(indices_A, indices_B)) == 0
+
+        logger.debug(
+            f"   📊 Split {n_pops_with_sources} populations with {total_sources_split:,} total sources"
+        )
+        return bootstrap_splits
+
+    def _stack_single_map_with_bootstrap_splits(
+        self, map_name: str, bootstrap_splits: dict[str, dict[str, BootstrapSplit]]
+    ) -> dict[str, Any]:
+        """Stack single map with detailed sub-step logging"""
+
+        logger.debug(f"      🔧 Creating layer matrix for {map_name}...")
+        layer_start = time.time()
+
         map_data = self.sky_maps[map_name]
+        population_ids = list(bootstrap_splits.keys())
+        n_populations = len(population_ids)
 
         # Create layer matrix
-        logger.debug(f"Creating layers for {map_name}...")
-        layer_matrix, population_labels = self._create_layer_matrix(map_name, map_data)
+        layer_matrix, layer_labels = self._create_bootstrap_layer_matrix(
+            map_name, map_data, bootstrap_splits
+        )
 
-        # Add foreground layer if requested
+        layer_time = time.time() - layer_start
+        logger.debug(
+            f"         ✓ Layer matrix created ({layer_matrix.shape}) in {layer_time:.1f}s"
+        )
+
+        # Add foreground if requested
+        if self.add_foreground:
+            foreground_layer = np.ones_like(layer_matrix[0])
+            layer_matrix = np.vstack([layer_matrix, foreground_layer[np.newaxis, :]])
+            layer_labels.append("foreground")
+            logger.debug("         ✓ Added foreground layer")
+
+        # Crop to circles if requested
+        if self.crop_circles:
+            logger.debug("      ✂️  Cropping to circles around sources...")
+            crop_start = time.time()
+            layer_matrix, observed_vector, valid_mask = self._crop_to_circles_bootstrap(
+                layer_matrix, map_data.data, map_name, bootstrap_splits
+            )
+            crop_time = time.time() - crop_start
+            logger.debug(
+                f"         ✓ Cropped to {len(observed_vector):,} pixels in {crop_time:.1f}s"
+            )
+        else:
+            observed_vector = map_data.data.ravel()
+            valid_mask = ~np.isnan(observed_vector)
+            layer_matrix = layer_matrix[:, valid_mask]
+            observed_vector = observed_vector[valid_mask]
+            logger.debug(f"         ✓ Using all {len(observed_vector):,} valid pixels")
+
+        # Solve linear system
+        logger.debug("      🧮 Solving linear system...")
+        solve_start = time.time()
+        combined_flux_densities, flux_errors, fit_stats = self._solve_linear_system(
+            layer_matrix, observed_vector, map_data
+        )
+        solve_time = time.time() - solve_start
+
+        # Log fit quality
+        chi2_red = fit_stats.get("reduced_chi_squared", np.inf)
+        logger.debug(
+            f"         ✓ System solved in {solve_time:.1f}s, χ²_red = {chi2_red:.2f}"
+        )
+
+        # Extract A and B fluxes and calculate totals
+        if self.add_foreground:
+            flux_A = combined_flux_densities[:n_populations]
+            flux_B = combined_flux_densities[n_populations : 2 * n_populations]
+            foreground_flux = combined_flux_densities[2 * n_populations]
+        else:
+            flux_A = combined_flux_densities[:n_populations]
+            flux_B = combined_flux_densities[n_populations : 2 * n_populations]
+            foreground_flux = 0.0
+
+        # Calculate total flux for each population
+        total_flux_densities = flux_A + flux_B
+
+        # Create population labels
+        final_labels = population_ids.copy()
+        if self.add_foreground:
+            final_labels.append("foreground")
+            total_flux_densities = np.append(total_flux_densities, foreground_flux)
+
+        # Log flux statistics
+        non_fg_fluxes = (
+            total_flux_densities[:-1] if self.add_foreground else total_flux_densities
+        )
+        if len(non_fg_fluxes) > 0:
+            positive_fluxes = non_fg_fluxes[non_fg_fluxes > 0]
+            negative_fluxes = non_fg_fluxes[non_fg_fluxes < 0]
+            logger.debug(
+                f"         📊 Flux range: [{np.min(non_fg_fluxes):.2e}, {np.max(non_fg_fluxes):.2e}] Jy"
+            )
+            logger.debug(
+                f"             Positive: {len(positive_fluxes)}, Negative: {len(negative_fluxes)}"
+            )
+
+        return {
+            "total_flux_densities": total_flux_densities,
+            "population_labels": final_labels,
+            "fit_statistics": fit_stats,
+            "n_valid_pixels": len(observed_vector),
+        }
+
+    def _create_bootstrap_layer_matrix(
+        self,
+        map_name: str,
+        map_data: MapData,
+        bootstrap_splits: dict[str, dict[str, BootstrapSplit]],
+    ) -> tuple[np.ndarray, list[str]]:
+        """
+        Create layer matrix from bootstrap splits
+
+        Structure: [A_pop1, A_pop2, ..., B_pop1, B_pop2, ...]
+        """
+        map_shape = map_data.shape
+        n_pixels = map_shape[0] * map_shape[1]
+        population_ids = list(bootstrap_splits.keys())
+        n_populations = len(population_ids)
+
+        # Initialize layer matrix: 2 * n_populations layers (A and B for each)
+        layer_matrix = np.zeros((2 * n_populations, n_pixels))
+        layer_labels = []
+
+        # Create A layers
+        for i, pop_id in enumerate(population_ids):
+            split_A = bootstrap_splits[pop_id]["A"]
+
+            if split_A.n_sources > 0:
+                ra, dec = self._get_coordinates_from_indices(split_A.source_indices)
+                layer = self._create_and_convolve_layer(map_name, ra, dec, map_shape)
+            else:
+                layer = np.zeros(n_pixels)
+
+            layer_matrix[i, :] = layer
+            layer_labels.append(f"{pop_id}_A")
+
+        # Create B layers
+        for i, pop_id in enumerate(population_ids):
+            split_B = bootstrap_splits[pop_id]["B"]
+
+            if split_B.n_sources > 0:
+                ra, dec = self._get_coordinates_from_indices(split_B.source_indices)
+                layer = self._create_and_convolve_layer(map_name, ra, dec, map_shape)
+            else:
+                layer = np.zeros(n_pixels)
+
+            layer_matrix[n_populations + i, :] = layer
+            layer_labels.append(f"{pop_id}_B")
+
+        return layer_matrix, layer_labels
+
+    def _get_coordinates_from_indices(
+        self, source_indices: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Extract RA, Dec from catalog using source indices
+
+        This is the CLEAN way to get coordinates - no population manager lookup needed.
+        """
+        if len(source_indices) == 0:
+            return np.array([]), np.array([])
+
+        catalog_df = self.population_manager.catalog_df
+
+        # Get column names
+        if (
+            hasattr(self.population_manager, "full_config")
+            and self.population_manager.full_config
+        ):
+            ra_col = self.population_manager.full_config.catalog.astrometry["ra"]
+            dec_col = self.population_manager.full_config.catalog.astrometry["dec"]
+        else:
+            ra_col = "ALPHA_J2000"
+            dec_col = "DELTA_J2000"
+
+        try:
+            subset = catalog_df.iloc[source_indices]
+            ra = subset[ra_col].values
+            dec = subset[dec_col].values
+            return ra, dec
+        except (KeyError, IndexError) as e:
+            logger.error(f"Failed to extract coordinates: {e}")
+            raise
+
+    def _create_and_convolve_layer(
+        self, map_name: str, ra: np.ndarray, dec: np.ndarray, map_shape: tuple[int, int]
+    ) -> np.ndarray:
+        """Create and convolve a source layer"""
+        from .toolbox import SimstackToolbox
+
+        if len(ra) == 0:
+            return np.zeros(map_shape[0] * map_shape[1])
+
+        map_data = self.sky_maps[map_name]
+
+        # Create source layer
+        source_layer = SimstackToolbox.create_source_layer(
+            ra=ra, dec=dec, wcs=map_data.wcs, shape=map_shape
+        )
+
+        # Convolve with PSF
+        convolved_layer = self.sky_maps.convolve_with_psf(source_layer, map_name)
+
+        # Remove mean and flatten
+        convolved_layer -= np.nanmean(convolved_layer)
+        return convolved_layer.ravel()
+
+    def _crop_to_circles_bootstrap(
+        self,
+        layer_matrix: np.ndarray,
+        observed_map: np.ndarray,
+        map_name: str,
+        bootstrap_splits: dict[str, dict[str, BootstrapSplit]],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Crop to circles around all bootstrap split sources"""
+        map_data = self.sky_maps[map_name]
+
+        mask = np.zeros(observed_map.shape, dtype=bool)
+        circle_radius_pix = max(3.0, map_data.beam_fwhm_pixels)
+
+        # Add circles for all sources in all splits
+        for pop_id, splits in bootstrap_splits.items():
+            for split_type, split_data in splits.items():
+                if split_data.n_sources == 0:
+                    continue
+
+                try:
+                    ra, dec = self._get_coordinates_from_indices(
+                        split_data.source_indices
+                    )
+                    x_pix, y_pix = self.sky_maps.world_to_pixel(map_name, ra, dec)
+
+                    for x, y in zip(x_pix, y_pix, strict=True):
+                        ix, iy = int(np.round(x)), int(np.round(y))
+                        if (
+                            0 <= ix < observed_map.shape[1]
+                            and 0 <= iy < observed_map.shape[0]
+                        ):
+                            self._add_circle_to_mask(mask, x, y, circle_radius_pix)
+
+                except Exception as e:
+                    logger.warning(f"Error processing {pop_id}_{split_type}: {e}")
+                    continue
+
+        # Apply mask
+        valid_pixels_2d = mask & ~np.isnan(observed_map)
+
+        if np.sum(valid_pixels_2d) < layer_matrix.shape[0]:
+            logger.warning("Too few pixels for fitting, using all valid pixels")
+            valid_pixels_2d = ~np.isnan(observed_map)
+
+        flat_indices = np.where(valid_pixels_2d.ravel())[0]
+        cropped_observed = observed_map.ravel()[flat_indices]
+        cropped_observed -= np.nanmean(cropped_observed)
+        cropped_layers = layer_matrix[:, flat_indices]
+
+        return cropped_layers, cropped_observed, flat_indices
+
+    def _add_circle_to_mask(
+        self, mask: np.ndarray, center_x: float, center_y: float, radius: float
+    ) -> None:
+        """Add circular region to mask"""
+        ny, nx = mask.shape
+        y_min = max(0, int(center_y - radius))
+        y_max = min(ny, int(center_y + radius) + 1)
+        x_min = max(0, int(center_x - radius))
+        x_max = min(nx, int(center_x + radius) + 1)
+
+        y_coords, x_coords = np.ogrid[y_min:y_max, x_min:x_max]
+        distances = np.sqrt((x_coords - center_x) ** 2 + (y_coords - center_y) ** 2)
+        circle_mask = distances <= radius
+        mask[y_min:y_max, x_min:x_max][circle_mask] = True
+
+    def _run_single_stacking(self) -> dict[str, dict[str, Any]]:
+        """Run stacking without bootstrap"""
+        results_dict = {}
+
+        for map_name in self.sky_maps.maps.keys():
+            map_results = self._stack_single_map_standard(map_name)
+            map_results["bootstrap_flux_samples"] = None
+            map_results["flux_errors_systematic"] = map_results["flux_errors"]
+            results_dict[map_name] = map_results
+
+        return results_dict
+
+    def _stack_single_map_standard(self, map_name: str) -> dict[str, Any]:
+        """Standard stacking without bootstrap splits"""
+        map_data = self.sky_maps[map_name]
+
+        # Create standard layer matrix
+        layer_matrix, population_labels = self._create_standard_layer_matrix(
+            map_name, map_data
+        )
+
+        # Add foreground if requested
         if self.add_foreground:
             foreground_layer = np.ones_like(layer_matrix[0])
             layer_matrix = np.vstack([layer_matrix, foreground_layer[np.newaxis, :]])
             population_labels.append("foreground")
 
-        # Crop to circles around sources if requested
+        # Crop if requested
         if self.crop_circles:
-            layer_matrix, observed_vector, valid_mask = self._crop_to_circles(
+            layer_matrix, observed_vector, valid_mask = self._crop_to_circles_standard(
                 layer_matrix, map_data.data, map_name
             )
         else:
-            # Use all pixels
             observed_vector = map_data.data.ravel()
             valid_mask = ~np.isnan(observed_vector)
             layer_matrix = layer_matrix[:, valid_mask]
             observed_vector = observed_vector[valid_mask]
 
-        # Solve linear system
-        logger.debug(f"Solving linear system: {layer_matrix.shape}")
+        # Solve
         flux_densities, flux_errors, fit_stats = self._solve_linear_system(
             layer_matrix, observed_vector, map_data
         )
@@ -269,541 +748,122 @@ class SimstackAlgorithm:
             "n_valid_pixels": len(observed_vector),
         }
 
-    def _create_layer_matrix(
+    def _create_standard_layer_matrix(
         self, map_name: str, map_data: MapData
     ) -> tuple[np.ndarray, list[str]]:
-        """
-        Create the matrix of convolved population layers
-
-        Args:
-            map_name: Name of the map
-            map_data: Map data object
-
-        Returns:
-            Layer matrix (n_populations x n_pixels) and population labels
-        """
+        """Create standard layer matrix (no bootstrap splits)"""
         populations = list(self.population_manager.iter_populations())
         n_populations = len(populations)
         map_shape = map_data.shape
         n_pixels = map_shape[0] * map_shape[1]
 
-        # Initialize layer matrix
         layer_matrix = np.zeros((n_populations, n_pixels))
         population_labels = []
 
         for i, pop_bin in enumerate(populations):
-            # Get population data
-            pop_data = self.population_manager.populations[pop_bin.id_label]
-
-            if pop_data.n_sources == 0:
-                logger.warning(f"Population {pop_bin.id_label} has no sources")
+            if pop_bin.n_sources == 0:
+                population_labels.append(pop_bin.id_label)
                 continue
 
-            # Get source positions from catalog
-            # This is a simplified approach - in practice you'd get RA/Dec from catalog
-            # using the population indices
-            ra, dec = self._get_population_coordinates(pop_bin)
+            # Use the SAME coordinate extraction method
+            ra, dec = self._get_coordinates_from_indices(pop_bin.indices)
+            layer = self._create_and_convolve_layer(map_name, ra, dec, map_shape)
 
-            # Create source layer
-            source_layer = self._create_source_layer(map_name, ra, dec, map_shape)
-
-            # Convolve with PSF
-            convolved_layer = self.sky_maps.convolve_with_psf(source_layer, map_name)
-
-            # Remove mean
-            convolved_layer -= np.nanmean(convolved_layer)
-
-            if self.write_layer_maps:
-                self.save_layer_to_fits(
-                    data=convolved_layer,
-                    wcs=map_data.wcs,
-                    map_name=map_name,
-                    population_id=pop_bin.id_label,
-                    layer_type="convolved",
-                )
-
-            # Store flattened layer
-            layer_matrix[i, :] = convolved_layer.ravel()
+            layer_matrix[i, :] = layer
             population_labels.append(pop_bin.id_label)
 
         return layer_matrix, population_labels
 
-    # Fix for the _get_population_coordinates method in algorithm.py
-    def _get_population_coordinates(
-        self, pop_bin: PopulationBin
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Get RA, Dec, and weights for a population (ENHANCED for COSMOS)
-
-        Args:
-            pop_bin: Population bin object
-
-        Returns:
-            ra, dec, weights arrays
-        """
-        # Get population data from the catalog through the population manager
-        pop_data = self.population_manager.get_population_data(pop_bin.id_label)
-
-        ra = pop_data["ra"]
-        dec = pop_data["dec"]
-
-        return ra, dec
-
-    # Fix for the _create_source_layer method in algorithm.py
-    def _create_source_layer(
-        self,
-        map_name: str,
-        ra: np.ndarray,
-        dec: np.ndarray,
-        map_shape: tuple[int, int],
-    ) -> np.ndarray:
-        """
-        Create a 2D source layer from coordinates and weights
-
-        This replaces the simplified version in algorithm.py with the toolbox implementation
-        """
-        from .toolbox import SimstackToolbox
-
-        map_data = self.sky_maps[map_name]
-
-        # Use toolbox function for better accuracy
-        layer = SimstackToolbox.create_source_layer(
-            ra=ra, dec=dec, wcs=map_data.wcs, shape=map_shape
-        )
-
-        return layer
-
-    # Fix for the PopulationManager integration in algorithm.py
-    def get_population_data_method(self, population_id: str) -> dict[str, np.ndarray]:
-        """
-        Method to add to PopulationManager class to extract catalog data for populations
-
-        Add this method to your populations.py PopulationManager class
-        """
-        if population_id not in self.populations:
-            raise PopulationError(f"Population {population_id} not found")
-
-        pop_bin = self.populations[population_id]
-        indices = pop_bin.indices
-
-        if self.catalog_df is None:
-            raise PopulationError("No catalog data loaded")
-
-        # Extract data using the indices
-        if hasattr(self.catalog_df, "iloc"):  # pandas
-            subset = self.catalog_df.iloc[indices]
-
-            # Get column names from config
-            ra_col = self.config.astrometry["ra"]
-            dec_col = self.config.astrometry["dec"]
-            z_col = self.config.redshift.id
-            mass_col = self.config.stellar_mass.id
-
-            data = {
-                "ra": subset[ra_col].values,
-                "dec": subset[dec_col].values,
-                "redshift": subset[z_col].values,
-                "stellar_mass": subset[mass_col].values,
-                "indices": indices,
-            }
-        else:  # polars or other
-            # Handle polars case
-            subset = self.catalog_df[indices]
-            # Implementation would depend on polars API
-            pass
-
-        return data
-
-    # Enhanced wrapper integration
-    def enhanced_wrapper_integration():
-        """
-        Code to add to wrapper.py to properly integrate all components
-        """
-
-        def run_complete_pipeline(self):
-            """
-            Run the complete simstack pipeline with all components
-
-            Add this method to SimstackWrapper class
-            """
-            from .algorithm import SimstackAlgorithm
-            from .cosmology import CosmologyCalculator
-            from .results import SimstackResults
-
-            logger = setup_logging()
-
-            try:
-                # Run stacking algorithm
-                logger.info("Running stacking algorithm...")
-                algorithm = SimstackAlgorithm(
-                    config=self.config,
-                    population_manager=self.population_manager,
-                    sky_maps=self.sky_maps,
-                )
-
-                stacking_results = algorithm.run_stacking()
-
-                # Process results
-                logger.info("Processing results...")
-                cosmology_calc = CosmologyCalculator(self.config.cosmology)
-
-                results_processor = SimstackResults(
-                    config=self.config,
-                    stacking_results=stacking_results,
-                    population_manager=self.population_manager,
-                    cosmology_calc=cosmology_calc,
-                )
-
-                # Save results
-                output_path = (
-                    Path(self.config.output.folder)
-                    / f"{self.config.output.shortname}_results.pkl"
-                )
-                results_processor.save_results(output_path, format="pickle")
-
-                # Print summary
-                results_processor.print_results_summary()
-
-                # Store for access
-                self.stacking_results = stacking_results
-                self.processed_results = results_processor
-
-                logger.info(
-                    f"Pipeline completed successfully. Results saved to {output_path}"
-                )
-
-                return results_processor
-
-            except Exception as e:
-                logger.error(f"Pipeline failed: {e}")
-                raise
-
-    # Add these imports to the top of algorithm.py
-    additional_imports = """
-    from .toolbox import SimstackToolbox
-    from .populations import PopulationManager, PopulationBin
-    """
-
-    # Updated pyproject.toml dependencies
-    updated_dependencies = """
-    dependencies = [
-        "numpy>=1.24.0",
-        "pandas>=2.0.0",
-        "astropy>=5.3.0",
-        "matplotlib>=3.6.0",
-        "scipy>=1.10.0",
-        "scikit-learn>=1.2.0",
-        "lmfit>=1.2.0",
-        "emcee>=3.1.0",
-        "corner>=2.2.0",
-        "pydantic>=2.5.0",
-        "tomli>=2.0.0; python_version<'3.11'",
-        "polars>=0.20.0",
-        "pyarrow>=14.0.0",
-        "psutil>=5.9.0",  # For memory monitoring
-        "h5py>=3.8.0",    # For HDF5 output
-        "seaborn>=0.12.0", # For enhanced plotting
-    ]
-    """
-
-    def _crop_to_circles(
+    def _crop_to_circles_standard(
         self, layer_matrix: np.ndarray, observed_map: np.ndarray, map_name: str
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Crop fitting to circular regions around sources (FIXED VERSION)
-
-        This reduces the number of pixels used in fitting, focusing on regions
-        where sources are expected to contribute signal.
-
-        Args:
-            layer_matrix: Population layer matrix (n_populations, n_pixels)
-            observed_map: Observed map data (2D array)
-            map_name: Name of the map
-
-        Returns:
-            Cropped layer matrix, observed vector, and valid pixel mask
-        """
+        """Standard cropping (no bootstrap)"""
         map_data = self.sky_maps[map_name]
 
-        # Create mask for pixels within circles around sources
         mask = np.zeros(observed_map.shape, dtype=bool)
+        circle_radius_pix = max(3.0, map_data.beam_fwhm_pixels)
 
-        # Get beam radius in pixels (use more conservative radius)
-        circle_radius_pix = max(3.0, map_data.beam_fwhm_pixels)  # At least 3 pixels
-
-        logger.debug(f"Using circle radius: {circle_radius_pix:.1f} pixels")
-
-        # Track number of sources added
-        n_sources_added = 0
-
-        # Add circles around all sources from all populations
         for pop_bin in self.population_manager.iter_populations():
             if pop_bin.n_sources == 0:
                 continue
 
             try:
-                # Get population data
-                pop_data = self.population_manager.get_population_data(pop_bin.id_label)
-                ra = pop_data["ra"]
-                dec = pop_data["dec"]
-
-                # Convert to pixel coordinates
+                ra, dec = self._get_coordinates_from_indices(pop_bin.indices)
                 x_pix, y_pix = self.sky_maps.world_to_pixel(map_name, ra, dec)
 
-                # Add circles for sources that fall within the map
                 for x, y in zip(x_pix, y_pix, strict=True):
                     ix, iy = int(np.round(x)), int(np.round(y))
-
-                    # Check if source is within map bounds
                     if (
                         0 <= ix < observed_map.shape[1]
                         and 0 <= iy < observed_map.shape[0]
                     ):
-                        # Add circle around this source
                         self._add_circle_to_mask(mask, x, y, circle_radius_pix)
-                        n_sources_added += 1
 
             except Exception as e:
                 logger.warning(f"Error processing population {pop_bin.id_label}: {e}")
                 continue
 
-        logger.debug(f"Added circles for {n_sources_added} sources")
-
-        # Apply mask and get valid pixels
         valid_pixels_2d = mask & ~np.isnan(observed_map)
-        n_valid_pixels = np.sum(valid_pixels_2d)
 
-        logger.debug(f"Valid pixels after cropping: {n_valid_pixels}")
+        if np.sum(valid_pixels_2d) < layer_matrix.shape[0]:
+            logger.warning("Too few pixels for fitting, using all valid pixels")
+            valid_pixels_2d = ~np.isnan(observed_map)
 
-        # Check if we have enough pixels for the fit
-        n_populations = layer_matrix.shape[0]
-
-        if n_valid_pixels < n_populations:
-            logger.warning(
-                f"Too few pixels ({n_valid_pixels}) for {n_populations} populations"
-            )
-            logger.warning("Expanding circle radius and using more pixels")
-
-            # Expand circles or use more conservative approach
-            expanded_radius = max(circle_radius_pix * 2, 10.0)
-            mask_expanded = np.zeros(observed_map.shape, dtype=bool)
-
-            # Re-add circles with larger radius
-            for pop_bin in self.population_manager.iter_populations():
-                if pop_bin.n_sources == 0:
-                    continue
-
-                try:
-                    pop_data = self.population_manager.get_population_data(
-                        pop_bin.id_label
-                    )
-                    ra = pop_data["ra"]
-                    dec = pop_data["dec"]
-                    x_pix, y_pix = self.sky_maps.world_to_pixel(map_name, ra, dec)
-
-                    for x, y in zip(x_pix, y_pix, strict=True):
-                        ix, iy = int(np.round(x)), int(np.round(y))
-                        if (
-                            0 <= ix < observed_map.shape[1]
-                            and 0 <= iy < observed_map.shape[0]
-                        ):
-                            self._add_circle_to_mask(
-                                mask_expanded, x, y, expanded_radius
-                            )
-
-                except Exception:
-                    continue
-
-            # Use expanded mask
-            valid_pixels_2d = mask_expanded & ~np.isnan(observed_map)
-            n_valid_pixels = np.sum(valid_pixels_2d)
-            logger.debug(f"Valid pixels after expansion: {n_valid_pixels}")
-
-            # If still not enough, fall back to using all pixels
-            if n_valid_pixels < n_populations:
-                logger.warning("Still insufficient pixels, using all valid pixels")
-                valid_pixels_2d = ~np.isnan(observed_map)
-                n_valid_pixels = np.sum(valid_pixels_2d)
-
-        # Convert to flat indices
         flat_indices = np.where(valid_pixels_2d.ravel())[0]
-
-        # Extract the data
         cropped_observed = observed_map.ravel()[flat_indices]
-        # Remove mean
         cropped_observed -= np.nanmean(cropped_observed)
-        # Add cropped layer to cube
         cropped_layers = layer_matrix[:, flat_indices]
 
-        logger.debug(
-            f"Final cropping: {len(cropped_observed)} pixels, {cropped_layers.shape[0]} populations"
-        )
-
         return cropped_layers, cropped_observed, flat_indices
-
-    def _add_circle_to_mask(
-        self, mask: np.ndarray, center_x: float, center_y: float, radius: float
-    ) -> None:
-        """Add a circular region to the mask (IMPROVED VERSION)"""
-
-        # Get mask dimensions
-        ny, nx = mask.shape
-
-        # Create coordinate grids centered on the circle
-        y_min = max(0, int(center_y - radius))
-        y_max = min(ny, int(center_y + radius) + 1)
-        x_min = max(0, int(center_x - radius))
-        x_max = min(nx, int(center_x + radius) + 1)
-
-        # Create coordinate grids for the region
-        y_coords, x_coords = np.ogrid[y_min:y_max, x_min:x_max]
-
-        # Calculate distances from center
-        distances = np.sqrt((x_coords - center_x) ** 2 + (y_coords - center_y) ** 2)
-
-        # Set mask where distance <= radius
-        circle_mask = distances <= radius
-        mask[y_min:y_max, x_min:x_max][circle_mask] = True
 
     def _solve_linear_system(
         self, layer_matrix: np.ndarray, observed_vector: np.ndarray, map_data: MapData
     ) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
-        """
-        Solve the linear system to get flux densities
-
-        Solves: observed = layer_matrix @ flux_densities + noise
-
-        Args:
-            layer_matrix: Population layers (n_populations x n_pixels)
-            observed_vector: Observed pixel values (n_pixels,)
-            map_data: Map data for noise estimation
-
-        Returns:
-            flux_densities, flux_errors, fit_statistics
-        """
+        """Solve linear system for flux densities"""
         n_populations, n_pixels = layer_matrix.shape
 
         if n_pixels == 0:
             raise AlgorithmError("No valid pixels for fitting")
 
-        if n_populations == 0:
-            raise AlgorithmError("No populations to fit")
-
-        # Check for degenerate cases
-        if n_pixels < n_populations:
-            logger.warning(
-                f"Underdetermined system: {n_pixels} pixels, {n_populations} populations"
+        try:
+            flux_densities, residuals, rank, singular_values = linalg.lstsq(
+                layer_matrix.T, observed_vector
             )
 
-        try:
-            # Use weighted least squares if we have noise information
-            if map_data.noise is not None:
-                # Get noise values for the same pixels as observed_vector
-                # The valid_mask should be passed in or reconstructed
-                noise_flat = map_data.noise.ravel()
-
-                # Apply the same mask that was used to create observed_vector
-                if hasattr(self, "_last_valid_mask"):
-                    noise_values = noise_flat[self._last_valid_mask]
-                else:
-                    # Fallback: assume observed_vector came from ~isnan mask
-                    valid_pixels = ~np.isnan(map_data.data.ravel())
-                    noise_values = noise_flat[valid_pixels][: len(observed_vector)]
-
-                # Create weights, avoiding division by zero
-                weights = 1.0 / np.maximum(noise_values**2, 1e-20)
-
-                # Weight the system
-                weighted_layers = layer_matrix * np.sqrt(weights)
-                weighted_observed = observed_vector * np.sqrt(weights)
-
-                # Solve weighted system
-                flux_densities, residuals, rank, singular_values = linalg.lstsq(
-                    weighted_layers.T, weighted_observed
-                )
-            else:
-                # Ordinary least squares
-                flux_densities, residuals, rank, singular_values = linalg.lstsq(
-                    layer_matrix.T, observed_vector
-                )
-
-            # Calculate uncertainties
+            # Calculate systematic errors (bootstrap errors calculated separately)
             if n_pixels > n_populations:
-                # Overdetermined system - can estimate proper errors
                 try:
-                    # Check if residuals is array or scalar
                     if hasattr(residuals, "__len__") and len(residuals) > 0:
                         mse = residuals[0] / (n_pixels - n_populations)
-                    elif np.isfinite(residuals):
-                        mse = residuals / (n_pixels - n_populations)
                     else:
-                        # Calculate residuals manually
                         model_prediction = layer_matrix.T @ flux_densities
                         mse = np.sum((observed_vector - model_prediction) ** 2) / (
                             n_pixels - n_populations
                         )
 
-                    # Covariance matrix
-                    try:
-                        if map_data.noise is not None:
-                            # Use noise weights
-                            weighted_layers = layer_matrix * np.sqrt(weights)
-                            covariance = linalg.inv(weighted_layers @ weighted_layers.T)
-                        else:
-                            covariance = linalg.inv(layer_matrix @ layer_matrix.T) * mse
-
-                        flux_errors = np.sqrt(np.diag(covariance))
-                    except linalg.LinAlgError:
-                        logger.warning(
-                            "Could not compute covariance matrix, using scaled errors"
-                        )
-                        flux_errors = (
-                            np.abs(flux_densities) * 0.1
-                        )  # 10% errors as fallback
-
-                except Exception as e:
-                    logger.warning(f"Error estimation failed: {e}")
-                    flux_errors = np.abs(flux_densities) * 0.1
+                    covariance = linalg.inv(layer_matrix @ layer_matrix.T) * mse
+                    systematic_errors = np.sqrt(np.diag(covariance))
+                except linalg.LinAlgError:
+                    systematic_errors = np.abs(flux_densities) * 0.1
             else:
-                # Underdetermined system - use fallback errors
-                flux_errors = np.abs(flux_densities) * 0.1
+                systematic_errors = np.abs(flux_densities) * 0.1
 
             # Calculate fit statistics
             model_prediction = layer_matrix.T @ flux_densities
             chi_squared = np.sum((observed_vector - model_prediction) ** 2)
-
-            if map_data.noise is not None:
-                noise_flat = map_data.noise.ravel()
-                valid_pixels = ~np.isnan(map_data.data.ravel())
-
-                # Proper chi-squared with noise weights
-                noise_vector = noise_flat[valid_pixels][: len(observed_vector)]
-
-                # Avoid division by zero in noise
-                noise_vector = np.maximum(noise_vector, 1e-20)  # Small floor value
-
-                chi_squared = np.sum(
-                    ((observed_vector - model_prediction) / noise_vector) ** 2
-                )
-
             dof = max(1, n_pixels - n_populations)
-            reduced_chi_squared = chi_squared / dof
 
             fit_stats = {
                 "chi_squared": chi_squared,
                 "degrees_of_freedom": dof,
-                "reduced_chi_squared": reduced_chi_squared,
+                "reduced_chi_squared": chi_squared / dof,
                 "rank": rank,
-                "condition_number": np.max(singular_values) / np.min(singular_values)
-                if len(singular_values) > 0
-                else np.inf,
             }
 
-            return flux_densities, flux_errors, fit_stats
+            return flux_densities, systematic_errors, fit_stats
 
         except Exception as e:
             logger.error(f"Linear system solution failed: {e}")
-            # Return zeros as fallback
             return (
                 np.zeros(n_populations),
                 np.ones(n_populations),
@@ -814,24 +874,40 @@ class SimstackAlgorithm:
                 },
             )
 
-    def _compile_results(
-        self, results_dict: dict[str, dict], start_time: float, start_memory: float
-    ) -> StackingResults:
-        """Compile results from all maps into final StackingResults object"""
-        map_names = list(results_dict.keys())
+    def _validate_inputs(self) -> None:
+        """Validate inputs"""
+        if len(self.population_manager) == 0:
+            raise ValidationError("No populations found")
+        if len(self.sky_maps) == 0:
+            raise ValidationError("No maps loaded")
 
-        # Get population labels (should be same for all maps)
+    def _compile_results(self, results_dict, start_time, start_memory):
+        """Compile results into final StackingResults object"""
+
+        map_names = list(results_dict.keys())
         population_labels = results_dict[map_names[0]]["population_labels"]
 
         # Extract results per map
         flux_densities = {}
         flux_errors = {}
+        flux_errors_systematic = {}
+        bootstrap_flux_samples = {} if self.bootstrap_enabled else None
         chi_squared = {}
         degrees_of_freedom = {}
 
         for map_name, map_results in results_dict.items():
             flux_densities[map_name] = map_results["flux_densities"]
             flux_errors[map_name] = map_results["flux_errors"]
+            flux_errors_systematic[map_name] = map_results.get(
+                "flux_errors_systematic", map_results["flux_errors"]
+            )
+
+            if (
+                self.bootstrap_enabled
+                and map_results.get("bootstrap_flux_samples") is not None
+            ):
+                bootstrap_flux_samples[map_name] = map_results["bootstrap_flux_samples"]
+
             chi_squared[map_name] = map_results["fit_statistics"]["chi_squared"]
             degrees_of_freedom[map_name] = map_results["fit_statistics"][
                 "degrees_of_freedom"
@@ -847,73 +923,91 @@ class SimstackAlgorithm:
         current_memory = memory_usage_gb()
         memory_used = max(0, current_memory - start_memory)
 
-        return StackingResults(
+        # Create the results object
+        results = StackingResults(
             flux_densities=flux_densities,
             flux_errors=flux_errors,
+            flux_errors_systematic=flux_errors_systematic,
+            bootstrap_flux_samples=bootstrap_flux_samples,
             population_labels=population_labels,
             map_names=map_names,
             n_sources=n_sources,
             chi_squared=chi_squared,
             degrees_of_freedom=degrees_of_freedom,
-            reduced_chi_squared={},  # Will be calculated in __post_init__
+            reduced_chi_squared={},
             execution_time=execution_time,
             memory_used_gb=memory_used,
+            bootstrap_enabled=self.bootstrap_enabled,
+            bootstrap_iterations=self.bootstrap_iterations,
+            bootstrap_split_fraction=getattr(self, "bootstrap_split_fraction", 0.5),
         )
 
+        logger.info("✅ StackingResults object created successfully")
+        logger.info(f"📊 {len(map_names)} maps, {len(population_labels)} populations")
+
+        return results
+
     def print_results_summary(self) -> None:
-        """Print a summary of stacking results"""
+        """Print a summary of unbiased bootstrap stacking results"""
         if self.results is None:
             print("No results available - run stacking first")
             return
 
         results = self.results
 
-        print("=== Stacking Results Summary ===")
+        print("=== UNBIASED Bootstrap Stacking Results Summary ===")
         print(f"Execution time: {results.execution_time:.1f}s")
         print(f"Memory used: {results.memory_used_gb:.2f}GB")
         print(f"Populations: {len(results.population_labels)}")
         print(f"Maps: {len(results.map_names)}")
+        print(f"Bootstrap enabled: {results.bootstrap_enabled}")
+        if results.bootstrap_enabled:
+            print(f"Bootstrap iterations: {results.bootstrap_iterations}")
+            print(
+                f"Bootstrap split: {results.bootstrap_split_fraction:.1%}:{1 - results.bootstrap_split_fraction:.1%}"
+            )
+            print("✓ UNBIASED: All sources included in each iteration")
         print()
 
-        print("Flux Densities (Jy):")
+        print("Flux Densities with Unbiased Bootstrap Errors (Jy):")
         print(
             f"{'Population':<30} "
-            + " ".join(f"{name:<12}" for name in results.map_names)
+            + " ".join(f"{name:<15}" for name in results.map_names)
         )
-        print("-" * (30 + 13 * len(results.map_names)))
+        print("-" * (30 + 16 * len(results.map_names)))
 
         for i, pop_label in enumerate(results.population_labels):
             line = f"{pop_label:<30}"
             for map_name in results.map_names:
                 flux = results.flux_densities[map_name][i]
                 error = results.flux_errors[map_name][i]
-                line += f" {flux:>8.2e}±{error:.1e}"
+                sys_error = results.flux_errors_systematic[map_name][i]
+
+                if results.bootstrap_enabled:
+                    line += f" {flux:>8.2e}±{error:.1e}"
+                else:
+                    line += f" {flux:>8.2e}±{sys_error:.1e}*"
             print(line)
 
+        if not results.bootstrap_enabled:
+            print("* Systematic errors only (no bootstrap)")
+
         print()
-        print("Fit Quality:")
-        for map_name in results.map_names:
-            chi2 = results.chi_squared[map_name]
-            dof = results.degrees_of_freedom[map_name]
-            reduced_chi2 = results.reduced_chi_squared.get(map_name, chi2 / dof)
-            print(
-                f"{map_name}: χ² = {chi2:.1f}, DoF = {dof}, χ²_red = {reduced_chi2:.2f}"
-            )
+        print("Unbiased Bootstrap vs Systematic Error Comparison:")
+        if results.bootstrap_enabled:
+            for map_name in results.map_names:
+                bootstrap_err = np.mean(results.flux_errors[map_name])
+                systematic_err = np.mean(results.flux_errors_systematic[map_name])
+                ratio = bootstrap_err / systematic_err if systematic_err > 0 else np.inf
+                print(f"{map_name}: Bootstrap/Systematic error ratio = {ratio:.2f}")
+
+            print("\n✓ All sources included in each bootstrap iteration")
+            print("✓ No positive bias from missing sources")
 
 
 def run_stacking(
     config: SimstackConfig, population_manager: PopulationManager, sky_maps: SkyMaps
-) -> StackingResults:
-    """
-    Convenience function to run simultaneous stacking
-
-    Args:
-        config: Simstack configuration
-        population_manager: Populated catalog manager
-        sky_maps: Loaded sky maps
-
-    Returns:
-        StackingResults object
-    """
+):
+    """Run stacking with proper bootstrap design"""
     algorithm = SimstackAlgorithm(config, population_manager, sky_maps)
     return algorithm.run_stacking()

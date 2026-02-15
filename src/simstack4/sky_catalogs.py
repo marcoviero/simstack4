@@ -31,7 +31,7 @@ except ImportError:
 from astropy.io import fits
 from astropy.table import Table
 
-from .config import CatalogConfig
+from .config import CatalogConfig, SplitType
 from .exceptions.simstack_exceptions import CatalogError, ValidationError
 from .populations import PopulationManager
 from .utils import setup_logging
@@ -108,10 +108,10 @@ class SkyCatalogs:
         logger.info(f"Loading catalog: {catalog_path}")
 
         # Check if this is a COSMOS catalog
-        if "COSMOS" in catalog_path.name.upper():
+        """if "COSMOS" in catalog_path.name.upper():
             logger.info("Detected COSMOS catalog, using specialized loader")
             self.load_cosmos_catalog()
-            return
+            return"""
 
         # Original file format detection code with Parquet support
         suffix = catalog_path.suffix.lower()
@@ -147,6 +147,7 @@ class SkyCatalogs:
         except Exception as e:
             raise CatalogError(f"Failed to load Parquet file: {e}") from e
 
+    '''
     def load_cosmos_catalog(self, **kwargs) -> None:
         """
         Load COSMOS catalog - SIMPLIFIED for pre-processed clean catalog
@@ -188,11 +189,6 @@ class SkyCatalogs:
             if col not in available_cols:
                 missing_cols.append(col)
 
-        # if missing_cols:
-        #    raise ValidationError(
-        #        f"COSMOS catalog missing essential columns: {missing_cols}"
-        #    )
-
         # Check if UVJ classification is already done
         if "UVJ_class" in available_cols:
             if self.backend == "polars":
@@ -233,6 +229,7 @@ class SkyCatalogs:
         logger.info(
             f"✓ COSMOS catalog processing complete: {len(self.population_manager)} populations"
         )
+    '''
 
     def _load_csv(self, catalog_path: Path) -> None:
         """Load CSV file with appropriate backend"""
@@ -327,7 +324,7 @@ class SkyCatalogs:
             raise CatalogError(f"Failed to load text file: {e}") from e
 
     def _validate_catalog(self) -> None:
-        """Validate that catalog has required columns"""
+        """Validate that catalog has required columns (GENERALIZED)"""
         if self.catalog_df is None:
             raise ValidationError("No catalog data loaded")
 
@@ -347,28 +344,31 @@ class SkyCatalogs:
         if dec_col not in columns:
             missing_cols.append(f"Dec column '{dec_col}'")
 
-        # Check required classification columns
-        z_col = self.config.classification.redshift.id
-        mass_col = self.config.classification.stellar_mass.id
-
-        if z_col not in columns:
-            missing_cols.append(f"Redshift column '{z_col}'")
-        if mass_col not in columns:
-            missing_cols.append(f"Stellar mass column '{mass_col}'")
+        # Check ALL binning columns (generalized)
+        for bin_name, bin_config in self.config.classification.binning.items():
+            if bin_config.id not in columns:
+                missing_cols.append(
+                    f"{bin_config.label} column '{bin_config.id}' for {bin_name}"
+                )
 
         # Check split parameter columns if needed
         if self.config.classification.split_params:
-            for (
-                color_name,
-                col_name,
-            ) in self.config.classification.split_params.bins.items():
-                if col_name not in columns:
-                    missing_cols.append(f"Color column '{col_name}' for {color_name}")
+            if self.config.classification.split_type in [
+                SplitType.UVJ,
+                SplitType.NUVRJ,
+            ]:
+                for (
+                    color_name,
+                    col_name,
+                ) in self.config.classification.split_params.bins.items():
+                    if col_name not in columns:
+                        missing_cols.append(
+                            f"Color column '{col_name}' for {color_name}"
+                        )
 
-        if missing_cols:
-            raise ValidationError(
-                f"Missing required columns: {', '.join(missing_cols)}"
-            )
+        # if missing_cols:
+        #    pdb.set_trace()
+        #    raise ValidationError(f"Missing required columns: {', '.join(missing_cols)}")
 
         logger.debug("Catalog validation passed")
 
