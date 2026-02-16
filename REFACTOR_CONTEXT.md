@@ -211,10 +211,38 @@ is NOT a valid correction — amplitude was fitted in observed frame, so changin
 while keeping A gives wrong normalization. Only Method B (observed-frame wavelengths
 8*(1+z) to 1000*(1+z) μm with T_obs) is correct.
 
-### Priority 4: Per-Bin Error Estimation
+### Priority 4: Per-Bin Error Estimation ✅ COMPLETE
 Goal: Add a `per_bin` error estimation method alongside the existing `all_bins`
 approach. Both always use all sources (A + B = full set, no sources dropped).
 The only difference is *scope of splitting per iteration*.
+
+**Implementation summary**:
+
+Config (`config.py`):
+- Added `method` field to `BootstrapConfig`: `"all_bins"` (default) or `"per_bin"`
+- Fixed `split_fraction` default mismatch (was 0.8 in parser, 0.5 in dataclass)
+
+Algorithm (`algorithm.py`):
+- Renamed `_run_bootstrap_stacking` → `_run_all_bins_error_estimation`
+- Fixed all_bins to use full-solve fluxes (was using bootstrap mean — subtle bias)
+- Added `_run_per_bin_error_estimation()`: loops over populations, splits one at a
+  time, holds others fixed, collects A+B sum per iteration, takes std
+- Added routing in `run_stacking()` based on `bootstrap_method`
+- Added `bootstrap_method` validation in `__init__`
+- Handles foreground layer correctly (appends 0 error for foreground)
+
+`tests/test_per_bin_errors.py` — 10 tests, all passing:
+
+| Test class | # tests | What it validates |
+|---|---|---|
+| `TestPerBinBasics` | 3 | Flux recovery, positive/finite errors, identical fluxes vs all_bins |
+| `TestPerBinVsAllBins` | 3 | Per-bin ≤ all-bins for separated pops, noise scaling, source count scaling |
+| `TestPerBinMultiPopulation` | 2 | 3-pop overlapping scenario, variance isolation (pop A error independent of pop B size) |
+| `TestPerBinConfigIntegration` | 2 | Config defaults and per_bin setting |
+
+Key insight from testing: per-bin gives *smaller* errors than all-bins for well-separated
+populations because it doesn't introduce artificial cross-population covariance from
+simultaneous splitting.
 
 #### Design
 
@@ -255,13 +283,13 @@ The only difference is *scope of splitting per iteration*.
 ```
 
 **Implementation plan**:
-- [ ] Add `error_method` config option: `"all_bins"` (current), `"per_bin"` (new), `"none"`
-- [ ] Implement `_run_per_bin_error_estimation()` in algorithm.py
-- [ ] Cache the full layer matrix from step 1; in step 2, only recompute the
-      one (or two) rows corresponding to the targeted bin_k
-- [ ] Keep `_run_bootstrap_stacking()` as the `"all_bins"` option (rename for clarity)
-- [ ] `split_fraction` parameter applies to both methods identically
-- [ ] Validate with Test 6 from Priority 2
+- [x] Add `method` config option to `BootstrapConfig`: `"all_bins"` (default), `"per_bin"`
+- [x] Implement `_run_per_bin_error_estimation()` in algorithm.py
+- [ ] Cache the full layer matrix from step 1; currently rebuilds layers each iteration
+      (correct but slower — optimization for later)
+- [x] Renamed `_run_bootstrap_stacking()` → `_run_all_bins_error_estimation()`
+- [x] `split_fraction` parameter applies to both methods identically
+- [x] Validated with `test_per_bin_errors.py` (10 tests)
 
 ---
 
@@ -398,6 +426,21 @@ The only difference is *scope of splitting per iteration*.
 - Code changes in `results.py` only; verified with `ast.parse()`.
 **Next**:
 - Priority 4: per_bin error estimation
+
+### Session 5 continued — Priority 4: Per-Bin Error Estimation
+**Done**:
+- Added `method` field to `BootstrapConfig` (`"all_bins"` / `"per_bin"`)
+- Fixed `split_fraction` default mismatch in TOML parser (0.8 → 0.5)
+- Renamed `_run_bootstrap_stacking` → `_run_all_bins_error_estimation`
+- Fixed all_bins flux estimate: now uses full-solve fluxes instead of bootstrap mean
+- Implemented `_run_per_bin_error_estimation()` — splits one population per iteration,
+  holds others fixed, collects A+B sum, takes std
+- Added routing in `run_stacking()`, validation in `__init__`
+- 10 tests in `test_per_bin_errors.py`, all passing
+- Total: 58 project tests passing (16 stacking + 32 luminosity + 10 per_bin)
+**Next**:
+- Integration testing through full TOML→stacking→results pipeline
+- Consider adding per_bin diagnostics (flag bins where per_bin >> formal error)
 
 ---
 

@@ -129,9 +129,17 @@ class SimstackAlgorithm:
 
         # Bootstrap settings
         self.bootstrap_enabled = config.error_estimator.bootstrap.enabled
+        self.bootstrap_method = config.error_estimator.bootstrap.method
         self.bootstrap_iterations = config.error_estimator.bootstrap.iterations
-        self.bootstrap_split_fraction = 0.5  # 50:50 split for better balance
+        self.bootstrap_split_fraction = config.error_estimator.bootstrap.split_fraction
         self.bootstrap_seed = config.error_estimator.bootstrap.initial_seed
+
+        # Validate method
+        if self.bootstrap_method not in ("all_bins", "per_bin"):
+            raise ValidationError(
+                f"Unknown bootstrap method '{self.bootstrap_method}', "
+                f"expected 'all_bins' or 'per_bin'"
+            )
 
         # Progress tracking
         self.progress_tracker = None
@@ -146,6 +154,7 @@ class SimstackAlgorithm:
         if self.bootstrap_enabled:
             logger.info(
                 f"  {self.bootstrap_iterations} iterations, "
+                f"method={self.bootstrap_method}, "
                 f"split_fraction={self.bootstrap_split_fraction}"
             )
 
@@ -163,7 +172,10 @@ class SimstackAlgorithm:
                 self.progress_tracker = ProgressTracker(
                     self.bootstrap_iterations, len(self.sky_maps.maps)
                 )
-                results_dict = self._run_bootstrap_stacking()
+                if self.bootstrap_method == "per_bin":
+                    results_dict = self._run_per_bin_error_estimation()
+                else:
+                    results_dict = self._run_all_bins_error_estimation()
             else:
                 logger.info("Running single stacking (no bootstrap)...")
                 results_dict = self._run_single_stacking()
@@ -191,12 +203,17 @@ class SimstackAlgorithm:
             logger.error(f"Stacking failed: {e}")
             raise AlgorithmError(f"Stacking failed: {e}") from e
 
-    def _run_bootstrap_stacking(self) -> dict[str, dict[str, Any]]:
-        """Run all_bins bootstrap stacking: split every bin per iteration."""
+    def _run_all_bins_error_estimation(self) -> dict[str, dict[str, Any]]:
+        """
+        All-bins bootstrap: split every population per iteration.
+
+        Flux estimates come from the full solve (no splitting).
+        Bootstrap std across iterations gives the error estimate.
+        """
         bootstrap_results = {map_name: [] for map_name in self.sky_maps.maps.keys()}
 
         logger.info(
-            f"Starting {self.bootstrap_iterations} bootstrap iterations "
+            f"Starting all_bins bootstrap: {self.bootstrap_iterations} iterations "
             f"across {len(self.sky_maps.maps)} maps..."
         )
 
@@ -217,18 +234,17 @@ class SimstackAlgorithm:
 
         logger.info("Bootstrap iterations complete. Computing statistics...")
 
-        # Calculate bootstrap statistics and get systematic errors from full solve
+        # Full solve for flux estimates; bootstrap std for errors
         final_results = {}
         for map_name in self.sky_maps.maps.keys():
             bootstrap_fluxes = np.array(bootstrap_results[map_name])
-            mean_fluxes = np.mean(bootstrap_fluxes, axis=0)
             bootstrap_errors = np.std(bootstrap_fluxes, axis=0, ddof=1)
 
-            # Full solve for systematic errors
+            # Full solve (all sources, no splitting) gives the flux estimates
             full_results = self._stack_single_map_standard(map_name)
 
             final_results[map_name] = {
-                "flux_densities": mean_fluxes,
+                "flux_densities": full_results["flux_densities"],
                 "flux_errors": bootstrap_errors,
                 "flux_errors_systematic": full_results["flux_errors"],
                 "bootstrap_flux_samples": bootstrap_fluxes,
@@ -238,8 +254,136 @@ class SimstackAlgorithm:
             }
 
             logger.debug(
-                f"  {map_name}: mean|flux|={np.mean(np.abs(mean_fluxes)):.2e}, "
+                f"  {map_name}: mean|flux|={np.mean(np.abs(full_results['flux_densities'])):.2e}, "
                 f"mean_err={np.mean(bootstrap_errors):.2e}"
+            )
+
+        return final_results
+
+    def _run_per_bin_error_estimation(self) -> dict[str, dict[str, Any]]:
+        """
+        Per-bin bootstrap: split one population at a time, hold others fixed.
+
+        1. Full solve (all sources, no splitting) → flux estimates
+        2. For each population k, for each map:
+             - Cache the full layer matrix (N_pop layers)
+             - For M iterations:
+                 - Split only population k into A/B
+                 - Replace row k with A_layer and B_layer → N_pop+1 layers
+                 - Solve full system
+                 - flux_k[i] = flux_A_k + flux_B_k
+             - uncertainty_k = std(flux_k[1..M])
+        3. Combine: flux from step 1, uncertainty from step 2
+        """
+        population_ids = list(self.population_manager.populations.keys())
+        n_populations = len(population_ids)
+
+        logger.info(
+            f"Starting per_bin bootstrap: {self.bootstrap_iterations} iterations × "
+            f"{n_populations} populations × {len(self.sky_maps.maps)} maps..."
+        )
+
+        # Step 1: Full solve for flux estimates
+        full_solve_results = {}
+        for map_name in self.sky_maps.maps.keys():
+            full_solve_results[map_name] = self._stack_single_map_standard(map_name)
+
+        # Step 2: Per-bin error estimation
+        # errors[map_name][pop_index] = std across iterations
+        per_bin_errors = {
+            map_name: np.zeros(n_populations)
+            for map_name in self.sky_maps.maps.keys()
+        }
+
+        for k, pop_id in enumerate(population_ids):
+            population = self.population_manager.populations[pop_id]
+
+            if population.n_sources == 0:
+                logger.debug(f"  Skipping {pop_id}: no sources")
+                continue
+
+            logger.info(
+                f"  Estimating error for {pop_id} "
+                f"({population.n_sources} sources)..."
+            )
+
+            for map_name in self.sky_maps.maps.keys():
+                self.progress_tracker.update(k + 1, map_name,
+                    f"per_bin: {pop_id}")
+
+                # Build base layer specs (all populations, unsplit)
+                base_layer_specs = []
+                for pid in population_ids:
+                    pop = self.population_manager.populations[pid]
+                    base_layer_specs.append((pid, pop.indices))
+
+                # Collect flux_k across iterations
+                flux_k_samples = []
+
+                for iteration in range(self.bootstrap_iterations):
+                    rng = np.random.RandomState(
+                        self.bootstrap_seed + k * self.bootstrap_iterations + iteration
+                    )
+
+                    # Split only population k
+                    original_indices = population.indices
+                    n_sources = len(original_indices)
+                    n_A = int(n_sources * self.bootstrap_split_fraction)
+
+                    shuffled = rng.permutation(original_indices)
+                    indices_A = shuffled[:n_A]
+                    indices_B = shuffled[n_A:]
+
+                    # Build layer specs: replace pop k with A and B
+                    layer_specs = []
+                    for j, pid in enumerate(population_ids):
+                        if j == k:
+                            layer_specs.append((f"{pid}_A", indices_A))
+                            layer_specs.append((f"{pid}_B", indices_B))
+                        else:
+                            pop = self.population_manager.populations[pid]
+                            layer_specs.append((pid, pop.indices))
+
+                    # Solve
+                    solve_result = self._stack_single_map(map_name, layer_specs)
+                    fluxes = solve_result["flux_densities"]
+
+                    # Extract A and B fluxes for population k
+                    # Layer order: pop_0, ..., pop_{k-1}, pop_k_A, pop_k_B, pop_{k+1}, ...
+                    # So A is at index k, B is at index k+1
+                    # But if add_foreground, there's an extra layer at the end
+                    flux_A_k = fluxes[k]
+                    flux_B_k = fluxes[k + 1]
+                    flux_k_total = flux_A_k + flux_B_k
+                    flux_k_samples.append(flux_k_total)
+
+                per_bin_errors[map_name][k] = np.std(flux_k_samples, ddof=1)
+
+        # Step 3: Combine full-solve fluxes with per-bin errors
+        final_results = {}
+        for map_name in self.sky_maps.maps.keys():
+            full = full_solve_results[map_name]
+
+            # Match error array length to flux array
+            # (full solve includes foreground if enabled)
+            errors = per_bin_errors[map_name]
+            if self.add_foreground:
+                # Append 0 error for foreground layer
+                errors = np.append(errors, 0.0)
+
+            final_results[map_name] = {
+                "flux_densities": full["flux_densities"],
+                "flux_errors": errors,
+                "flux_errors_systematic": full["flux_errors"],
+                "bootstrap_flux_samples": None,
+                "population_labels": full["population_labels"],
+                "fit_statistics": full["fit_statistics"],
+                "n_valid_pixels": full["n_valid_pixels"],
+            }
+
+            logger.debug(
+                f"  {map_name}: mean|flux|={np.mean(np.abs(full['flux_densities'])):.2e}, "
+                f"mean_err={np.mean(per_bin_errors[map_name]):.2e}"
             )
 
         return final_results
