@@ -148,15 +148,13 @@ class PopulationManager:
             if self.config.split_type in [SplitType.UVJ, SplitType.NUVRJ]:
                 required_cols.extend(self.config.split_params.bins.values())
 
-        """
         missing_cols = [col for col in required_cols if col not in catalog_df.columns]
         if missing_cols:
             available_cols = list(catalog_df.columns)
             raise PopulationError(
                 f"Missing required columns: {missing_cols}\n"
-                f"Available columns: {available_cols[:10]}..."
+                f"Available columns: {available_cols[:20]}..."
             )
-        """
 
     def _classify_by_labels(self, catalog_df: pd.DataFrame) -> np.ndarray:
         """Classify sources using predefined labels"""
