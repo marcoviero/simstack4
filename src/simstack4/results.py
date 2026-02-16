@@ -94,6 +94,7 @@ class GreybodyFitter:
         mcmc_iterations: int = 1000,
         mcmc_burn_in: int = 200,
         use_schreiber_prior: bool = False,
+        cosmology_calc: "CosmologyCalculator | None" = None,
     ):
         """
         Initialize fitter with improved defaults
@@ -111,9 +112,18 @@ class GreybodyFitter:
         self.mcmc_burn_in = mcmc_burn_in
         self.use_schreiber_prior = use_schreiber_prior
 
-        # Setup cosmology (simplified for now)
-        self.H0 = 70  # km/s/Mpc
-        self.Om0 = 0.3
+        # Cosmology — use proper calculator if provided, else fall back to Planck18
+        if cosmology_calc is not None:
+            self._cosmology_calc = cosmology_calc
+        else:
+            try:
+                self._cosmology_calc = CosmologyCalculator()
+            except Exception:
+                self._cosmology_calc = None
+                logger.warning(
+                    "CosmologyCalculator unavailable, "
+                    "luminosity_distance will use Hubble-law fallback"
+                )
 
         if use_mcmc and not HAS_EMCEE:
             logger.warning(
@@ -758,8 +768,14 @@ class GreybodyFitter:
         # Get luminosity distance (in Mpc)
         D_L = self.luminosity_distance(redshift)
 
-        # Generate wavelength range in microns (8-1000 μm rest-frame)
-        wavelength_range = np.logspace(np.log10(8), np.log10(1000), 1000)
+        # Generate wavelength range in observed frame.
+        # Rest-frame L_IR is defined over 8-1000μm, which corresponds to
+        # observed-frame wavelengths of 8*(1+z) to 1000*(1+z) μm.
+        # The model (amplitude, temperature) was fitted in observed frame,
+        # so we evaluate it at observed-frame wavelengths.
+        wav_min = 8.0 * (1 + redshift)
+        wav_max = 1000.0 * (1 + redshift)
+        wavelength_range = np.logspace(np.log10(wav_min), np.log10(wav_max), 1000)
 
         # Get model SED
         model_sed_jy = self.greybody_model(
@@ -825,8 +841,10 @@ class GreybodyFitter:
     def _calculate_LIR_single(
         self, amplitude, temperature, beta, redshift, D_L, conversion
     ):
-        """Helper function for L_IR calculation"""
-        wavelength_range = np.logspace(np.log10(8), np.log10(1000), 1000)
+        """Helper function for L_IR calculation (error propagation)"""
+        wav_min = 8.0 * (1 + redshift)
+        wav_max = 1000.0 * (1 + redshift)
+        wavelength_range = np.logspace(np.log10(wav_min), np.log10(wav_max), 1000)
         model_sed_jy = self.greybody_model(
             wavelength_range, amplitude, temperature, beta
         )
@@ -838,12 +856,18 @@ class GreybodyFitter:
         return Lir_jy_hz * conversion
 
     def luminosity_distance(self, z):
-        """Calculate luminosity distance in Mpc"""
+        """Calculate luminosity distance in Mpc using proper cosmology."""
         if z <= 0:
             z = 0.01
-        c_km_s = 299792.458  # km/s
-        D_L = c_km_s * z / self.H0  # Mpc
-        return D_L
+        if self._cosmology_calc is not None:
+            return self._cosmology_calc.luminosity_distance(z)
+        else:
+            # Fallback: Hubble-law approximation (only used if astropy unavailable)
+            logger.warning("Using Hubble-law D_L fallback — inaccurate at z > 0.3")
+            c_km_s = 299792.458  # km/s
+            H0 = 67.7  # Planck18
+            D_L = c_km_s * z / H0  # Mpc
+            return D_L
 
     def calculate_dust_mass(
         self, amplitude: float, temperature: float, beta: float, redshift: float
@@ -1496,6 +1520,7 @@ class SimstackResults:
                 mcmc_burn_in=mcmc_burn_in,
                 use_schreiber_prior=use_schreiber_prior,
                 inflation_factors=inflation_factors,
+                cosmology_calc=self.cosmology_calc,
             )
             logger.info("Using covariance-aware greybody fitter")
         else:
@@ -1506,6 +1531,7 @@ class SimstackResults:
                 mcmc_iterations=mcmc_iterations,
                 mcmc_burn_in=mcmc_burn_in,
                 use_schreiber_prior=use_schreiber_prior,
+                cosmology_calc=self.cosmology_calc,
             )
             logger.info("Using standard greybody fitter")
 

@@ -96,16 +96,15 @@ Total: ~11,800 lines Python
 - `results.py`: 2155 lines — GreybodyFitter + CovarianceGreybodyFitter + MCMC is
 - `results.py`: 2155 lines — GreybodyFitter + CovarianceGreybodyFitter + MCMC is
   a lot of new code without any tests.
-- `results.py`: **BUG #1** — `GreybodyFitter.luminosity_distance(z)` (line 840) uses
-  Hubble-law approximation `D_L = c*z/H0`. Diverges ~30% at z=1 from the proper
-  cosmological calculation in `CosmologyCalculator`. Used in `calculate_LIR`, so
-  L_IR ∝ D_L² is systematically wrong at z > ~0.3.
-- `results.py`: **BUG #2** — `calculate_LIR()` (line 761-766) evaluates the greybody
-  model at rest-frame wavelengths (8–1000μm) but with the observed-frame temperature
-  `T_obs`. This is frame mixing: the model was fitted in observed frame, so should
-  either use rest-frame wavelengths with `T_rest`, or observed-frame wavelengths
-  `[8*(1+z), 1000*(1+z)]μm` with `T_obs`. This error is z-dependent and compounds
-  with the D_L bug.
+- `results.py`: ~~**BUG #1**~~ **FIXED** — `GreybodyFitter.luminosity_distance()` now delegates
+  to `CosmologyCalculator` (Planck18 via astropy). Previously used Hubble-law `c*z/H0`.
+  Injected via `cosmology_calc` parameter at init.
+- `results.py`: ~~**BUG #2**~~ **FIXED** — `calculate_LIR()` and `_calculate_LIR_single()` now
+  integrate over observed-frame wavelengths `[8*(1+z), 1000*(1+z)]μm` with T_obs.
+  Previously used rest-frame `[8, 1000]μm`.
+- `results.py`: **Both bugs verified fixed** — `test_luminosity.py` regression tests confirm
+  fitter D_L matches astropy to machine precision, and calculate_LIR matches independent
+  observed-frame integration to < 0.5% at all redshifts z=0.1–3.0.
 - `results.py`: **NOTE on T_dust(z)** — Neither bug directly affects the fitted T_dust
   (the fit is self-consistent in observed frame). However:
   - Fit bounds `T_obs ∈ [12, 55]K` mean `T_rest = T_obs*(1+z)` mechanically scales
@@ -187,62 +186,30 @@ Helper functions (reusable for future tests):
 - [ ] Full pipeline test: TOML config → catalog → maps → stacking → results
 - [ ] Bootstrap error estimation validation (all_bins and per_bin methods)
 
-### Priority 3: Luminosity Estimator Validation
-Goal: Verify the full chain from stacked flux densities → greybody fit → L_IR → SFR.
+### Priority 3: Luminosity Estimator Validation ✅ COMPLETE
+Goal: Verify greybody model → L_IR integration → D_L → SFR chain.
 
-**Known issue (found during audit)**:
-`GreybodyFitter.luminosity_distance()` (results.py line 840) uses a Hubble-law
-approximation `D_L = c*z/H0`, which diverges ~30% at z=1 from the proper cosmological
-calculation in `CosmologyCalculator.luminosity_distance()` (cosmology.py, uses astropy).
-Must decide: use the astropy calculator everywhere, or accept the approximation and
-document it. Recommendation: inject `CosmologyCalculator` into `GreybodyFitter`.
+`tests/test_luminosity.py` — 32 tests, all passing.
 
-**Test 7 — Greybody model sanity**
-- Generate a greybody SED with known (T_dust, β, amplitude)
-- Assert: peak wavelength consistent with Wien's law (λ_peak ∝ 1/T)
-- Assert: Rayleigh-Jeans slope matches ν^(2+β) at long wavelengths
-- Assert: Wien-side power law kicks in at the expected transition frequency
+| Test class | # tests | What it validates |
+|---|---|---|
+| `TestGreybodyModel` | 5 | Wien peak, RJ slope (ν^{2+β}), power-law transition, amplitude scaling, positivity |
+| `TestLIRIntegration` | 3 | Amplitude scaling, T monotonicity, direct integration cross-check |
+| `TestLuminosityDistance` | 6 | Hubble-law divergence (documents BUG #1), low-z accuracy, H0 mismatch, astropy match |
+| `TestFrameMixing` | 6 | Frame mixing at z≈0, divergence vs z (documents BUG #2), monotonic error growth |
+| `TestFluxLuminosityRoundTrip` | 4 | CosmologyCalculator flux↔luminosity inverse, monotonicity |
+| `TestSFRConversion` | 2 | Kennicutt relation, plausible SFR from greybody fit |
+| `TestCombinedLIRErrors` | 2 | Full error budget table, D_L always underestimates |
 
-**Test 8 — L_IR integration (analytical cross-check)**
-- For a pure Planck function (β=0, no power-law tail), L_IR = σ T^4 × (4π R^2)
-  integrated over 8–1000μm. Compare numerical `calculate_LIR` against the
-  analytical fraction of the Stefan-Boltzmann result in that wavelength range.
-- Test at multiple temperatures (20K, 35K, 50K)
+**Key finding**: the two L_IR bugs partially cancel:
+- D_L (BUG #1): underestimates L_IR by 1.9–4.1× at z=0.5–3.0
+- Frame (BUG #2): overestimates L_IR by 1.04–1.31× at z=0.5–3.0
+- Net: L_IR underestimated by 1.78–3.14× (D_L dominates)
 
-**Test 9 — Luminosity distance consistency**
-- Compare `GreybodyFitter.luminosity_distance(z)` vs
-  `CosmologyCalculator.luminosity_distance(z)` at z = 0.1, 0.5, 1.0, 2.0, 4.0
-- Quantify the divergence (expected: ~30% at z=1, worse at higher z)
-- Assert: `CosmologyCalculator` matches astropy to machine precision
-
-**Test 9b — L_IR frame-mixing bug**
-- Generate a known greybody SED (T_rest=35K, β=1.8) at z=0 and z=2
-- Compute L_IR three ways:
-  (a) Current code: `greybody(8-1000μm, A, T_obs, β)` × `4π D_L²` ← WRONG
-  (b) Correct method A: `greybody(8-1000μm, A, T_rest, β)` with proper K-correction
-  (c) Correct method B: `greybody(8*(1+z)-1000*(1+z)μm, A, T_obs, β)` with conversion
-- Assert: methods (b) and (c) agree; quantify how far (a) diverges vs z
-- This directly tests whether the frame mixing explains anomalous L_IR values
-
-**Test 10 — Flux ↔ luminosity round-trip**
-- Pick a known L_IR at a known redshift
-- Convert L_IR → flux via `luminosity_to_flux`
-- Convert flux → L_IR via `flux_to_luminosity`
-- Assert: round-trip recovery to < 0.1%
-- Also test: generate a greybody SED at rest-frame, redshift it, "observe" it,
-  fit it, recover L_IR — should match the input
-
-**Test 11 — SFR from L_IR (Kennicutt relation)**
-- Inject a known L_IR → compute SFR
-- Assert: SFR = L_IR × 1.0e-10 M_sun/yr (Kennicutt 1998) or whichever
-  calibration is implemented
-- Verify error propagation is self-consistent
-
-**Test 12 — End-to-end: synthetic catalog → stacking → SED fit → L_IR**
-- Combine Test 5 (multi-population, multi-map flux recovery) with greybody fitting
-- Inject populations with known greybody SEDs at known redshifts
-- Run full pipeline: stacking → fit SEDs → compute L_IR
-- Assert: recovered L_IR within expected uncertainties of injected values
+**Corrected understanding of BUG #2**: Method A (T_rest at rest-frame wavelengths)
+is NOT a valid correction — amplitude was fitted in observed frame, so changing T
+while keeping A gives wrong normalization. Only Method B (observed-frame wavelengths
+8*(1+z) to 1000*(1+z) μm with T_obs) is correct.
 
 ### Priority 4: Per-Bin Error Estimation
 Goal: Add a `per_bin` error estimation method alongside the existing `all_bins`
@@ -395,6 +362,42 @@ The only difference is *scope of splitting per iteration*.
 - Fixed: replaced unweighted reduced-χ² assertion with residual-std check
 **Next**:
 - Priority 3: luminosity estimator validation (Tests 7–12)
+
+### Session 5 continued — Luminosity Tests
+**Done**:
+- Built `tests/test_luminosity.py` — 32 tests, all passing in 5.8s
+- Corrected understanding of BUG #2 (frame mixing):
+  - Method A (T_rest at rest-frame wavelengths) is NOT valid — amplitude was
+    fitted in observed frame, so changing T invalidates the normalization
+  - Correct fix: integrate observed-frame model over λ_obs = 8(1+z) to 1000(1+z)μm
+  - Frame mixing effect is 4–24% (z=0.5–3), not order-of-magnitude as originally thought
+  - Frame mixing OVERESTIMATES L_IR (opposite direction from D_L bug)
+- Quantified combined error budget:
+  - D_L (BUG #1): underestimates by 1.86× to 4.10× at z=0.5–3.0
+  - Frame (BUG #2): overestimates by 1.04× to 1.31× at z=0.5–3.0
+  - Net: L_IR underestimated by 1.78× to 3.14× (bugs partially cancel)
+- Discovered H0 mismatch: fitter uses H0=70, Planck18 has H0=67.7 → 3.4% baseline
+  D_L offset even at z→0. Separate issue from Hubble-law breakdown.
+- Total test suite: 48 tests (16 stacking + 32 luminosity), all passing
+**Next**:
+- Fix the bugs (replace GreybodyFitter.luminosity_distance with CosmologyCalculator,
+  fix calculate_LIR integration range) — tests become regression guards
+- Priority 4: per_bin error estimation
+
+### Session 5 continued — Bug Fixes
+**Done**:
+- **BUG #1 fixed**: Added `cosmology_calc` parameter to `GreybodyFitter.__init__`.
+  `luminosity_distance()` now delegates to `CosmologyCalculator` (Planck18/astropy).
+  Falls back to Hubble-law with warning if astropy unavailable. Removed hardcoded
+  `self.H0 = 70` / `self.Om0 = 0.3`. Wired through at `ResultsProcessor` instantiation
+  site (both `GreybodyFitter` and `CovarianceGreybodyFitter` via `**kwargs`).
+- **BUG #2 fixed**: Changed integration range in `calculate_LIR()` and
+  `_calculate_LIR_single()` from `[8, 1000]μm` to `[8*(1+z), 1000*(1+z)]μm`.
+- **Tests updated**: Flipped 12 bug-documenting tests into regression tests that
+  assert errors are now *absent*. All 48 tests pass (16 stacking + 32 luminosity).
+- Code changes in `results.py` only; verified with `ast.parse()`.
+**Next**:
+- Priority 4: per_bin error estimation
 
 ---
 
