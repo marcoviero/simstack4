@@ -99,22 +99,27 @@ Total: ~11,800 lines Python
 - `results.py`: ~~**BUG #1**~~ **FIXED** — `GreybodyFitter.luminosity_distance()` now delegates
   to `CosmologyCalculator` (Planck18 via astropy). Previously used Hubble-law `c*z/H0`.
   Injected via `cosmology_calc` parameter at init.
-- `results.py`: ~~**BUG #2**~~ **FIXED** — `calculate_LIR()` and `_calculate_LIR_single()` now
-  integrate over observed-frame wavelengths `[8*(1+z), 1000*(1+z)]μm` with T_obs.
-  Previously used rest-frame `[8, 1000]μm`.
-- `results.py`: **Both bugs verified fixed** — `test_luminosity.py` regression tests confirm
-  fitter D_L matches astropy to machine precision, and calculate_LIR matches independent
-  observed-frame integration to < 0.5% at all redshifts z=0.1–3.0.
-- `results.py`: **NOTE on T_dust(z)** — Neither bug directly affects the fitted T_dust
-  (the fit is self-consistent in observed frame). However:
-  - Fit bounds `T_obs ∈ [12, 55]K` mean `T_rest = T_obs*(1+z)` mechanically scales
-    with z. At z=3, T_rest is bounded to [48, 220]K.
-  - If T_obs hits the upper bound, T_rest rises linearly with z — which could mimic
-    rapid T_dust evolution.
-  - Both L_IR bugs corrupt the T–L relationship, which could cause misinterpretation
-    of T_dust trends.
-  - Needs investigation: are the observed T_dust(z) trends real, or artifacts of
-    bounds/L_IR errors?
+- `results.py`: ~~**BUG #2**~~ **FIXED** — SED fitting now operates in rest frame.
+  `fit_sed()` transforms λ_obs → λ_rest = λ_obs/(1+z) before fitting, so the
+  temperature parameter is T_rest directly. Bounds [15, 60]K are stable at all z.
+  `calculate_LIR()` integrates rest-frame model over 8–1000μm with 1/(1+z) factor.
+- `results.py`: **Both bugs verified fixed** — `test_luminosity.py` (32 tests) confirms
+  D_L matches astropy to machine precision, and `calculate_LIR` matches independent
+  rest-frame integration to < 0.5% at all redshifts z=0.1–3.0.
+- `results.py`: ~~**T_dust(z) investigation**~~ **FIXED** — The old observed-frame fitter
+  had hard bounds T_obs ∈ [12, 55]K that clamped T_obs at z > 1.5 (where T_obs_true < 12K),
+  biasing T_rest by +3K at z=2, +8K at z=3, +11K at z=4, and inflating L_IR by up to 2.8×.
+  Additionally, `schreiber_temperature_prior()` had a hardcoded σ=2K override (line 258)
+  that killed the z-dependent sigma, and clipped T_obs at 15K. All fixed by moving to
+  rest-frame fitting:
+  - `fit_sed()`: transforms to rest frame, fits T_rest with stable [15, 60]K bounds
+  - `schreiber_temperature_prior()`: returns T_rest (not T_obs), z-dependent σ (3–5K)
+  - `log_prior()`: rest-frame bounds [15, 60]K
+  - `calculate_LIR()`: rest-frame integration with 1/(1+z) bandwidth factor
+  - MCMC paths (`run_mcmc`, `run_mcmc_with_covariance`): return `temperature_rest_frame`
+  - Duplicate MCMC run block in `run_mcmc()` removed
+  - `_calculate_derived_quantities()`: passes T_rest to `calculate_LIR`/`calculate_dust_mass`
+  - `test_sed_fitting.py` (51 tests) validates recovery z=0→4, MCMC, covariance, dust mass
 
 ---
 
@@ -148,10 +153,9 @@ Goal: Remove debris so the codebase is honest about what it does.
 - populations.py: 721 → 719 (-2 lines, validation restored)
 - sky_maps.py: 508 → 505 (-3 lines, pdb removed)
 
-**NOTE for Priority 4**: `_run_bootstrap_stacking()` currently uses bootstrap mean as
-flux estimates, not the full solve. The full solve IS run (line 228) but only for
-systematic errors. Should be changed to match agreed design (full solve = fluxes,
-iterations = errors only).
+**NOTE**: `_run_all_bins_error_estimation()` correctly uses full-solve fluxes (verified
+Session 8). The full solve IS run (line 244) for flux estimates; bootstrap iterations
+provide errors only.
 
 ### Priority 2: Escalating Test Suite — IN PROGRESS
 Goal: Validate the core linear algebra with known-answer tests, building up complexity.
@@ -196,7 +200,7 @@ Goal: Verify greybody model → L_IR integration → D_L → SFR chain.
 | `TestGreybodyModel` | 5 | Wien peak, RJ slope (ν^{2+β}), power-law transition, amplitude scaling, positivity |
 | `TestLIRIntegration` | 3 | Amplitude scaling, T monotonicity, direct integration cross-check |
 | `TestLuminosityDistance` | 6 | Hubble-law divergence (documents BUG #1), low-z accuracy, H0 mismatch, astropy match |
-| `TestFrameMixing` | 6 | Frame mixing at z≈0, divergence vs z (documents BUG #2), monotonic error growth |
+| `TestFrameMixing` | 6 | Rest-frame L_IR integration consistency across z, monotonicity |
 | `TestFluxLuminosityRoundTrip` | 4 | CosmologyCalculator flux↔luminosity inverse, monotonicity |
 | `TestSFRConversion` | 2 | Kennicutt relation, plausible SFR from greybody fit |
 | `TestCombinedLIRErrors` | 2 | Full error budget table, D_L always underestimates |
@@ -206,10 +210,12 @@ Goal: Verify greybody model → L_IR integration → D_L → SFR chain.
 - Frame (BUG #2): overestimates L_IR by 1.04–1.31× at z=0.5–3.0
 - Net: L_IR underestimated by 1.78–3.14× (D_L dominates)
 
-**Corrected understanding of BUG #2**: Method A (T_rest at rest-frame wavelengths)
-is NOT a valid correction — amplitude was fitted in observed frame, so changing T
-while keeping A gives wrong normalization. Only Method B (observed-frame wavelengths
-8*(1+z) to 1000*(1+z) μm with T_obs) is correct.
+**Final resolution**: All fitting moved to rest frame (Session 8). The observed-frame
+approach was mathematically self-consistent but made temperature bounds management
+fragile at high z. Rest-frame fitting eliminates the problem entirely:
+- λ_rest = λ_obs / (1+z), T parameter = T_rest, bounds [15, 60]K stable at all z
+- L_IR = 4πD_L²/(1+z) × ∫ model(λ_rest) dν_rest over 8–1000μm
+- No frame conversions needed in the fitting chain
 
 ### Priority 4: Per-Bin Error Estimation ✅ COMPLETE
 Goal: Add a `per_bin` error estimation method alongside the existing `all_bins`
@@ -487,17 +493,63 @@ But `crop_circles=False` gave biased results (-7% to -24%).
 - `test_crop_circles_true`: recovery exact with 15% zero-pixel borders
 - `test_crop_circles_false`: regression test — previously failed, now passes
 
-**Total: 71 tests passing** (16 stacking + 35 luminosity + 10 per_bin + 10 integration)
+**Total: 119 tests passing** (16 stacking + 32 luminosity + 10 per_bin + 10 integration + 51 SED fitting)
 
 **Remaining work (backlog)**:
 - Per-bin diagnostics: flag bins where per_bin >> formal error
 - test_basic.py stale import (ClassificationBins no longer exists)
 - wrapper.py: 1865 lines of serialize/deserialize/reconstruct, untested
-- results.py SED fitting chain: GreybodyFitter + CovarianceGreybodyFitter + MCMC — 
-  no tests beyond L_IR regression tests
-- T_dust(z) investigation: are observed T_dust trends real or artifacts of old bugs?
-- Bootstrap flux design: `_run_all_bins_error_estimation()` still uses bootstrap mean
-  for flux estimates (should use full-solve fluxes)
+- Cache full layer matrix in per_bin path (currently rebuilds each iteration — correct but slower)
+
+### Session 8 — 2026-02-17: T_dust Rest-Frame Fix + SED Fitting Tests
+
+**Problem investigated**: `GreybodyFitter.fit_sed()` operated in observed frame with
+hard T_obs bounds [12, 55]K. At z > 1.5, the physically correct T_obs drops below 12K,
+clamping the fit and biasing T_rest by +3K (z=2) to +11K (z=4). L_IR inflated by up
+to 2.8× at z=3. Additionally, `schreiber_temperature_prior()` had a hardcoded σ=2K
+override and clipped T_obs at 15K.
+
+**Fix — rest-frame fitting**:
+- `fit_sed()`: transforms λ_obs → λ_rest = λ_obs/(1+z) before fitting. Temperature
+  parameter is T_rest with stable bounds [15, 60]K at all redshifts.
+- `schreiber_temperature_prior()`: returns (T_rest, σ) where σ is z-dependent (3–5K).
+  Removed hardcoded σ=2K override and 15K clip.
+- `log_prior()`: rest-frame bounds [15, 60]K, Gaussian prior centered on Schreiber T_rest.
+- `_get_initial_guess()`: rest-frame T guess and bounds.
+- `calculate_LIR()`: integrates model over rest-frame 8–1000μm with 1/(1+z) bandwidth
+  factor: L_IR = 4πD_L² / (1+z) × ∫ S_ν dν_rest.
+- MCMC: `run_mcmc()` and `run_mcmc_with_covariance()` return `temperature_rest_frame`.
+  Fixed duplicate MCMC run block. Walker initialization uses rest-frame T bounds.
+- `_calculate_derived_quantities()`: passes T_rest (not T_obs) to `calculate_LIR`
+  and `calculate_dust_mass`. MCMC sample loop no longer applies ×(1+z) to T samples
+  (they're already T_rest).
+- `test_luminosity.py`: Updated `TestFrameMixing` and `TestCombinedLIRErrors` for
+  rest-frame API (independent integration now uses 8–1000μm with 1/(1+z) factor).
+
+**Verification**: Synthetic SED recovery now accurate to < 1K across z=0.25–4.0
+(was failing at z ≥ 2 with +3K to +11K bias).
+
+**Confirmed non-issues**:
+- `_run_all_bins_error_estimation()` already uses full-solve fluxes (not bootstrap mean)
+- Bootstrap implementation intact and correct after earlier compaction
+
+**Tests added**: `tests/test_sed_fitting.py` — 51 tests covering:
+
+| Test class | # tests | What it validates |
+|---|---|---|
+| `TestFitSEDRestFrame` | 11 | Rest-frame transform, T_rest recovery z=0→4, hot/cold dust, T_obs↔T_rest consistency, wavelengths_fit in rest frame |
+| `TestFitSEDOutputContract` | 5 | Required keys, types, failure mode, amplitude recovery, χ² |
+| `TestFreeBeta` | 1 | Free-beta recovery |
+| `TestSchreiberPrior` | 4 | Returns T_rest, z-dependent σ, no σ=2K hardcode, prior effect |
+| `TestLogPrior` | 6 | [15,60]K rest-frame bounds, amplitude bounds, Gaussian shape |
+| `TestCovarianceFitter` | 3 | Basic fit, matches base fitter, error inflation |
+| `TestMCMCFitting` | 4 | MCMC succeeds, returns T_rest, samples shape, samples in rest-frame range |
+| `TestMCMCWithCovariance` | 1 | MCMC+covariance path |
+| `TestDustMass` | 4 | Positive, scales with amplitude/distance, NaN handling |
+| `TestLIRRestFrame` | 6 | Positive, fit↔direct consistency, physically reasonable across z |
+| `TestEndToEndHighZ` | 7 | z=3 full chain, no clamping bias, L_IR not inflated at z=1→4 |
+
+**Total: 119 tests passing** (16 stacking + 32 luminosity + 10 per_bin + 10 integration + 51 SED fitting)
 
 ---
 
@@ -511,6 +563,7 @@ But `crop_circles=False` gave biased results (-7% to -24%).
 | No sources ever dropped | A + B = full set always; split fraction is configurable |
 | `per_bin` approach for memory savings | Memory scales as (N_pop + 1) × N_pix, not 2 × N_pop × N_pix |
 | Use CosmologyCalculator for all D_L | GreybodyFitter's Hubble-law approx is wrong at z > 0.3; also fix frame mixing in L_IR |
+| Fit SED in rest frame (T parameter = T_rest) | Stable bounds [15, 60]K at all z; avoids T_obs clamping that biased high-z fits |
 | Support both `all_bins` and `per_bin` | Can compare joint vs isolated variance; user chooses |
 | Test framework: pytest with synthetic data | Known-answer tests; no dependency on real FITS files |
 | Keep generalized binning (arbitrary dimensions) | Already implemented and working on this branch |
@@ -547,8 +600,7 @@ entire repo every time — the context file has the architecture map.
 - `StackingResults`: expanded dataclass with bootstrap fields
 - `SimstackAlgorithm`: main class
   - `run_stacking()` → dispatches to bootstrap or single path
-  - `_run_bootstrap_stacking()` → `all_bins` approach (split every bin simultaneously)
-    - NOTE: currently uses bootstrap mean as flux estimate — needs Priority 4 fix
+  - `_run_all_bins_error_estimation()` → all-bins bootstrap (full-solve fluxes, bootstrap std for errors)
   - `_run_single_stacking()` → non-bootstrap path
   - `_stack_single_map_with_bootstrap_splits()` → builds A/B layer specs, delegates
   - `_stack_single_map_standard()` → builds standard layer specs, delegates
@@ -558,7 +610,7 @@ entire repo every time — the context file has the architecture map.
   - `_crop_to_circles()` → spatial masking around source positions
   - `_solve_linear_system()` → scipy.linalg.lstsq (WLS if noise map available)
   - `_compile_results()` → assembles StackingResults dataclass
-  - **TO ADD**: `_run_per_bin_error_estimation()` → new `per_bin` approach
+  - `_run_per_bin_error_estimation()` → per-bin bootstrap (one population split at a time)
 
 ### cosmology.py (344 lines)
 - `CosmologyCalculator`: proper astropy-based cosmology (Planck15/18)
@@ -582,22 +634,22 @@ entire repo every time — the context file has the architecture map.
 - `PopulationManager`: uses `itertools.product` over arbitrary dimensions
 - Legacy `@property` accessors: `redshift_range`, `stellar_mass_range`, etc.
 
-### results.py (2155 lines)
+### results.py (~2120 lines)
 - `GreybodyFitter`: modified blackbody SED fitting (T_dust, β, amplitude)
   - `greybody_model()`: modified BB + Wien-side power law
-  - `fit_sed()`: fits in observed frame; T_obs bounded [12, 55]K; T_rest = T_obs*(1+z)
-  - `calculate_LIR()`: integrates model SED over 8–1000μm → L_sun
-    - **BUG #1**: uses Hubble-law D_L (`c*z/H0`), not proper cosmology
-    - **BUG #2**: evaluates observed-frame model at rest-frame wavelengths (frame mixing)
-  - `luminosity_distance()`: Hubble-law only — must be replaced with CosmologyCalculator
-  - `calculate_dust_mass()`: from fit parameters (also uses broken D_L)
+  - `fit_sed()`: fits in REST FRAME; λ_obs → λ_rest = λ_obs/(1+z); T_rest bounded [15, 60]K
+  - `calculate_LIR()`: integrates rest-frame model over 8–1000μm with 1/(1+z) factor → L_sun
+  - `luminosity_distance()`: delegates to `CosmologyCalculator` (Planck18 via astropy)
+  - `calculate_dust_mass()`: from rest-frame fit parameters + proper D_L
+  - `schreiber_temperature_prior()`: returns (T_rest, σ), z-dependent σ (3–5K)
+  - `log_prior()`: rest-frame T bounds [15, 60]K + optional Schreiber Gaussian prior
 - `CovarianceGreybodyFitter`: correlated errors via Cholesky decomposition
+  - `fit_sed_with_covariance()`: transforms to rest frame, sets up covariance, delegates to super
+  - `run_mcmc_with_covariance()`: MCMC with covariance-aware likelihood, returns T_rest
 - MCMC support via emcee (optional)
 - `SimstackResults`: post-processing, luminosity integration, SFR calculation
-  - `_create_sed_for_population()`: uses observed-frame wavelengths from map config
-    (correct), but note: also uses `CosmologyCalculator.flux_to_luminosity()` for
-    rest-frame luminosities, which has a hardcoded K-correction — inconsistent with
-    the greybody-based K-correction implicit in the SED fit
+  - `_calculate_derived_quantities()`: passes T_rest to calculate_LIR/calculate_dust_mass
+  - MCMC samples are [amplitude, T_rest] — no frame conversion needed
 
 ### wrapper.py (1865 lines)
 - `EnhancedJSONEncoder`: numpy/pandas/enum serialization
