@@ -313,69 +313,74 @@ class TestLuminosityDistance:
 
 class TestFrameMixing:
     """
-    Verify that calculate_LIR uses correct observed-frame integration range.
+    Verify that calculate_LIR uses correct rest-frame integration.
 
-    Previously integrated over rest-frame wavelengths (8-1000um) with T_obs (BUG #2, fixed).
-    Now integrates over observed-frame wavelengths [8*(1+z), 1000*(1+z)]um with T_obs.
+    The fitter now works in rest frame: temperature parameter is T_rest,
+    and L_IR integrates model(λ_rest) over rest-frame 8–1000μm with a
+    1/(1+z) factor for the frame transformation of S_ν dν.
     """
 
     def test_frame_consistency_at_z0(self, fitter):
         """At z~0, observed and rest frames are the same."""
-        amp, temp, beta = -34.0, 35.0, 1.8
+        amp, T_rest, beta = -34.0, 35.0, 1.8
 
-        L_method, _ = fitter.calculate_LIR(amp, temp, beta, redshift=0.01)
-        L_direct = self._integrate_lir_observed_frame(fitter, amp, temp, beta, z=0.01)
+        L_method, _ = fitter.calculate_LIR(amp, T_rest, beta, redshift=0.01)
+        L_direct = self._integrate_lir_rest_frame(fitter, amp, T_rest, beta, z=0.01)
 
         assert L_method == pytest.approx(L_direct, rel=0.01)
 
     @pytest.mark.parametrize("z", [0.5, 1.0, 2.0, 3.0])
     def test_frame_consistency_at_high_z(self, fitter, z):
         """
-        calculate_LIR should agree with independent observed-frame
+        calculate_LIR should agree with independent rest-frame
         integration at all redshifts (< 0.5% from numerical differences).
         """
-        amp, temp_obs, beta = -34.0, 35.0, 1.8
+        amp, T_rest, beta = -34.0, 35.0, 1.8
 
-        L_method, _ = fitter.calculate_LIR(amp, temp_obs, beta, redshift=z)
-        L_direct = self._integrate_lir_observed_frame(fitter, amp, temp_obs, beta, z)
+        L_method, _ = fitter.calculate_LIR(amp, T_rest, beta, redshift=z)
+        L_direct = self._integrate_lir_rest_frame(fitter, amp, T_rest, beta, z)
 
         ratio = L_method / L_direct
         assert ratio == pytest.approx(1.0, abs=0.005), (
             f"z={z}: calculate_LIR / direct integration = {ratio:.4f}, expected ~1.0"
         )
 
-    def test_lir_increases_with_redshift_for_fixed_model(self, fitter):
+    def test_lir_increases_with_redshift_for_fixed_rest_frame_model(self, fitter):
         """
-        For fixed (A, T_obs, beta), L_IR should increase with z because
-        D_L grows and the integration range shifts to capture more flux.
+        For fixed (A, T_rest, beta), L_IR should increase with z because
+        D_L grows faster than the 1/(1+z) suppression.
         """
-        amp, temp_obs, beta = -34.0, 35.0, 1.8
+        amp, T_rest, beta = -34.0, 35.0, 1.8
 
         lir_values = []
         for z in [0.1, 0.5, 1.0, 2.0]:
-            L, _ = fitter.calculate_LIR(amp, temp_obs, beta, z)
+            L, _ = fitter.calculate_LIR(amp, T_rest, beta, z)
             lir_values.append(L)
 
         for i in range(len(lir_values) - 1):
             assert lir_values[i + 1] > lir_values[i]
 
     @staticmethod
-    def _integrate_lir_observed_frame(fitter, amplitude, temperature, beta, z):
+    def _integrate_lir_rest_frame(fitter, amplitude, T_rest, beta, z):
         """
-        Correct L_IR: integrate observed-frame model over the observed-frame
-        wavelength range corresponding to rest-frame 8–1000μm.
-        """
-        wav_obs_min = 8.0 * (1 + z)
-        wav_obs_max = 1000.0 * (1 + z)
+        Independent L_IR calculation in rest frame.
 
-        wavelengths = np.logspace(np.log10(wav_obs_min), np.log10(wav_obs_max), 2000)
-        sed = fitter.greybody_model(wavelengths, amplitude, temperature, beta)
+        L_IR = 4π D_L² / (1+z) × ∫(8–1000 μm rest) model(λ_rest, A, T_rest) dν_rest
+
+        The 1/(1+z) accounts for the cosmological bandwidth compression:
+        the model gives observed flux density S_ν, and dν_rest = (1+z) dν_obs,
+        so ∫ S_ν dν_rest = (1+z) ∫ S_ν dν_obs, but we need ∫ L_ν dν_rest
+        which has an extra 4πD_L² factor but the S_ν already has the (1+z)
+        built in via the K-correction. The net effect is dividing by (1+z).
+        """
+        wavelengths = np.logspace(np.log10(8.0), np.log10(1000.0), 2000)
+        sed = fitter.greybody_model(wavelengths, amplitude, T_rest, beta)
 
         c_light = 299792458.0
         nu = c_light * 1e6 / wavelengths
         dnu = np.abs(np.diff(nu))
         dnu = np.append(dnu[0], dnu)
-        integral_jy_hz = np.sum(sed * dnu)
+        integral_jy_hz = np.sum(sed * dnu) / (1 + z)
 
         D_L_mpc = fitter.luminosity_distance(z)
         D_L_m = D_L_mpc * 3.08568025e22
@@ -496,32 +501,30 @@ class TestSFRConversion:
 
 class TestCombinedLIRErrors:
     """
-    Verify that both bugs are fixed: L_IR computed by calculate_LIR
-    should now match an independent correct calculation.
+    Verify that L_IR computed by calculate_LIR matches an independent
+    rest-frame calculation.
     """
 
     def test_lir_accuracy_vs_independent_calculation(self, fitter, cosmo):
         """
         Compare calculate_LIR against an independent implementation
-        using proper D_L and observed-frame integration.
+        using proper D_L and rest-frame integration.
         Should agree to < 0.5% (numerical integration differences).
         """
-        amp, temp_obs, beta = -34.0, 35.0, 1.8
+        amp, T_rest, beta = -34.0, 35.0, 1.8
 
         for z in [0.1, 0.5, 1.0, 2.0, 3.0]:
-            # calculate_LIR (now fixed)
-            L_method, _ = fitter.calculate_LIR(amp, temp_obs, beta, z)
+            # calculate_LIR (rest-frame API)
+            L_method, _ = fitter.calculate_LIR(amp, T_rest, beta, z)
 
-            # Independent calculation with proper D_L and observed-frame range
-            wav_min = 8.0 * (1 + z)
-            wav_max = 1000.0 * (1 + z)
-            wavelengths = np.logspace(np.log10(wav_min), np.log10(wav_max), 2000)
-            sed = fitter.greybody_model(wavelengths, amp, temp_obs, beta)
+            # Independent: rest-frame integration with 1/(1+z) factor
+            wavelengths = np.logspace(np.log10(8.0), np.log10(1000.0), 2000)
+            sed = fitter.greybody_model(wavelengths, amp, T_rest, beta)
             c_light = 299792458.0
             nu = c_light * 1e6 / wavelengths
             dnu = np.abs(np.diff(nu))
             dnu = np.append(dnu[0], dnu)
-            integral = np.sum(sed * dnu)
+            integral = np.sum(sed * dnu) / (1 + z)
             D_L_m = cosmo.luminosity_distance(z) * 3.08568025e22
             L_independent = 4.0 * np.pi * D_L_m**2 * integral * 1e-26 / fitter.L_sun
 
