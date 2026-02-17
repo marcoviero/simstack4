@@ -40,6 +40,7 @@ class MapData:
     color_correction: float
     map_name: str
     units: str = "Jy/beam"
+    valid_pixel_mask: np.ndarray | None = None  # True where observed (non-NaN, non-zero)
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -272,8 +273,10 @@ class SkyMaps:
 
     def _apply_mean_subtraction(self, map_data: MapData) -> None:
         """Subtract mean from maps using only non-zero, non-NaN pixels"""
-        # Identify signal pixels
+        # Identify signal pixels (must be done BEFORE subtraction,
+        # since subtraction can make signal pixels exactly zero)
         signal_mask = ~np.isnan(map_data.data) & (map_data.data != 0.0)
+        map_data.valid_pixel_mask = signal_mask  # store for layer consistency
         n_signal_pixels = np.sum(signal_mask)
 
         if n_signal_pixels == 0:

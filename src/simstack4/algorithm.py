@@ -544,8 +544,15 @@ class SimstackAlgorithm:
         # Convolve with PSF
         convolved_layer = self.sky_maps.convolve_with_psf(source_layer, map_name)
 
-        # Remove mean and flatten
-        convolved_layer -= np.nanmean(convolved_layer)
+        # Remove mean over same valid pixels used for map mean subtraction.
+        # Using a different pixel set (e.g., all pixels including unobserved
+        # zeros) causes systematic flux underestimation.
+        valid_mask = map_data.valid_pixel_mask
+        if valid_mask is not None and np.any(valid_mask):
+            convolved_layer[valid_mask] -= np.mean(convolved_layer[valid_mask])
+            convolved_layer[~valid_mask] = 0.0
+        else:
+            convolved_layer -= np.nanmean(convolved_layer)
         return convolved_layer.ravel()
 
     def _crop_to_circles(

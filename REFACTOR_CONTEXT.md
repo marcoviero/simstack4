@@ -438,9 +438,66 @@ simultaneous splitting.
 - Added routing in `run_stacking()`, validation in `__init__`
 - 10 tests in `test_per_bin_errors.py`, all passing
 - Total: 58 project tests passing (16 stacking + 32 luminosity + 10 per_bin)
-**Next**:
-- Integration testing through full TOML→stacking→results pipeline
-- Consider adding per_bin diagnostics (flag bins where per_bin >> formal error)
+
+### Session 6 — 2026-02-16: Integration Tests + Bug Fix Verification
+
+**Done**:
+- Verified all 8 integration tests pass (test_integration.py, already on GitHub)
+  - TOML config → load_config → SkyMaps (FITS) → PopulationManager (CSV)
+  - Noiseless flux recovery (exact match to injected truth)
+  - Foreground layer ≈ 0 when no background present
+  - Population source counts preserved through pipeline
+  - Noisy recovery within expected errors
+  - Bootstrap all_bins completes without error
+  - Bootstrap per_bin completes without error
+- Verified both L_IR bugs are FIXED in code (done in prior session, confirmed here):
+  - BUG #1 (D_L): `GreybodyFitter.luminosity_distance()` now uses `CosmologyCalculator`
+    (Hubble-law c*z/H0 retained only as fallback if astropy unavailable)
+  - BUG #2 (frame mixing): `_calculate_LIR_single()` now integrates over
+    λ_obs = 8*(1+z) to 1000*(1+z) μm with T_obs (not rest-frame 8–1000μm)
+  - Key insight: Method A (T_rest at rest-frame wavelengths) is NOT valid because
+    amplitude was fitted in observed frame. Only Method B (observed-frame λ with T_obs)
+    correctly computes L_IR from fitted parameters.
+  - Tests updated: `test_fitter_matches_cosmology_calculator`, `test_frame_consistency_at_high_z`
+- 3 bonus tests in luminosity suite (69 vs 66 from last count)
+- Total: **69 project tests passing** (16 stacking + 35 luminosity + 10 per_bin + 8 integration)
+
+### Session 7 — 2026-02-16: Mean Subtraction Bias Fix
+
+**Problem**: Layer mean subtraction used global `nanmean` (all pixels including
+unobserved zeros), while map mean subtraction used only non-zero pixels. This
+mismatch caused 5-25% systematic flux underestimation on maps with unobserved
+border regions (zeros at edges, typical for Herschel).
+
+**Analysis**: Three mean subtractions in the pipeline:
+1. Map load (`sky_maps.py:286`): mean of non-zero, non-NaN pixels only
+2. Layer creation (`algorithm.py:548`): `nanmean` of entire layer (including zeros) ← BUG
+3. Crop circles (`algorithm.py:596`): re-mean-subtract cropped region
+
+The defaults (`crop_circles=True`, `add_foreground=True`) masked the bug — the
+crop region re-mean-subtraction + constant foreground absorbed the DC offset.
+But `crop_circles=False` gave biased results (-7% to -24%).
+
+**Fix**:
+- `MapData` gets `valid_pixel_mask` field, set during map loading (before mean sub)
+- `_create_and_convolve_layer` mean-subtracts layers over `valid_pixel_mask`
+- Unobserved pixels zeroed out in layers
+
+**Tests added**: `TestPartialCoverage` in `test_integration.py`:
+- `test_crop_circles_true`: recovery exact with 15% zero-pixel borders
+- `test_crop_circles_false`: regression test — previously failed, now passes
+
+**Total: 71 tests passing** (16 stacking + 35 luminosity + 10 per_bin + 10 integration)
+
+**Remaining work (backlog)**:
+- Per-bin diagnostics: flag bins where per_bin >> formal error
+- test_basic.py stale import (ClassificationBins no longer exists)
+- wrapper.py: 1865 lines of serialize/deserialize/reconstruct, untested
+- results.py SED fitting chain: GreybodyFitter + CovarianceGreybodyFitter + MCMC — 
+  no tests beyond L_IR regression tests
+- T_dust(z) investigation: are observed T_dust trends real or artifacts of old bugs?
+- Bootstrap flux design: `_run_all_bins_error_estimation()` still uses bootstrap mean
+  for flux estimates (should use full-solve fluxes)
 
 ---
 
