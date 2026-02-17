@@ -264,16 +264,19 @@ class SimstackAlgorithm:
         """
         Per-bin bootstrap: split one population at a time, hold others fixed.
 
+        Caches the base layer matrix and crop mask per map so that each
+        iteration only rebuilds the 2 layers (A/B) that actually change.
+
         1. Full solve (all sources, no splitting) → flux estimates
-        2. For each population k, for each map:
-             - Cache the full layer matrix (N_pop layers)
+        2. For each map: build base layers + crop data (cached)
+        3. For each population k, for each map:
              - For M iterations:
-                 - Split only population k into A/B
-                 - Replace row k with A_layer and B_layer → N_pop+1 layers
-                 - Solve full system
-                 - flux_k[i] = flux_A_k + flux_B_k
+                 - Build only A and B layers for pop k (2 PSF convolutions)
+                 - Splice into cached base → (N_pop+1) × N_pix matrix
+                 - Solve
+                 - flux_k[i] = flux_A + flux_B
              - uncertainty_k = std(flux_k[1..M])
-        3. Combine: flux from step 1, uncertainty from step 2
+        4. Combine: flux from step 1, uncertainty from step 3
         """
         population_ids = list(self.population_manager.populations.keys())
         n_populations = len(population_ids)
@@ -288,8 +291,14 @@ class SimstackAlgorithm:
         for map_name in self.sky_maps.maps.keys():
             full_solve_results[map_name] = self._stack_single_map_standard(map_name)
 
-        # Step 2: Per-bin error estimation
-        # errors[map_name][pop_index] = std across iterations
+        # Step 2: Cache base layers and crop data per map
+        map_cache = {}
+        for map_name in self.sky_maps.maps.keys():
+            map_cache[map_name] = self._build_per_bin_cache(
+                map_name, population_ids
+            )
+
+        # Step 3: Per-bin error estimation
         per_bin_errors = {
             map_name: np.zeros(n_populations)
             for map_name in self.sky_maps.maps.keys()
@@ -311,13 +320,7 @@ class SimstackAlgorithm:
                 self.progress_tracker.update(k + 1, map_name,
                     f"per_bin: {pop_id}")
 
-                # Build base layer specs (all populations, unsplit)
-                base_layer_specs = []
-                for pid in population_ids:
-                    pop = self.population_manager.populations[pid]
-                    base_layer_specs.append((pid, pop.indices))
-
-                # Collect flux_k across iterations
+                cache = map_cache[map_name]
                 flux_k_samples = []
 
                 for iteration in range(self.bootstrap_iterations):
@@ -334,41 +337,54 @@ class SimstackAlgorithm:
                     indices_A = shuffled[:n_A]
                     indices_B = shuffled[n_A:]
 
-                    # Build layer specs: replace pop k with A and B
-                    layer_specs = []
-                    for j, pid in enumerate(population_ids):
-                        if j == k:
-                            layer_specs.append((f"{pid}_A", indices_A))
-                            layer_specs.append((f"{pid}_B", indices_B))
-                        else:
-                            pop = self.population_manager.populations[pid]
-                            layer_specs.append((pid, pop.indices))
+                    # Build only the 2 split layers (the only work per iteration)
+                    layer_A = self._build_single_layer(map_name, indices_A)
+                    layer_B = self._build_single_layer(map_name, indices_B)
+
+                    # Crop to cached pixel mask
+                    layer_A_cropped = layer_A[cache["pixel_indices"]]
+                    layer_B_cropped = layer_B[cache["pixel_indices"]]
+
+                    # Assemble iteration matrix: base with row k → [A, B]
+                    # base_layers_cropped is (N_pop, N_cropped_pix)
+                    # Result is (N_pop+1, N_cropped_pix)
+                    iter_matrix = np.empty(
+                        (n_populations + 1, cache["n_pixels"]),
+                        dtype=cache["base_layers_cropped"].dtype,
+                    )
+                    # Rows before k: unchanged base layers
+                    iter_matrix[:k] = cache["base_layers_cropped"][:k]
+                    # Row k: A layer
+                    iter_matrix[k] = layer_A_cropped
+                    # Row k+1: B layer
+                    iter_matrix[k + 1] = layer_B_cropped
+                    # Rows after k: shifted by 1 from base
+                    iter_matrix[k + 2:] = cache["base_layers_cropped"][k + 1:]
+
+                    # Add foreground if requested
+                    if self.add_foreground:
+                        iter_matrix = np.vstack([
+                            iter_matrix, cache["foreground_row"][np.newaxis, :]
+                        ])
 
                     # Solve
-                    solve_result = self._stack_single_map(map_name, layer_specs)
-                    fluxes = solve_result["flux_densities"]
+                    flux_densities, _, _ = self._solve_linear_system(
+                        iter_matrix, cache["observed_vector"], cache["map_data"]
+                    )
 
-                    # Extract A and B fluxes for population k
-                    # Layer order: pop_0, ..., pop_{k-1}, pop_k_A, pop_k_B, pop_{k+1}, ...
-                    # So A is at index k, B is at index k+1
-                    # But if add_foreground, there's an extra layer at the end
-                    flux_A_k = fluxes[k]
-                    flux_B_k = fluxes[k + 1]
-                    flux_k_total = flux_A_k + flux_B_k
+                    # A is at index k, B at index k+1
+                    flux_k_total = flux_densities[k] + flux_densities[k + 1]
                     flux_k_samples.append(flux_k_total)
 
                 per_bin_errors[map_name][k] = np.std(flux_k_samples, ddof=1)
 
-        # Step 3: Combine full-solve fluxes with per-bin errors
+        # Step 4: Combine full-solve fluxes with per-bin errors
         final_results = {}
         for map_name in self.sky_maps.maps.keys():
             full = full_solve_results[map_name]
 
-            # Match error array length to flux array
-            # (full solve includes foreground if enabled)
             errors = per_bin_errors[map_name]
             if self.add_foreground:
-                # Append 0 error for foreground layer
                 errors = np.append(errors, 0.0)
 
             final_results[map_name] = {
@@ -387,6 +403,78 @@ class SimstackAlgorithm:
             )
 
         return final_results
+
+    def _build_per_bin_cache(
+        self, map_name: str, population_ids: list[str]
+    ) -> dict[str, Any]:
+        """
+        Build cached base layers and crop data for a single map.
+
+        Returns dict with:
+          base_layers_cropped: (N_pop, N_pix) array of cropped base layers
+          pixel_indices: flat indices for cropping full layers
+          observed_vector: cropped+mean-subtracted observed map
+          foreground_row: cropped foreground layer (ones)
+          map_data: MapData for the solver
+          n_pixels: number of cropped pixels
+        """
+        map_data = self.sky_maps[map_name]
+
+        # Build base layers (N_pop × N_full_pix)
+        layer_specs = []
+        for pid in population_ids:
+            pop = self.population_manager.populations[pid]
+            layer_specs.append((pid, pop.indices))
+
+        base_layers_full, _ = self._create_layer_matrix(map_name, layer_specs)
+
+        # Compute crop/valid pixel mask (identical for all iterations)
+        if self.crop_circles:
+            # _crop_to_circles returns (cropped_layers, cropped_obs, flat_indices)
+            _, cropped_observed, pixel_indices = self._crop_to_circles(
+                base_layers_full, map_data.data, map_name
+            )
+            base_layers_cropped = base_layers_full[:, pixel_indices]
+        else:
+            observed_flat = map_data.data.ravel()
+            valid_mask = ~np.isnan(observed_flat)
+            pixel_indices = np.where(valid_mask)[0]
+            base_layers_cropped = base_layers_full[:, pixel_indices]
+            cropped_observed = observed_flat[pixel_indices]
+
+        n_pixels = len(pixel_indices)
+        foreground_row = np.ones(n_pixels)
+
+        logger.info(
+            f"  Cached {map_name}: {len(population_ids)} base layers × "
+            f"{n_pixels} pixels"
+        )
+
+        return {
+            "base_layers_cropped": base_layers_cropped,
+            "pixel_indices": pixel_indices,
+            "observed_vector": cropped_observed,
+            "foreground_row": foreground_row,
+            "map_data": map_data,
+            "n_pixels": n_pixels,
+        }
+
+    def _build_single_layer(
+        self, map_name: str, source_indices: np.ndarray
+    ) -> np.ndarray:
+        """
+        Build a single PSF-convolved, mean-subtracted layer from source indices.
+
+        Returns flat array of length N_full_pixels (before cropping).
+        """
+        map_data = self.sky_maps[map_name]
+        map_shape = map_data.shape
+
+        if len(source_indices) == 0:
+            return np.zeros(map_shape[0] * map_shape[1])
+
+        ra, dec = self._get_coordinates_from_indices(source_indices)
+        return self._create_and_convolve_layer(map_name, ra, dec, map_shape)
 
     def _create_bootstrap_splits(
         self, seed: int
