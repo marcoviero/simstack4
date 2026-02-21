@@ -169,12 +169,16 @@ class SimstackAlgorithm:
             self._validate_inputs()
 
             if self.bootstrap_enabled:
-                self.progress_tracker = ProgressTracker(
-                    self.bootstrap_iterations, len(self.sky_maps.maps)
-                )
                 if self.bootstrap_method == "per_bin":
+                    n_populations = len(self.population_manager.populations)
+                    self.progress_tracker = ProgressTracker(
+                        n_populations, len(self.sky_maps.maps)
+                    )
                     results_dict = self._run_per_bin_error_estimation()
                 else:
+                    self.progress_tracker = ProgressTracker(
+                        self.bootstrap_iterations, len(self.sky_maps.maps)
+                    )
                     results_dict = self._run_all_bins_error_estimation()
             else:
                 logger.info("Running single stacking (no bootstrap)...")
@@ -191,11 +195,25 @@ class SimstackAlgorithm:
             logger.info(f"Memory: {start_memory:.2f} -> {final_memory:.2f} GB")
 
             if self.bootstrap_enabled:
-                total_computations = self.bootstrap_iterations * len(self.sky_maps.maps)
-                logger.info(
-                    f"Avg time per (iteration × map): "
-                    f"{total_time / total_computations:.1f}s"
-                )
+                if self.bootstrap_method == "per_bin":
+                    n_populations = len(self.population_manager.populations)
+                    total_solves = (
+                        n_populations * self.bootstrap_iterations * len(self.sky_maps.maps)
+                    )
+                    logger.info(
+                        f"Per-bin: {n_populations} pops × "
+                        f"{self.bootstrap_iterations} iters × "
+                        f"{len(self.sky_maps.maps)} maps = {total_solves} solves, "
+                        f"avg {total_time / total_solves:.2f}s each"
+                    )
+                else:
+                    total_computations = (
+                        self.bootstrap_iterations * len(self.sky_maps.maps)
+                    )
+                    logger.info(
+                        f"Avg time per (iteration × map): "
+                        f"{total_time / total_computations:.1f}s"
+                    )
 
             return self.results
 

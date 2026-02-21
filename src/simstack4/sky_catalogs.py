@@ -254,8 +254,24 @@ class SkyCatalogs:
         if dec_col not in columns:
             missing_cols.append(f"Dec column '{dec_col}'")
 
+        # Identify formula-derived columns (computed later in classify_catalog)
+        formula_columns = set()
+        if self.config.classification.formulas:
+            for formula_name, formula_params in self.config.classification.formulas.items():
+                formula_columns.add(f"calculated_{formula_name}")
+                # Validate the formula's INPUT columns exist in the raw catalog
+                if formula_params.bins:
+                    for input_label, input_col in formula_params.bins.items():
+                        if input_col not in columns:
+                            missing_cols.append(
+                                f"Formula input column '{input_col}' "
+                                f"({input_label} for {formula_name})"
+                            )
+
         # Check ALL binning columns (generalized)
         for bin_name, bin_config in self.config.classification.binning.items():
+            if bin_config.id in formula_columns:
+                continue  # Will be computed by formula before use
             if bin_config.id not in columns:
                 missing_cols.append(
                     f"{bin_config.label} column '{bin_config.id}' for {bin_name}"

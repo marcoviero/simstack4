@@ -511,26 +511,25 @@ class SimstackWrapper:
                         catalog_sample = {}
                         for col in sample_df.columns:
                             try:
-                                if hasattr(sample_df[col], "values"):
-                                    values = sample_df[col].values
-                                else:
-                                    values = sample_df[col]
-
-                                if hasattr(values, "dtype") and np.issubdtype(
-                                    values.dtype, np.number
-                                ):
-                                    # Convert numeric columns
+                                series = sample_df[col]
+                                # Convert pandas nullable extension types (Int64,
+                                # Float64, String, etc.) to numpy-compatible values.
+                                # These raise TypeError with np.issubdtype.
+                                try:
+                                    values = series.to_numpy(
+                                        dtype=float, na_value=np.nan
+                                    )
                                     catalog_sample[col] = values.tolist()
-                                else:
-                                    # Convert string/object columns
-                                    catalog_sample[col] = [str(v) for v in values]
-                            except (
-                                AttributeError,
-                                TypeError,
-                                ValueError,
-                                IndexError,
-                            ) as e:
-                                logger.warning(f"Could not serialize column {col}: {e}")
+                                except (ValueError, TypeError):
+                                    # Non-numeric column — convert to strings
+                                    catalog_sample[col] = [
+                                        str(v) if v is not None and v == v else None
+                                        for v in series
+                                    ]
+                            except Exception as e:
+                                logger.warning(
+                                    f"Could not serialize column {col}: {e}"
+                                )
                                 catalog_sample[col] = None
 
                         metadata["catalog_sample"] = catalog_sample

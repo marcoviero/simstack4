@@ -195,10 +195,10 @@ class GreybodyFitter:
         try:
             if self.use_schreiber_prior and redshift > 0:
                 T_guess, _ = self.schreiber_temperature_prior(redshift)
-                T_guess = np.clip(T_guess, 16, 58)
+                T_guess = np.clip(T_guess, 10, 68)
             else:
-                T_guess = 30.0  # typical rest-frame T
-            amplitude_guess = -35.0
+                T_guess = 20.0  # typical rest-frame T
+            amplitude_guess = -34.0
 
             # Quick curve_fit for better initial parameters (rest-frame bounds)
             if self.fix_beta:
@@ -229,7 +229,7 @@ class GreybodyFitter:
 
         except Exception as e:
             logger.warning(f"Initial guess estimation failed: {e}")
-            return -35.0, 30.0
+            return -34.0, 20.0
 
     def schreiber_temperature_prior(self, redshift: float) -> tuple[float, float]:
         """
@@ -244,7 +244,7 @@ class GreybodyFitter:
         T_rest = 23.8 + 2.7 * redshift + 0.9 * redshift**2
 
         # Clip to physically reasonable rest-frame range
-        T_rest = np.clip(T_rest, 15, 60)
+        T_rest = np.clip(T_rest, 12, 90)
 
         # Uncertainty increases with redshift (scatter in Schreiber+2015)
         if redshift < 1.0:
@@ -265,7 +265,7 @@ class GreybodyFitter:
             return -np.inf
 
         # Rest-frame temperature bounds — stable across all redshifts
-        if not (15 < temperature < 60):
+        if not (10 < temperature < 90):
             return -np.inf
 
         # Temperature priors
@@ -274,9 +274,9 @@ class GreybodyFitter:
             log_p_temp = -0.5 * ((temperature - T_expected) / T_sigma) ** 2
         else:
             # Mild preference for typical dust temperatures (20-45K rest frame)
-            if 20 <= temperature <= 45:
+            if 18 <= temperature <= 45:
                 log_p_temp = 0.0
-            elif 15 <= temperature < 20 or 45 < temperature <= 60:
+            elif 10 <= temperature < 18 or 45 < temperature <= 90:
                 log_p_temp = -0.5 * ((temperature - 32) / 12) ** 2
             else:
                 log_p_temp = -np.inf
@@ -524,7 +524,7 @@ class GreybodyFitter:
                     flux_fit,
                     sigma=error_fit,
                     p0=[amplitude_guess, T_rest_guess],
-                    bounds=([-41, 15], [-29, 60]),
+                    bounds=([-41, 10], [-29, 90]),
                     maxfev=5000,
                 )
                 amplitude, temperature_rest = popt
@@ -539,7 +539,7 @@ class GreybodyFitter:
                     flux_fit,
                     sigma=error_fit,
                     p0=[amplitude_guess, T_rest_guess, 1.8],
-                    bounds=([-41, 15, 0.5], [-29, 60, 2.5]),
+                    bounds=([-41, 10, 0.5], [-29, 90, 2.5]),
                     maxfev=5000,
                 )
                 amplitude, temperature_rest, beta = popt
@@ -1243,7 +1243,7 @@ class CovarianceGreybodyFitter(GreybodyFitter):
             temp_trial = T_start + np.random.normal(0, T_spread)
 
             amp_trial = np.clip(amp_trial, -37.5, -30.5)
-            temp_trial = np.clip(temp_trial, 16, 58)
+            temp_trial = np.clip(temp_trial, 10, 90)
 
             test_prob = self.log_posterior_with_covariance(
                 [amp_trial, temp_trial], wavelengths, fluxes, flux_errors, redshift
