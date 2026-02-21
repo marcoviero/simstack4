@@ -64,6 +64,12 @@ class SEDResults:
     mcmc_samples: np.ndarray | None = None  # MCMC samples if used
     mcmc_percentiles: dict | None = None  # Percentiles from MCMC
 
+    # Fit quality metadata
+    fit_quality_tier: str | None = None  # "A" (data), "B" (assisted), "C" (prior-dominated)
+    sed_snr: float | None = None  # Median SNR across positive bands
+    prior_center: float | None = None  # T_rest prior center used (K)
+    prior_sigma: float | None = None  # T_rest prior sigma used (K)
+
 
 @dataclass
 class DerivedQuantities:
@@ -130,6 +136,25 @@ class GreybodyFitter:
                 "MCMC requested but emcee not available. Falling back to curve_fit."
             )
 
+        self._prior_override = None  # Set by fit_sed during two-pass fitting
+
+    # SNR thresholds for fit quality tiers
+    SNR_HIGH = 5.0   # Tier A: data-driven, prior barely matters
+    SNR_LOW = 2.0    # Below this: prior-dominated
+
+    @staticmethod
+    def compute_sed_snr(fluxes, flux_errors):
+        """
+        Median SNR across positive-flux bands.
+
+        Returns 0 if no positive detections.
+        """
+        positive = fluxes > 0
+        if not np.any(positive):
+            return 0.0
+        snr_per_band = fluxes[positive] / flux_errors[positive]
+        return float(np.median(snr_per_band))
+
     def _validate_data(self, wavelengths, fluxes, flux_errors):
         """
         Validate and filter data, handling the huge dynamic range in your data
@@ -195,10 +220,10 @@ class GreybodyFitter:
         try:
             if self.use_schreiber_prior and redshift > 0:
                 T_guess, _ = self.schreiber_temperature_prior(redshift)
-                T_guess = np.clip(T_guess, 10, 68)
+                T_guess = np.clip(T_guess, 16, 58)
             else:
-                T_guess = 20.0  # typical rest-frame T
-            amplitude_guess = -34.0
+                T_guess = 30.0  # typical rest-frame T
+            amplitude_guess = -35.0
 
             # Quick curve_fit for better initial parameters (rest-frame bounds)
             if self.fix_beta:
@@ -229,7 +254,7 @@ class GreybodyFitter:
 
         except Exception as e:
             logger.warning(f"Initial guess estimation failed: {e}")
-            return -34.0, 20.0
+            return -35.0, 30.0
 
     def schreiber_temperature_prior(self, redshift: float) -> tuple[float, float]:
         """
@@ -244,7 +269,7 @@ class GreybodyFitter:
         T_rest = 23.8 + 2.7 * redshift + 0.9 * redshift**2
 
         # Clip to physically reasonable rest-frame range
-        T_rest = np.clip(T_rest, 12, 90)
+        T_rest = np.clip(T_rest, 15, 60)
 
         # Uncertainty increases with redshift (scatter in Schreiber+2015)
         if redshift < 1.0:
@@ -257,7 +282,12 @@ class GreybodyFitter:
         return T_rest, T_sigma
 
     def log_prior(self, theta: list, redshift: float = 0.0) -> float:
-        """Calculate log prior with rest-frame temperature bounds"""
+        """
+        Calculate log prior with rest-frame temperature bounds.
+
+        If self._prior_override is set (by fit_sed during two-pass fitting),
+        uses that (center, sigma) instead of Schreiber.
+        """
         amplitude, temperature = theta  # temperature is T_rest
 
         # Amplitude bounds
@@ -265,18 +295,21 @@ class GreybodyFitter:
             return -np.inf
 
         # Rest-frame temperature bounds — stable across all redshifts
-        if not (10 < temperature < 90):
+        if not (15 < temperature < 60):
             return -np.inf
 
         # Temperature priors
-        if self.use_schreiber_prior and redshift > 0:
+        if self._prior_override is not None:
+            T_center, T_sigma = self._prior_override
+            log_p_temp = -0.5 * ((temperature - T_center) / T_sigma) ** 2
+        elif self.use_schreiber_prior and redshift > 0:
             T_expected, T_sigma = self.schreiber_temperature_prior(redshift)
             log_p_temp = -0.5 * ((temperature - T_expected) / T_sigma) ** 2
         else:
             # Mild preference for typical dust temperatures (20-45K rest frame)
-            if 18 <= temperature <= 45:
+            if 20 <= temperature <= 45:
                 log_p_temp = 0.0
-            elif 10 <= temperature < 18 or 45 < temperature <= 90:
+            elif 15 <= temperature < 20 or 45 < temperature <= 60:
                 log_p_temp = -0.5 * ((temperature - 32) / 12) ** 2
             else:
                 log_p_temp = -np.inf
@@ -474,13 +507,20 @@ class GreybodyFitter:
             "effective_burn_in": effective_burn_in,
         }
 
-    def fit_sed(self, wavelengths, fluxes, flux_errors, redshift):
+    def fit_sed(self, wavelengths, fluxes, flux_errors, redshift,
+                prior_override=None):
         """
         Fit greybody model in the rest frame.
 
         Wavelengths are transformed to rest frame before fitting so that
         the temperature parameter is T_rest directly, with stable bounds
         [15, 60] K at all redshifts.
+
+        Parameters
+        ----------
+        prior_override : tuple(float, float) or None
+            (T_center, T_sigma) to override Schreiber prior.
+            Used by two-pass empirical Bayes fitting.
         """
         # Validate and filter data (in observed frame)
         valid_mask, fit_mask = self._validate_data(wavelengths, fluxes, flux_errors)
@@ -493,13 +533,55 @@ class GreybodyFitter:
         flux_fit = fluxes[fit_mask]
         error_fit = flux_errors[fit_mask]
 
+        # Compute SED signal-to-noise
+        sed_snr = self.compute_sed_snr(flux_fit, error_fit)
+
+        # Determine prior and T bounds based on SNR
+        # High SNR → wide bounds, weak/no prior (data-driven)
+        # Low SNR  → narrow bounds around prior center, strong prior
+        if prior_override is not None:
+            T_center, T_sigma = prior_override
+            self._prior_override = prior_override
+        elif self.use_schreiber_prior and redshift > 0:
+            T_center, T_sigma_base = self.schreiber_temperature_prior(redshift)
+            # Scale sigma with SNR: σ_eff = σ_base × (SNR_HIGH / max(SNR, 1))
+            # At SNR=5: σ=σ_base (prior barely matters)
+            # At SNR=2: σ=σ_base×2.5 ... wait, we want TIGHTER at low SNR
+            # Invert: σ_eff = σ_base × max(SNR, 1) / SNR_HIGH
+            # At SNR=5: σ=σ_base (normal)
+            # At SNR=2: σ=0.4×σ_base (tight)
+            # At SNR=1: σ=0.2×σ_base (very tight)
+            snr_ratio = max(sed_snr, 0.5) / self.SNR_HIGH
+            T_sigma = T_sigma_base * np.clip(snr_ratio, 0.3, 2.0)
+            self._prior_override = (T_center, T_sigma)
+        else:
+            T_center = None
+            self._prior_override = None
+
+        # Set T bounds: narrow around prior for low SNR
+        T_lo, T_hi = 15.0, 60.0
+        if T_center is not None and sed_snr < self.SNR_HIGH:
+            # Narrow bounds: ±3σ around prior center, but at least ±5K
+            half_width = max(3 * T_sigma, 5.0)
+            T_lo = max(15.0, T_center - half_width)
+            T_hi = min(60.0, T_center + half_width)
+
+        # Assign quality tier
+        if sed_snr >= self.SNR_HIGH:
+            fit_quality_tier = "A"  # data-driven
+        elif sed_snr >= self.SNR_LOW:
+            fit_quality_tier = "B"  # prior-assisted
+        else:
+            fit_quality_tier = "C"  # prior-dominated
+
         # Transform to rest frame
         z1 = max(1 + redshift, 1.001)  # guard against z=0
         wave_rest_fit = wave_obs_fit / z1
 
         logger.info(
             f"Fitting SED (rest frame): {len(wave_rest_fit)} points, "
-            f"{np.sum(flux_fit > 0)} positive detections, z={redshift:.2f}"
+            f"{np.sum(flux_fit > 0)} positive detections, z={redshift:.2f}, "
+            f"SNR={sed_snr:.1f}, tier={fit_quality_tier}"
         )
 
         try:
@@ -507,24 +589,49 @@ class GreybodyFitter:
             amplitude_guess, T_rest_guess = self._get_initial_guess(
                 wave_rest_fit, flux_fit, error_fit, redshift
             )
+            # Override T guess with prior center if available
+            if T_center is not None:
+                T_rest_guess = T_center
 
             logger.debug(
-                f"Initial guess: A={amplitude_guess:.2f}, T_rest={T_rest_guess:.1f}K"
+                f"Initial guess: A={amplitude_guess:.2f}, T_rest={T_rest_guess:.1f}K, "
+                f"bounds=[{T_lo:.0f}, {T_hi:.0f}]K"
             )
 
             # Curve fitting with rest-frame temperature bounds
+            # When prior is active, add a virtual data point that penalizes
+            # deviation from T_center — equivalent to the Gaussian prior
+            # in the MCMC path. This turns curve_fit into penalized
+            # least squares: χ² + (T - T_center)²/σ_prior²
+            use_regularization = (T_center is not None and T_sigma is not None)
+
             if self.fix_beta:
 
-                def model_func(wave, amp, temp):
-                    return self.greybody_model(wave, amp, temp, self.beta_fixed)
+                if use_regularization:
+                    def model_func(wave, amp, temp):
+                        model = self.greybody_model(
+                            wave[:-1], amp, temp, self.beta_fixed
+                        )
+                        return np.append(model, temp)
+
+                    wave_aug = np.append(wave_rest_fit, -1.0)
+                    flux_aug = np.append(flux_fit, T_center)
+                    error_aug = np.append(error_fit, T_sigma)
+                else:
+                    def model_func(wave, amp, temp):
+                        return self.greybody_model(wave, amp, temp, self.beta_fixed)
+
+                    wave_aug = wave_rest_fit
+                    flux_aug = flux_fit
+                    error_aug = error_fit
 
                 popt, pcov = curve_fit(
                     model_func,
-                    wave_rest_fit,
-                    flux_fit,
-                    sigma=error_fit,
+                    wave_aug,
+                    flux_aug,
+                    sigma=error_aug,
                     p0=[amplitude_guess, T_rest_guess],
-                    bounds=([-41, 10], [-29, 90]),
+                    bounds=([-41, T_lo], [-29, T_hi]),
                     maxfev=5000,
                 )
                 amplitude, temperature_rest = popt
@@ -533,13 +640,27 @@ class GreybodyFitter:
                 amplitude_err, temperature_err = param_errors
                 beta_err = 0.0
             else:
+                if use_regularization:
+                    def model_func_free(wave, amp, temp, beta):
+                        model = self.greybody_model(wave[:-1], amp, temp, beta)
+                        return np.append(model, temp)
+
+                    wave_aug = np.append(wave_rest_fit, -1.0)
+                    flux_aug = np.append(flux_fit, T_center)
+                    error_aug = np.append(error_fit, T_sigma)
+                else:
+                    model_func_free = self.greybody_model
+                    wave_aug = wave_rest_fit
+                    flux_aug = flux_fit
+                    error_aug = error_fit
+
                 popt, pcov = curve_fit(
-                    self.greybody_model,
-                    wave_rest_fit,
-                    flux_fit,
-                    sigma=error_fit,
+                    model_func_free,
+                    wave_aug,
+                    flux_aug,
+                    sigma=error_aug,
                     p0=[amplitude_guess, T_rest_guess, 1.8],
-                    bounds=([-41, 10, 0.5], [-29, 90, 2.5]),
+                    bounds=([-41, T_lo, 0.5], [-29, T_hi, 2.5]),
                     maxfev=5000,
                 )
                 amplitude, temperature_rest, beta = popt
@@ -618,6 +739,10 @@ class GreybodyFitter:
                 "redshift_used": redshift,
                 "mcmc_used": mcmc_results is not None,
                 "schreiber_prior_used": self.use_schreiber_prior,
+                "sed_snr": sed_snr,
+                "fit_quality_tier": fit_quality_tier,
+                "prior_center": T_center,
+                "prior_sigma": T_sigma if T_center is not None else None,
             }
 
             if mcmc_results:
@@ -637,7 +762,12 @@ class GreybodyFitter:
 
         except Exception as e:
             logger.warning(f"Greybody fit failed: {e}")
-            return {"fit_success": False, "reason": str(e)}
+            return {
+                "fit_success": False, "reason": str(e),
+                "sed_snr": sed_snr, "fit_quality_tier": fit_quality_tier,
+            }
+        finally:
+            self._prior_override = None
 
     # Include all the other methods (greybody_model, calculate_LIR, etc.) from the original class
     def greybody_model(
@@ -1243,7 +1373,7 @@ class CovarianceGreybodyFitter(GreybodyFitter):
             temp_trial = T_start + np.random.normal(0, T_spread)
 
             amp_trial = np.clip(amp_trial, -37.5, -30.5)
-            temp_trial = np.clip(temp_trial, 10, 90)
+            temp_trial = np.clip(temp_trial, 16, 58)
 
             test_prob = self.log_posterior_with_covariance(
                 [amp_trial, temp_trial], wavelengths, fluxes, flux_errors, redshift
@@ -1310,7 +1440,8 @@ class CovarianceGreybodyFitter(GreybodyFitter):
         }
 
     def fit_sed_with_covariance(
-        self, wavelengths, fluxes, flux_errors, redshift, bootstrap_cov=None
+        self, wavelengths, fluxes, flux_errors, redshift, bootstrap_cov=None,
+        prior_override=None,
     ):
         """
         Enhanced SED fitting with covariance matrix (rest-frame).
@@ -1345,7 +1476,10 @@ class CovarianceGreybodyFitter(GreybodyFitter):
 
         try:
             # super().fit_sed handles its own rest-frame transform
-            initial_result = super().fit_sed(wave_fit, flux_fit, error_fit, redshift)
+            initial_result = super().fit_sed(
+                wave_fit, flux_fit, error_fit, redshift,
+                prior_override=prior_override,
+            )
 
             if not initial_result["fit_success"]:
                 return initial_result
@@ -1389,11 +1523,15 @@ class CovarianceGreybodyFitter(GreybodyFitter):
             logger.error(f"Covariance SED fitting failed: {e}")
             return {"fit_success": False, "reason": str(e)}
 
-    def fit_sed(self, wavelengths, fluxes, flux_errors, redshift):
+    def fit_sed(self, wavelengths, fluxes, flux_errors, redshift,
+                prior_override=None):
         """
         Override parent fit_sed to automatically use covariance version
         """
-        return self.fit_sed_with_covariance(wavelengths, fluxes, flux_errors, redshift)
+        return self.fit_sed_with_covariance(
+            wavelengths, fluxes, flux_errors, redshift,
+            prior_override=prior_override,
+        )
 
 
 class SimstackResults:
@@ -1484,7 +1622,9 @@ class SimstackResults:
         # Process results
         self._process_results()
 
-    def _create_sed_for_population(self, pop_label: str, pop_index: int) -> SEDResults:
+    def _create_sed_for_population(
+        self, pop_label: str, pop_index: int, prior_override=None
+    ) -> SEDResults:
         """Create SED results for a single population"""
         # Get population info
         if pop_label not in self.population_manager.populations:
@@ -1549,11 +1689,13 @@ class SimstackResults:
         # Fit greybody model
         if isinstance(self.greybody_fitter, CovarianceGreybodyFitter):
             greybody_results = self.greybody_fitter.fit_sed_with_covariance(
-                wavelengths, flux_densities, flux_errors, z_median, bootstrap_cov
+                wavelengths, flux_densities, flux_errors, z_median, bootstrap_cov,
+                prior_override=prior_override,
             )
         else:
             greybody_results = self.greybody_fitter.fit_sed(
-                wavelengths, flux_densities, flux_errors, z_median
+                wavelengths, flux_densities, flux_errors, z_median,
+                prior_override=prior_override,
             )
 
         # Create SED result
@@ -1592,6 +1734,12 @@ class SimstackResults:
             if greybody_results.get("mcmc_used", False):
                 sed_result.mcmc_samples = greybody_results.get("mcmc_samples")
                 sed_result.mcmc_percentiles = greybody_results.get("mcmc_percentiles")
+
+        # Quality metadata (stored even for failed fits)
+        sed_result.fit_quality_tier = greybody_results.get("fit_quality_tier")
+        sed_result.sed_snr = greybody_results.get("sed_snr")
+        sed_result.prior_center = greybody_results.get("prior_center")
+        sed_result.prior_sigma = greybody_results.get("prior_sigma")
 
         return sed_result
 
@@ -1726,34 +1874,136 @@ class SimstackResults:
         )
 
     def _process_results(self) -> None:
-        """Process raw results into SEDs and derived quantities"""
+        """
+        Process raw results into SEDs and derived quantities.
+
+        Two-pass approach:
+          Pass 1: Fit all SEDs with SNR-scaled Schreiber prior.
+          Pass 2: Compute empirical T(z) from high-confidence fits,
+                  re-fit low-SNR SEDs with empirical prior center.
+        """
         logger.info("Processing stacking results...")
 
-        # Create SEDs for each population
-        for i, pop_label in enumerate(self.raw_results.population_labels):
-            if pop_label == "foreground":
-                continue  # Skip foreground layer
+        pop_labels = [
+            lbl for lbl in self.raw_results.population_labels
+            if lbl != "foreground"
+        ]
+        pop_indices = {
+            lbl: i for i, lbl in enumerate(self.raw_results.population_labels)
+            if lbl != "foreground"
+        }
+
+        # === Pass 1: Fit all with SNR-scaled Schreiber prior ===
+        logger.info("Pass 1: fitting all SEDs with Schreiber prior...")
+        pass1_results = {}
+        for pop_label in pop_labels:
+            try:
+                sed_result = self._create_sed_for_population(
+                    pop_label, pop_indices[pop_label]
+                )
+                pass1_results[pop_label] = sed_result
+            except Exception as e:
+                logger.error(f"Pass 1 failed for {pop_label}: {e}")
+                continue
+
+        # === Compute empirical T(z) from high-confidence fits ===
+        empirical_prior = self._compute_empirical_t_of_z(pass1_results)
+
+        # === Pass 2: Re-fit low-SNR SEDs with empirical prior ===
+        n_refit = 0
+        for pop_label, sed_result in pass1_results.items():
+            tier = sed_result.fit_quality_tier
+            if tier not in ("B", "C"):
+                # Tier A: data-driven, keep pass 1 result
+                self.sed_results[pop_label] = sed_result
+                continue
+
+            z = sed_result.median_redshift
+            emp = empirical_prior.get(z)
+            if emp is None:
+                # No empirical anchor for this z — keep pass 1
+                self.sed_results[pop_label] = sed_result
+                continue
+
+            T_emp, T_emp_sigma = emp
+            n_refit += 1
+            logger.info(
+                f"Pass 2 refit: {pop_label} (tier {tier}, SNR={sed_result.sed_snr:.1f}) "
+                f"with empirical T={T_emp:.1f}±{T_emp_sigma:.1f}K"
+            )
 
             try:
-                sed_result = self._create_sed_for_population(pop_label, i)
+                sed_result_v2 = self._create_sed_for_population(
+                    pop_label, pop_indices[pop_label],
+                    prior_override=(T_emp, T_emp_sigma),
+                )
+                self.sed_results[pop_label] = sed_result_v2
+            except Exception as e:
+                logger.error(f"Pass 2 failed for {pop_label}: {e}, keeping pass 1")
                 self.sed_results[pop_label] = sed_result
 
-                # Calculate derived quantities
+        logger.info(
+            f"Pass 1: {len(pass1_results)} fits, "
+            f"Pass 2: {n_refit} refits with empirical prior"
+        )
+
+        # Calculate derived quantities for all
+        for pop_label, sed_result in self.sed_results.items():
+            try:
                 derived = self._calculate_derived_quantities(sed_result)
                 self.derived_quantities[pop_label] = derived
-
             except Exception as e:
-                logger.error(f"Failed to process population {pop_label}: {e}")
+                logger.error(f"Failed to derive quantities for {pop_label}: {e}")
                 import traceback
-
                 logger.error(traceback.format_exc())
-                # Continue with next population instead of stopping
-                continue
 
         # Process band-by-band results
         self._process_band_results()
 
         logger.info(f"Processed results for {len(self.sed_results)} populations")
+
+    def _compute_empirical_t_of_z(
+        self, pass1_results: dict[str, SEDResults]
+    ) -> dict[float, tuple[float, float]]:
+        """
+        Compute empirical T_rest(z) from high-confidence (tier A) fits.
+
+        Groups by median_redshift, computes median T_rest and robust σ
+        per redshift bin. Returns {z_median: (T_center, T_sigma)}.
+
+        Only bins with ≥3 tier-A fits contribute an anchor.
+        """
+        from collections import defaultdict
+
+        z_groups = defaultdict(list)
+        for pop_label, sed_result in pass1_results.items():
+            if (
+                sed_result.fit_quality_tier == "A"
+                and sed_result.greybody_fit_success
+                and sed_result.dust_temperature_rest_frame is not None
+            ):
+                z = sed_result.median_redshift
+                z_groups[z].append(sed_result.dust_temperature_rest_frame)
+
+        empirical = {}
+        for z, temps in z_groups.items():
+            if len(temps) >= 3:
+                T_median = float(np.median(temps))
+                # Robust sigma: 1.4826 × MAD
+                T_sigma = max(
+                    1.4826 * float(np.median(np.abs(np.array(temps) - T_median))),
+                    2.0,  # Floor: at least 2K
+                )
+                empirical[z] = (T_median, T_sigma)
+                logger.info(
+                    f"Empirical T(z={z:.2f}): {T_median:.1f}±{T_sigma:.1f}K "
+                    f"from {len(temps)} tier-A fits"
+                )
+
+        if not empirical:
+            logger.info("No empirical T(z) anchors (too few tier-A fits)")
+
+        return empirical
 
     def _process_band_results(self) -> None:
         """Process results for individual bands"""
@@ -1806,6 +2056,10 @@ class SimstackResults:
                 "mcmc_n_samples": len(sed_result.mcmc_samples)
                 if sed_result.mcmc_samples is not None
                 else 0,
+                "fit_quality_tier": sed_result.fit_quality_tier,
+                "sed_snr": sed_result.sed_snr,
+                "prior_center_K": sed_result.prior_center,
+                "prior_sigma_K": sed_result.prior_sigma,
             }
 
             # Add MCMC-derived uncertainties if available
@@ -1862,6 +2116,20 @@ class SimstackResults:
             print(
                 f"MCMC Fits: {mcmc_fits}/{successful_fits} ({100 * mcmc_fits / max(1, successful_fits):.1f}%)"
             )
+
+        # Fit quality tier summary
+        from collections import Counter
+        tiers = Counter(
+            sed.fit_quality_tier for sed in self.sed_results.values()
+            if sed.fit_quality_tier is not None
+        )
+        if tiers:
+            tier_parts = [
+                f"A(data)={tiers.get('A', 0)}",
+                f"B(assisted)={tiers.get('B', 0)}",
+                f"C(prior)={tiers.get('C', 0)}",
+            ]
+            print(f"Fit quality tiers: {', '.join(tier_parts)}")
 
         if successful_fits > 0:
             temps_rest = [

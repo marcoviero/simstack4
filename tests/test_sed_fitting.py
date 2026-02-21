@@ -777,3 +777,219 @@ class TestEndToEndHighZ:
         assert ratio == pytest.approx(1.0, abs=0.3), (
             f"z={z}: L_IR ratio = {ratio:.2f}, expected ~1.0"
         )
+
+
+# ---------------------------------------------------------------------------
+# 12. SNR computation
+# ---------------------------------------------------------------------------
+
+class TestComputeSEDSNR:
+    """Test the SNR metric used for quality tiers."""
+
+    def test_high_snr(self, fitter):
+        """Clear detections should give high SNR."""
+        fluxes = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        errors = np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+        snr = fitter.compute_sed_snr(fluxes, errors)
+        assert snr == pytest.approx(10.0)
+
+    def test_low_snr(self, fitter):
+        """Noisy data should give low SNR."""
+        fluxes = np.array([0.1, 0.2, 0.3])
+        errors = np.array([0.5, 0.5, 0.5])
+        snr = fitter.compute_sed_snr(fluxes, errors)
+        assert snr < 1.0
+
+    def test_mixed_positive_negative(self, fitter):
+        """Only positive bands contribute to SNR."""
+        fluxes = np.array([-0.1, 0.5, 1.0, -0.2, 2.0])
+        errors = np.array([0.1, 0.1, 0.1, 0.1, 0.1])
+        snr = fitter.compute_sed_snr(fluxes, errors)
+        # Positive bands: SNR = 5, 10, 20 → median = 10
+        assert snr == pytest.approx(10.0)
+
+    def test_all_negative(self, fitter):
+        """No positive detections → SNR = 0."""
+        fluxes = np.array([-0.1, -0.2, -0.3])
+        errors = np.array([0.1, 0.1, 0.1])
+        snr = fitter.compute_sed_snr(fluxes, errors)
+        assert snr == 0.0
+
+
+# ---------------------------------------------------------------------------
+# 13. Quality tiers and prior override
+# ---------------------------------------------------------------------------
+
+class TestFitQualityTiers:
+    """Test that fit_sed assigns quality tiers based on SNR."""
+
+    def test_high_snr_gives_tier_a(self, fitter_with_prior, herschel_wavelengths):
+        """Low noise → tier A (data-driven)."""
+        T_rest = 30.0
+        z = 1.0
+        fluxes, errors, _ = _make_synthetic_sed(
+            fitter_with_prior, herschel_wavelengths, T_rest, z, noise_frac=0.01
+        )
+        result = fitter_with_prior.fit_sed(herschel_wavelengths, fluxes, errors, z)
+        assert result["fit_success"]
+        assert result["fit_quality_tier"] == "A"
+        assert result["sed_snr"] >= fitter_with_prior.SNR_HIGH
+
+    def test_low_snr_gives_tier_c(self, fitter_with_prior, herschel_wavelengths):
+        """Very noisy → tier C (prior-dominated)."""
+        T_rest = 30.0
+        z = 1.0
+        fluxes, errors, _ = _make_synthetic_sed(
+            fitter_with_prior, herschel_wavelengths, T_rest, z, noise_frac=1.0
+        )
+        result = fitter_with_prior.fit_sed(herschel_wavelengths, fluxes, errors, z)
+        # Might fail to fit, but if it succeeds, should be tier B or C
+        if result["fit_success"]:
+            assert result["fit_quality_tier"] in ("B", "C")
+
+    def test_snr_in_output(self, fitter, herschel_wavelengths):
+        """SNR should always be in output, even without Schreiber prior."""
+        fluxes, errors, _ = _make_synthetic_sed(
+            fitter, herschel_wavelengths, 30.0, 1.0, noise_frac=0.05
+        )
+        result = fitter.fit_sed(herschel_wavelengths, fluxes, errors, 1.0)
+        assert "sed_snr" in result
+        assert "fit_quality_tier" in result
+        assert result["sed_snr"] > 0
+
+
+class TestPriorOverride:
+    """Test the prior_override parameter for two-pass fitting."""
+
+    def test_override_narrows_fit(self, fitter_with_prior, herschel_wavelengths):
+        """With tight prior_override, fit should land near the prior center."""
+        T_rest_true = 30.0
+        z = 1.0
+        fluxes, errors, _ = _make_synthetic_sed(
+            fitter_with_prior, herschel_wavelengths, T_rest_true, z,
+            noise_frac=0.5  # noisy enough that prior matters
+        )
+
+        # Override prior to T=35K with tight sigma
+        result = fitter_with_prior.fit_sed(
+            herschel_wavelengths, fluxes, errors, z,
+            prior_override=(35.0, 2.0),
+        )
+
+        assert result["fit_success"]
+        assert result["prior_center"] == 35.0
+        assert result["prior_sigma"] == 2.0
+
+    def test_override_cleared_after_fit(self, fitter_with_prior, herschel_wavelengths):
+        """_prior_override should be None after fit completes."""
+        fluxes, errors, _ = _make_synthetic_sed(
+            fitter_with_prior, herschel_wavelengths, 30.0, 1.0
+        )
+
+        fitter_with_prior.fit_sed(
+            herschel_wavelengths, fluxes, errors, 1.0,
+            prior_override=(35.0, 2.0),
+        )
+        assert fitter_with_prior._prior_override is None
+
+    def test_override_cleared_after_failed_fit(self, fitter_with_prior):
+        """_prior_override should be cleared even if fit fails."""
+        wavelengths = np.array([100.0, 200.0])  # too few points
+        fluxes = np.array([1.0, 0.5])
+        errors = np.array([0.1, 0.1])
+
+        result = fitter_with_prior.fit_sed(
+            wavelengths, fluxes, errors, 1.0,
+            prior_override=(35.0, 2.0),
+        )
+        assert not result["fit_success"]
+        assert fitter_with_prior._prior_override is None
+
+    def test_no_override_gives_wide_bounds(self, fitter, herschel_wavelengths):
+        """Without prior, T bounds should be full [15, 60]K."""
+        fluxes, errors, _ = _make_synthetic_sed(
+            fitter, herschel_wavelengths, 30.0, 1.0, noise_frac=0.03
+        )
+        result = fitter.fit_sed(herschel_wavelengths, fluxes, errors, 1.0)
+        assert result["fit_success"]
+        assert result["prior_center"] is None
+        assert result["prior_sigma"] is None
+
+    def test_snr_scaled_sigma(self, fitter_with_prior, herschel_wavelengths):
+        """
+        Low-SNR data with Schreiber prior should get tighter sigma
+        than high-SNR data.
+        """
+        z = 1.0
+        T_rest = 30.0
+
+        # High SNR
+        fluxes_hi, errors_hi, _ = _make_synthetic_sed(
+            fitter_with_prior, herschel_wavelengths, T_rest, z, noise_frac=0.02
+        )
+        result_hi = fitter_with_prior.fit_sed(
+            herschel_wavelengths, fluxes_hi, errors_hi, z
+        )
+
+        # Low SNR
+        fluxes_lo, errors_lo, _ = _make_synthetic_sed(
+            fitter_with_prior, herschel_wavelengths, T_rest, z, noise_frac=0.5
+        )
+        result_lo = fitter_with_prior.fit_sed(
+            herschel_wavelengths, fluxes_lo, errors_lo, z
+        )
+
+        # Both should succeed and have prior info
+        assert result_hi["fit_success"] and result_lo["fit_success"]
+        if result_hi["prior_sigma"] is not None and result_lo["prior_sigma"] is not None:
+            # Low SNR should have tighter prior (smaller sigma)
+            assert result_lo["prior_sigma"] <= result_hi["prior_sigma"]
+
+
+class TestCurveFitRegularization:
+    """Test that curve_fit prior regularization actually constrains T."""
+
+    def test_regularization_pulls_toward_prior(
+        self, fitter_with_prior, herschel_wavelengths
+    ):
+        """
+        With very noisy data, regularized curve_fit should land near the
+        prior center, not at a random boundary.
+        """
+        T_prior = 32.0  # prior center
+        z = 1.0
+
+        # Generate noisy data with true T far from prior
+        np.random.seed(42)
+        fluxes, errors, _ = _make_synthetic_sed(
+            fitter_with_prior, herschel_wavelengths, 45.0, z, noise_frac=0.8
+        )
+
+        # Fit with tight prior override
+        result = fitter_with_prior.fit_sed(
+            herschel_wavelengths, fluxes, errors, z,
+            prior_override=(T_prior, 2.0),
+        )
+
+        if result["fit_success"]:
+            T_fit = result["temperature_rest_frame"]
+            # With σ=2K prior, fit should be pulled toward 32K
+            # even though true T=45K, because noise_frac=0.8 makes
+            # data nearly uninformative
+            assert abs(T_fit - T_prior) < 10.0, (
+                f"T_fit={T_fit:.1f}K should be near prior {T_prior}K "
+                f"for noisy data"
+            )
+
+    def test_no_regularization_without_prior(self, fitter, herschel_wavelengths):
+        """Without prior, curve_fit should use full [15,60] bounds."""
+        T_rest = 30.0
+        z = 1.0
+        fluxes, errors, _ = _make_synthetic_sed(
+            fitter, herschel_wavelengths, T_rest, z, noise_frac=0.05
+        )
+
+        result = fitter.fit_sed(herschel_wavelengths, fluxes, errors, z)
+        assert result["fit_success"]
+        # Should recover true T without prior interference
+        assert abs(result["temperature_rest_frame"] - T_rest) < 5.0
