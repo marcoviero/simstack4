@@ -1860,6 +1860,12 @@ class SimstackResults:
             )
 
         # Create SED result
+        # Use n_sources from StackingResults (definitely populated by algorithm)
+        # with fallback to population manager
+        n_sources = self.raw_results.n_sources.get(
+            pop_label, pop_bin.n_sources
+        )
+
         sed_result = SEDResults(
             population_id=pop_label,
             wavelengths=wavelengths,
@@ -1870,7 +1876,7 @@ class SimstackResults:
             rest_luminosity_errors=rest_luminosity_errors,
             median_redshift=z_median,
             median_mass=pop_bin.median_stellar_mass,
-            n_sources=pop_bin.n_sources,
+            n_sources=n_sources,
         )
 
         # Add greybody fit results
@@ -2375,8 +2381,6 @@ class SimstackResults:
                     line += f" {mcmc_used:<5}"
 
                 print(line)
-
-        # Save and load methods remain the same but with additional MCMC info
 
     def _save_pickle(self, output_path: Path) -> None:
         """Save results as pickle file"""

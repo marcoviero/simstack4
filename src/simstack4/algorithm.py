@@ -169,12 +169,17 @@ class SimstackAlgorithm:
             self._validate_inputs()
 
             if self.bootstrap_enabled:
-                self.progress_tracker = ProgressTracker(
-                    self.bootstrap_iterations, len(self.sky_maps.maps)
-                )
                 if self.bootstrap_method == "per_bin":
+                    # per_bin progress: one update per (population, map) pair
+                    n_pops = len(self.population_manager.populations)
+                    self.progress_tracker = ProgressTracker(
+                        n_pops, len(self.sky_maps.maps)
+                    )
                     results_dict = self._run_per_bin_error_estimation()
                 else:
+                    self.progress_tracker = ProgressTracker(
+                        self.bootstrap_iterations, len(self.sky_maps.maps)
+                    )
                     results_dict = self._run_all_bins_error_estimation()
             else:
                 logger.info("Running single stacking (no bootstrap)...")
