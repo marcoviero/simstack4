@@ -70,6 +70,9 @@ class SEDResults:
     prior_center: float | None = None  # T_rest prior center used (K)
     prior_sigma: float | None = None  # T_rest prior sigma used (K)
 
+    # Per-bin median catalog properties (from bin_property_columns config)
+    bin_properties: dict[str, float] | None = None
+
 
 @dataclass
 class DerivedQuantities:
@@ -1908,6 +1911,12 @@ class SimstackResults:
         sed_result.prior_center = greybody_results.get("prior_center")
         sed_result.prior_sigma = greybody_results.get("prior_sigma")
 
+        # Per-bin median catalog properties
+        if self.raw_results.bin_properties is not None:
+            sed_result.bin_properties = self.raw_results.bin_properties.get(
+                pop_label, {}
+            )
+
         return sed_result
 
     def _calculate_derived_quantities(
@@ -2255,6 +2264,11 @@ class SimstackResults:
                     "dust_temperature_mcmc_error_upper"
                 ] = derived.dust_temperature_mcmc_error[1]
 
+            # Add per-bin median catalog properties
+            if sed_result.bin_properties:
+                for col_name, val in sed_result.bin_properties.items():
+                    row[f"median_{col_name}"] = val
+
             data.append(row)
 
         return pd.DataFrame(data)
@@ -2351,14 +2365,24 @@ class SimstackResults:
         summary_df = self.get_population_summary()
         if len(summary_df) > 0:
             print("Population Results:")
-            header = f"{'Population':<30} {'N_src':<8} {'z_med':<8} {'T_rest[K]':<10} {'T_obs[K]':<10} {'L_IR[L☉]':<12} {'SFR[M☉/yr]':<12}"
+
+            # Detect bin_property columns (prefixed with "median_" from bin_properties)
+            bp_cols = [c for c in summary_df.columns if c.startswith("median_")
+                       and c not in ("median_redshift", "median_log_mass")]
+
+            # Build header
+            header = f"{'Population':<30} {'N_src':<8} {'z_med':<8} "
+            for col in bp_cols:
+                short = col.replace("median_", "")[:10]
+                header += f"{short:<12}"
+            header += f"{'T_rest[K]':<10} {'T_obs[K]':<10} {'L_IR[L☉]':<12} {'SFR[M☉/yr]':<12}"
             if self.greybody_fitter.use_mcmc:
-                header += " {'MCMC':<5}"
+                header += f" {'MCMC':<5}"
             print(header)
-            print("-" * (110 + (6 if self.greybody_fitter.use_mcmc else 0)))
+            print("-" * len(header))
 
             for _, row in summary_df.iterrows():
-                pop_id = row["population_id"][:29]  # Truncate long names
+                pop_id = row["population_id"][:29]
                 n_src = int(row["n_sources"])
                 z_med = row["median_redshift"]
                 t_rest = (
@@ -2374,7 +2398,14 @@ class SimstackResults:
                 l_ir = row["total_ir_luminosity_lsun"]
                 sfr = row["sfr_msun_yr"]
 
-                line = f"{pop_id:<30} {n_src:<8} {z_med:<8.2f} {t_rest:<10.1f} {t_obs:<10.1f} {l_ir:<12.2e} {sfr:<12.1f}"
+                line = f"{pop_id:<30} {n_src:<8} {z_med:<8.2f} "
+                for col in bp_cols:
+                    val = row.get(col, np.nan)
+                    if pd.notna(val):
+                        line += f"{val:<12.2f}"
+                    else:
+                        line += f"{'--':<12}"
+                line += f"{t_rest:<10.1f} {t_obs:<10.1f} {l_ir:<12.2e} {sfr:<12.1f}"
 
                 if self.greybody_fitter.use_mcmc:
                     mcmc_used = "✓" if row["mcmc_used"] else "✗"
@@ -2470,6 +2501,11 @@ class SimstackResults:
                 sed_grp.attrs["median_redshift"] = sed.median_redshift
                 sed_grp.attrs["median_mass"] = sed.median_mass
                 sed_grp.attrs["n_sources"] = sed.n_sources
+
+                # Save per-bin catalog properties
+                if sed.bin_properties:
+                    for col_name, val in sed.bin_properties.items():
+                        sed_grp.attrs[f"median_{col_name}"] = val
 
                 # Save MCMC samples if available
                 if sed.mcmc_samples is not None:

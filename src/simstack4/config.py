@@ -81,7 +81,7 @@ class BeamConfig:
     psf_file: str | None = None   # Optional path to measured PSF FITS file
 
     def __post_init__(self):
-        """Expand environment variables in PSF file path"""
+        """Expand environment variables in psf_file path"""
         if self.psf_file:
             self.psf_file = os.path.expandvars(self.psf_file)
 
@@ -145,6 +145,24 @@ class ClassificationConfig:
     split_type: SplitType | None = None  # Optional population splitting
     split_params: SplitParams | None = None  # Only if split_type is specified
     formulas: dict[str, FormulaParams] | None = None  # Calculation formulas
+    bin_property_columns: list[str] | None = None  # Extra columns to summarize per bin
+
+    @property
+    def all_property_columns(self) -> list[str]:
+        """
+        All columns to summarize per bin: binning axis IDs + explicit extras.
+
+        Binning axes are always included automatically so the user
+        doesn't need to list them again in bin_property_columns.
+        """
+        # Start with binning axis column IDs (always included)
+        cols = [bc.id for bc in self.binning.values()]
+        # Add explicit extras (deduped, order-preserving)
+        if self.bin_property_columns:
+            for c in self.bin_property_columns:
+                if c not in cols:
+                    cols.append(c)
+        return cols
 
 
 @dataclass
@@ -336,6 +354,9 @@ class SimstackConfig:
                 binning=binning_config,
                 split_params=split_params,  # Can be None
                 formulas=formulas if formulas else None,
+                bin_property_columns=classification_dict.get(
+                    "bin_property_columns", None
+                ),
             )
 
             # Parse astrometry (unchanged)

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import pandas as pd
 from scipy import linalg
 
 from .config import SimstackConfig
@@ -93,6 +94,7 @@ class StackingResults:
     bootstrap_enabled: bool
     bootstrap_iterations: int
     bootstrap_split_fraction: float  # What fraction goes to "A" vs "B" (e.g., 0.8 for 80:20)
+    bin_properties: dict[str, dict[str, float]] | None = None  # {pop_label: {col: median}}
 
     def __post_init__(self):
         """Calculate derived quantities"""
@@ -1053,10 +1055,32 @@ class SimstackAlgorithm:
                 "degrees_of_freedom"
             ]
 
-        # Count sources per population
+        # Count sources and compute per-bin median properties
         n_sources = {}
+        bin_properties = {}
+        property_columns = self.config.catalog.classification.all_property_columns
+        catalog_df = self.population_manager.catalog_df
+
         for pop_bin in self.population_manager.iter_populations():
             n_sources[pop_bin.id_label] = pop_bin.n_sources
+
+            if pop_bin.n_sources > 0 and property_columns:
+                props = {}
+                subset = catalog_df.iloc[pop_bin.indices]
+                for col in property_columns:
+                    if col in subset.columns:
+                        vals = pd.to_numeric(subset[col], errors="coerce")
+                        median_val = vals.median()
+                        if pd.notna(median_val):
+                            props[col] = float(median_val)
+                    else:
+                        logger.debug(
+                            f"Column '{col}' not in catalog, "
+                            f"skipping for {pop_bin.id_label}"
+                        )
+                bin_properties[pop_bin.id_label] = props
+            else:
+                bin_properties[pop_bin.id_label] = {}
 
         # Calculate timing and memory
         execution_time = time.time() - start_time
@@ -1080,6 +1104,7 @@ class SimstackAlgorithm:
             bootstrap_enabled=self.bootstrap_enabled,
             bootstrap_iterations=self.bootstrap_iterations,
             bootstrap_split_fraction=getattr(self, "bootstrap_split_fraction", 0.5),
+            bin_properties=bin_properties if bin_properties else None,
         )
 
         logger.info(
