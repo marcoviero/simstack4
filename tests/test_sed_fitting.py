@@ -390,8 +390,8 @@ class TestLogPrior:
         assert lp == -np.inf
 
     def test_rejects_above_upper_bound(self, fitter):
-        """T_rest > 60K should be rejected."""
-        lp = fitter.log_prior([-34.0, 65.0], redshift=0.5)
+        """T_rest > T_rest_max (80K default) should be rejected."""
+        lp = fitter.log_prior([-34.0, 85.0], redshift=0.5)
         assert lp == -np.inf
 
     def test_rejects_bad_amplitude(self, fitter):

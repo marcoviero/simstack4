@@ -1160,6 +1160,7 @@ class SimstackWrapper:
         correlation_matrix: dict | None = None,
         inflation_factors: dict | None = None,
         bootstrap_covariances: dict | None = None,
+        **greybody_kwargs,
     ) -> None:
         """Run ONLY the analysis/SED fitting (requires stacking results)"""
         if not self.stacking_results:
@@ -1198,10 +1199,11 @@ class SimstackWrapper:
                 mcmc_iterations=mcmc_iterations,
                 mcmc_burn_in=mcmc_burn_in,
                 use_schreiber_prior=use_schreiber_prior,
-                use_covariance=covariance_enabled,  # NEW
-                correlation_matrix=correlation_data,  # NEW
-                inflation_factors=inflation_factors,  # NEW
-                bootstrap_covariances=bootstrap_covariances,  # NEW
+                use_covariance=covariance_enabled,
+                correlation_matrix=correlation_data,
+                inflation_factors=inflation_factors,
+                bootstrap_covariances=bootstrap_covariances,
+                **greybody_kwargs,
             )
 
             # Update results dict for backward compatibility
@@ -1547,6 +1549,7 @@ class SimstackWrapper:
         inflation_factors: dict | None = None,
         use_bootstrap_covariance: bool = True,
         use_instrumental_covariance: bool = True,
+        **greybody_kwargs,
     ) -> SimstackResults:
         """Public method to run ONLY analysis (requires stacking results)"""
         if not self.population_manager and self.config:
@@ -1600,6 +1603,7 @@ class SimstackWrapper:
             correlation_matrix=instrumental_correlation,
             inflation_factors=inflation_factors,
             bootstrap_covariances=bootstrap_covariances,
+            **greybody_kwargs,
         )
         return self.processed_results
 

@@ -101,9 +101,43 @@ class GreybodyFitter:
         mcmc_burn_in: int = 200,
         use_schreiber_prior: bool = False,
         cosmology_calc: "CosmologyCalculator | None" = None,
+        # --- Temperature bounds (rest frame, K) ---
+        T_rest_min: float = 15.0,
+        T_rest_max: float = 80.0,
+        # --- Amplitude bounds (log10) ---
+        amplitude_min: float = -41.0,
+        amplitude_max: float = -29.0,
+        # --- Beta bounds (free-beta mode) ---
+        beta_min: float = 0.5,
+        beta_max: float = 2.5,
+        # --- SNR thresholds for fit quality tiers ---
+        snr_high: float = 5.0,   # Tier A: data-driven
+        snr_low: float = 2.0,    # Tier C: prior-dominated
+        # --- Prior sigma scaling ---
+        snr_sigma_clip_min: float = 0.3,  # Floor for σ_eff / σ_base
+        snr_sigma_clip_max: float = 2.0,  # Ceiling for σ_eff / σ_base
     ):
         """
-        Initialize fitter with improved defaults
+        Initialize fitter.
+
+        Temperature bounds
+        ------------------
+        T_rest_min, T_rest_max : Rest-frame dust temperature bounds in K.
+            Default [15, 80] K. Raise T_rest_max for high-z populations
+            where T_dust can exceed 60 K.
+
+        SNR thresholds
+        --------------
+        snr_high : Median SED SNR above which fits are tier A (data-driven).
+        snr_low  : Below this, fits are tier C (prior-dominated).
+            Between snr_low and snr_high → tier B (prior-assisted).
+
+        Prior sigma scaling
+        -------------------
+        When use_schreiber_prior is True, the effective prior σ is:
+            σ_eff = σ_schreiber × clip(SNR / snr_high, snr_sigma_clip_min, snr_sigma_clip_max)
+        So at SNR = snr_high: σ_eff = σ_schreiber (prior barely matters).
+        At SNR = 1: σ_eff ≈ 0.3 × σ_schreiber (prior dominates).
         """
         # Physical constants
         self.h = 6.62607015e-34  # Planck constant (J⋅s)
@@ -117,6 +151,20 @@ class GreybodyFitter:
         self.mcmc_iterations = mcmc_iterations
         self.mcmc_burn_in = mcmc_burn_in
         self.use_schreiber_prior = use_schreiber_prior
+
+        # Configurable bounds
+        self.T_rest_min = T_rest_min
+        self.T_rest_max = T_rest_max
+        self.amplitude_min = amplitude_min
+        self.amplitude_max = amplitude_max
+        self.beta_min = beta_min
+        self.beta_max = beta_max
+
+        # SNR thresholds
+        self.SNR_HIGH = snr_high
+        self.SNR_LOW = snr_low
+        self.snr_sigma_clip_min = snr_sigma_clip_min
+        self.snr_sigma_clip_max = snr_sigma_clip_max
 
         # Cosmology — use proper calculator if provided, else fall back to Planck18
         if cosmology_calc is not None:
@@ -137,10 +185,6 @@ class GreybodyFitter:
             )
 
         self._prior_override = None  # Set by fit_sed during two-pass fitting
-
-    # SNR thresholds for fit quality tiers
-    SNR_HIGH = 5.0   # Tier A: data-driven, prior barely matters
-    SNR_LOW = 2.0    # Below this: prior-dominated
 
     @staticmethod
     def compute_sed_snr(fluxes, flux_errors):
@@ -220,7 +264,7 @@ class GreybodyFitter:
         try:
             if self.use_schreiber_prior and redshift > 0:
                 T_guess, _ = self.schreiber_temperature_prior(redshift)
-                T_guess = np.clip(T_guess, 16, 58)
+                T_guess = np.clip(T_guess, self.T_rest_min + 1, self.T_rest_max - 2)
             else:
                 T_guess = 30.0  # typical rest-frame T
             amplitude_guess = -35.0
@@ -238,7 +282,10 @@ class GreybodyFitter:
                         fluxes,
                         sigma=flux_errors,
                         p0=[amplitude_guess, T_guess],
-                        bounds=([-41, 15], [-29, 60]),
+                        bounds=(
+                            [self.amplitude_min, self.T_rest_min],
+                            [self.amplitude_max, self.T_rest_max],
+                        ),
                         maxfev=1000,
                     )
                     amplitude_guess, T_guess = popt
@@ -269,7 +316,7 @@ class GreybodyFitter:
         T_rest = 23.8 + 2.7 * redshift + 0.9 * redshift**2
 
         # Clip to physically reasonable rest-frame range
-        T_rest = np.clip(T_rest, 15, 60)
+        T_rest = np.clip(T_rest, self.T_rest_min, self.T_rest_max)
 
         # Uncertainty increases with redshift (scatter in Schreiber+2015)
         if redshift < 1.0:
@@ -290,12 +337,12 @@ class GreybodyFitter:
         """
         amplitude, temperature = theta  # temperature is T_rest
 
-        # Amplitude bounds
-        if not (-38 < amplitude < -30):
+        # Amplitude bounds (slightly inset from curve_fit bounds for MCMC stability)
+        if not (self.amplitude_min + 3 < amplitude < self.amplitude_max + 1):
             return -np.inf
 
         # Rest-frame temperature bounds — stable across all redshifts
-        if not (15 < temperature < 60):
+        if not (self.T_rest_min < temperature < self.T_rest_max):
             return -np.inf
 
         # Temperature priors
@@ -306,11 +353,12 @@ class GreybodyFitter:
             T_expected, T_sigma = self.schreiber_temperature_prior(redshift)
             log_p_temp = -0.5 * ((temperature - T_expected) / T_sigma) ** 2
         else:
-            # Mild preference for typical dust temperatures (20-45K rest frame)
+            # Mild preference for typical dust temperatures
+            T_mid = (self.T_rest_min + self.T_rest_max) / 2
             if 20 <= temperature <= 45:
                 log_p_temp = 0.0
-            elif 15 <= temperature < 20 or 45 < temperature <= 60:
-                log_p_temp = -0.5 * ((temperature - 32) / 12) ** 2
+            elif self.T_rest_min <= temperature < 20 or 45 < temperature <= self.T_rest_max:
+                log_p_temp = -0.5 * ((temperature - T_mid) / 15) ** 2
             else:
                 log_p_temp = -np.inf
 
@@ -375,9 +423,13 @@ class GreybodyFitter:
             amp_trial = amplitude_guess + np.random.normal(0, 0.1)
             temp_trial = temperature_guess + np.random.normal(0, 1.0)
 
-            # Rest-frame bounds
-            amp_trial = np.clip(amp_trial, -37.5, -30.5)
-            temp_trial = np.clip(temp_trial, 16, 58)
+            # Rest-frame bounds (inset from hard bounds for MCMC stability)
+            amp_trial = np.clip(
+                amp_trial, self.amplitude_min + 3.5, self.amplitude_max + 1.5
+            )
+            temp_trial = np.clip(
+                temp_trial, self.T_rest_min + 1, self.T_rest_max - 2
+            )
 
             test_prob = self.log_posterior(
                 [amp_trial, temp_trial], wavelengths, fluxes, flux_errors, redshift
@@ -513,8 +565,8 @@ class GreybodyFitter:
         Fit greybody model in the rest frame.
 
         Wavelengths are transformed to rest frame before fitting so that
-        the temperature parameter is T_rest directly, with stable bounds
-        [15, 60] K at all redshifts.
+        the temperature parameter is T_rest directly, with bounds
+        [T_rest_min, T_rest_max] K at all redshifts.
 
         Parameters
         ----------
@@ -552,19 +604,21 @@ class GreybodyFitter:
             # At SNR=2: σ=0.4×σ_base (tight)
             # At SNR=1: σ=0.2×σ_base (very tight)
             snr_ratio = max(sed_snr, 0.5) / self.SNR_HIGH
-            T_sigma = T_sigma_base * np.clip(snr_ratio, 0.3, 2.0)
+            T_sigma = T_sigma_base * np.clip(
+                snr_ratio, self.snr_sigma_clip_min, self.snr_sigma_clip_max
+            )
             self._prior_override = (T_center, T_sigma)
         else:
             T_center = None
             self._prior_override = None
 
         # Set T bounds: narrow around prior for low SNR
-        T_lo, T_hi = 15.0, 60.0
+        T_lo, T_hi = self.T_rest_min, self.T_rest_max
         if T_center is not None and sed_snr < self.SNR_HIGH:
             # Narrow bounds: ±3σ around prior center, but at least ±5K
             half_width = max(3 * T_sigma, 5.0)
-            T_lo = max(15.0, T_center - half_width)
-            T_hi = min(60.0, T_center + half_width)
+            T_lo = max(self.T_rest_min, T_center - half_width)
+            T_hi = min(self.T_rest_max, T_center + half_width)
 
         # Assign quality tier
         if sed_snr >= self.SNR_HIGH:
@@ -631,7 +685,10 @@ class GreybodyFitter:
                     flux_aug,
                     sigma=error_aug,
                     p0=[amplitude_guess, T_rest_guess],
-                    bounds=([-41, T_lo], [-29, T_hi]),
+                    bounds=(
+                        [self.amplitude_min, T_lo],
+                        [self.amplitude_max, T_hi],
+                    ),
                     maxfev=5000,
                 )
                 amplitude, temperature_rest = popt
@@ -660,7 +717,10 @@ class GreybodyFitter:
                     flux_aug,
                     sigma=error_aug,
                     p0=[amplitude_guess, T_rest_guess, 1.8],
-                    bounds=([-41, T_lo, 0.5], [-29, T_hi, 2.5]),
+                    bounds=(
+                        [self.amplitude_min, T_lo, self.beta_min],
+                        [self.amplitude_max, T_hi, self.beta_max],
+                    ),
                     maxfev=5000,
                 )
                 amplitude, temperature_rest, beta = popt
@@ -1553,6 +1613,15 @@ class SimstackResults:
         correlation_matrix: dict | None = None,  # NEW
         inflation_factors: dict | None = None,  # NEW
         bootstrap_covariances: dict | None = None,
+        # --- Greybody fitter configuration (forwarded to GreybodyFitter) ---
+        T_rest_min: float = 15.0,
+        T_rest_max: float = 80.0,
+        amplitude_min: float = -41.0,
+        amplitude_max: float = -29.0,
+        beta_min: float = 0.5,
+        beta_max: float = 2.5,
+        snr_high: float = 5.0,
+        snr_low: float = 2.0,
     ):
         """
         Initialize results processor
@@ -1570,6 +1639,10 @@ class SimstackResults:
             use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
             use_covariance: Whether to use covariance-aware fitting
             correlation_matrix: Custom correlation matrix (uses default if None)
+            T_rest_min: Minimum rest-frame T_dust bound (K)
+            T_rest_max: Maximum rest-frame T_dust bound (K). Raise for high-z.
+            snr_high: SED SNR threshold for tier-A (data-driven) fits
+            snr_low: SED SNR threshold below which fits are tier-C (prior-dominated)
         """
         self.config = config
         self.raw_results = stacking_results
@@ -1584,30 +1657,35 @@ class SimstackResults:
         # Store bootstrap covariances for use in fitting
         self.bootstrap_covariances = bootstrap_covariances or {}
 
+        # Greybody fitter kwargs shared between standard and covariance fitters
+        fitter_kwargs = dict(
+            fix_beta=fix_beta,
+            beta_fixed=beta_fixed,
+            use_mcmc=use_mcmc,
+            mcmc_iterations=mcmc_iterations,
+            mcmc_burn_in=mcmc_burn_in,
+            use_schreiber_prior=use_schreiber_prior,
+            cosmology_calc=self.cosmology_calc,
+            T_rest_min=T_rest_min,
+            T_rest_max=T_rest_max,
+            amplitude_min=amplitude_min,
+            amplitude_max=amplitude_max,
+            beta_min=beta_min,
+            beta_max=beta_max,
+            snr_high=snr_high,
+            snr_low=snr_low,
+        )
+
         # Initialize greybody fitter with MCMC and covariance options
         if use_covariance:
             self.greybody_fitter = CovarianceGreybodyFitter(
                 correlation_matrix=correlation_matrix,
-                fix_beta=fix_beta,
-                beta_fixed=beta_fixed,
-                use_mcmc=use_mcmc,
-                mcmc_iterations=mcmc_iterations,
-                mcmc_burn_in=mcmc_burn_in,
-                use_schreiber_prior=use_schreiber_prior,
                 inflation_factors=inflation_factors,
-                cosmology_calc=self.cosmology_calc,
+                **fitter_kwargs,
             )
             logger.info("Using covariance-aware greybody fitter")
         else:
-            self.greybody_fitter = GreybodyFitter(
-                fix_beta=fix_beta,
-                beta_fixed=beta_fixed,
-                use_mcmc=use_mcmc,
-                mcmc_iterations=mcmc_iterations,
-                mcmc_burn_in=mcmc_burn_in,
-                use_schreiber_prior=use_schreiber_prior,
-                cosmology_calc=self.cosmology_calc,
-            )
+            self.greybody_fitter = GreybodyFitter(**fitter_kwargs)
             logger.info("Using standard greybody fitter")
 
         # Store settings for logging
@@ -2347,6 +2425,7 @@ def create_results_processor(
     correlation_matrix: dict | None = None,
     inflation_factors: dict | None = None,
     bootstrap_covariances: dict | None = None,
+    **greybody_kwargs,
 ) -> SimstackResults:
     """
     Convenience function to create results processor
@@ -2361,9 +2440,11 @@ def create_results_processor(
         mcmc_iterations: Number of MCMC iterations
         mcmc_burn_in: Number of burn-in iterations to discard
         use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
-        use_covariance: Whether to use covariance-aware fitting (NEW)
-        correlation_matrix: Custom correlation matrix (uses default if None) (NEW)
+        use_covariance: Whether to use covariance-aware fitting
+        correlation_matrix: Custom correlation matrix (uses default if None)
         bootstrap_covariances: Dict mapping population_id -> bootstrap covariance matrix
+        **greybody_kwargs: Additional kwargs forwarded to GreybodyFitter
+            (T_rest_min, T_rest_max, snr_high, snr_low, etc.)
 
     Returns:
         Processed SimstackResults object
@@ -2382,4 +2463,5 @@ def create_results_processor(
         correlation_matrix=correlation_matrix,
         inflation_factors=inflation_factors,
         bootstrap_covariances=bootstrap_covariances,
+        **greybody_kwargs,
     )
