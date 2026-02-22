@@ -74,10 +74,16 @@ class ErrorConfig:
 
 @dataclass
 class BeamConfig:
-    """Beam configuration with optional explicit beam area"""
+    """Beam configuration with optional explicit beam area and PSF file"""
 
     fwhm: float
     area_sr: float | None = None  # Make this optional
+    psf_file: str | None = None   # Optional path to measured PSF FITS file
+
+    def __post_init__(self):
+        """Expand environment variables in PSF file path"""
+        if self.psf_file:
+            self.psf_file = os.path.expandvars(self.psf_file)
 
     def get_beam_area_sr(self) -> float:
         """
@@ -361,6 +367,7 @@ class SimstackConfig:
                 beam = BeamConfig(
                     fwhm=beam_dict.get("fwhm", 6.0),
                     area_sr=beam_dict.get("area_sr", 1.0),
+                    psf_file=beam_dict.get("psf_file", None),
                 )
 
                 wavelength = map_config.get("wavelength")

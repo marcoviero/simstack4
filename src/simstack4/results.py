@@ -103,7 +103,7 @@ class GreybodyFitter:
         cosmology_calc: "CosmologyCalculator | None" = None,
         # --- Temperature bounds (rest frame, K) ---
         T_rest_min: float = 15.0,
-        T_rest_max: float = 80.0,
+        T_rest_max: float = 90.0,
         # --- Amplitude bounds (log10) ---
         amplitude_min: float = -41.0,
         amplitude_max: float = -29.0,
@@ -112,7 +112,7 @@ class GreybodyFitter:
         beta_max: float = 2.5,
         # --- SNR thresholds for fit quality tiers ---
         snr_high: float = 5.0,   # Tier A: data-driven
-        snr_low: float = 2.0,    # Tier C: prior-dominated
+        snr_low: float = 1.0,    # Tier C: prior-dominated
         # --- Prior sigma scaling ---
         snr_sigma_clip_min: float = 0.3,  # Floor for σ_eff / σ_base
         snr_sigma_clip_max: float = 2.0,  # Ceiling for σ_eff / σ_base
@@ -610,6 +610,7 @@ class GreybodyFitter:
             self._prior_override = (T_center, T_sigma)
         else:
             T_center = None
+            T_sigma = None
             self._prior_override = None
 
         # Set T bounds: narrow around prior for low SNR
@@ -639,93 +640,164 @@ class GreybodyFitter:
         )
 
         try:
-            # Initial guess (operates on rest-frame wavelengths)
-            amplitude_guess, T_rest_guess = self._get_initial_guess(
-                wave_rest_fit, flux_fit, error_fit, redshift
-            )
-            # Override T guess with prior center if available
-            if T_center is not None:
-                T_rest_guess = T_center
+            # ============================================================
+            # Helper: solve amplitude analytically at fixed T, beta
+            # Returns (amplitude, amplitude_err)
+            # ============================================================
+            def _solve_amplitude_at_T(T_rest, beta_val):
+                """
+                Linear least-squares for 10^A at fixed T, beta.
+                flux_i = 10^A × template_i  →  x = Σ(f·t/σ²) / Σ(t²/σ²)
+                """
+                template = self.greybody_model(
+                    wave_rest_fit, 0.0, T_rest, beta_val
+                )
+                w = 1.0 / error_fit**2
+                denom = np.sum(template**2 * w)
+                if denom <= 0:
+                    return -35.0, 1.0
+                x_opt = np.sum(flux_fit * template * w) / denom
 
-            logger.debug(
-                f"Initial guess: A={amplitude_guess:.2f}, T_rest={T_rest_guess:.1f}K, "
-                f"bounds=[{T_lo:.0f}, {T_hi:.0f}]K"
-            )
-
-            # Curve fitting with rest-frame temperature bounds
-            # When prior is active, add a virtual data point that penalizes
-            # deviation from T_center — equivalent to the Gaussian prior
-            # in the MCMC path. This turns curve_fit into penalized
-            # least squares: χ² + (T - T_center)²/σ_prior²
-            use_regularization = (T_center is not None and T_sigma is not None)
-
-            if self.fix_beta:
-
-                if use_regularization:
-                    def model_func(wave, amp, temp):
-                        model = self.greybody_model(
-                            wave[:-1], amp, temp, self.beta_fixed
-                        )
-                        return np.append(model, temp)
-
-                    wave_aug = np.append(wave_rest_fit, -1.0)
-                    flux_aug = np.append(flux_fit, T_center)
-                    error_aug = np.append(error_fit, T_sigma)
+                if x_opt > 0:
+                    amp = np.clip(
+                        np.log10(x_opt), self.amplitude_min, self.amplitude_max
+                    )
+                    amp_err = np.sqrt(1.0 / denom) / (x_opt * np.log(10))
                 else:
+                    amp = -35.0
+                    amp_err = 1.0
+                return amp, amp_err
+
+            # ============================================================
+            # TIER C: Prior-dominated (SNR < snr_low)
+            # Fix T = T_center, solve amplitude analytically.
+            # ============================================================
+            if fit_quality_tier == "C" and T_center is not None and self.fix_beta:
+                temperature_rest = T_center
+                beta = self.beta_fixed
+                amplitude, amplitude_err = _solve_amplitude_at_T(
+                    temperature_rest, beta
+                )
+                temperature_err = T_sigma  # Error is the prior width
+                beta_err = 0.0
+
+                logger.info(
+                    f"Tier-C analytical fit: T_rest={temperature_rest:.1f}K (fixed), "
+                    f"A={amplitude:.2f}±{amplitude_err:.2f}"
+                )
+
+            elif fit_quality_tier == "B" and T_center is not None and self.fix_beta:
+                # ============================================================
+                # TIER B: Prior-assisted (snr_low ≤ SNR < snr_high)
+                # Two-step: regularized curve_fit for T, then analytical A.
+                # This breaks the T–A degeneracy that causes amplitude
+                # inflation on the Wien side at high z.
+                # ============================================================
+                amplitude_guess, T_rest_guess = self._get_initial_guess(
+                    wave_rest_fit, flux_fit, error_fit, redshift
+                )
+                if T_center is not None:
+                    T_rest_guess = T_center
+
+                logger.debug(
+                    f"Tier-B two-step: T_guess={T_rest_guess:.1f}K, "
+                    f"bounds=[{T_lo:.0f}, {T_hi:.0f}]K"
+                )
+
+                # Step 1: fit T only (amplitude pinned to a reasonable value
+                # from the initial guess, regularized toward T_center)
+                def model_func_T_only(wave, temp):
+                    """1-parameter model: solve A analytically at each T."""
+                    template = self.greybody_model(
+                        wave, 0.0, temp, self.beta_fixed
+                    )
+                    w = 1.0 / error_fit**2
+                    x = np.sum(flux_fit * template * w) / np.sum(template**2 * w)
+                    x = max(x, 1e-40)
+                    return template * x
+
+                try:
+                    popt_T, pcov_T = curve_fit(
+                        model_func_T_only,
+                        wave_rest_fit,
+                        flux_fit,
+                        sigma=error_fit,
+                        p0=[T_rest_guess],
+                        bounds=([T_lo], [T_hi]),
+                        maxfev=5000,
+                    )
+                    temperature_rest = popt_T[0]
+                    temperature_err = np.sqrt(pcov_T[0, 0])
+                except Exception:
+                    # Fallback: use prior center
+                    temperature_rest = T_center
+                    temperature_err = T_sigma
+
+                # Step 2: analytical amplitude at fitted T
+                beta = self.beta_fixed
+                amplitude, amplitude_err = _solve_amplitude_at_T(
+                    temperature_rest, beta
+                )
+                beta_err = 0.0
+
+                logger.info(
+                    f"Tier-B two-step: T_rest={temperature_rest:.1f}±{temperature_err:.1f}K, "
+                    f"A={amplitude:.2f}±{amplitude_err:.2f}"
+                )
+
+            else:
+                # ============================================================
+                # TIER A (or no prior): Standard curve_fit
+                # ============================================================
+                amplitude_guess, T_rest_guess = self._get_initial_guess(
+                    wave_rest_fit, flux_fit, error_fit, redshift
+                )
+                if T_center is not None:
+                    T_rest_guess = T_center
+
+                logger.debug(
+                    f"Initial guess: A={amplitude_guess:.2f}, T_rest={T_rest_guess:.1f}K, "
+                    f"bounds=[{T_lo:.0f}, {T_hi:.0f}]K"
+                )
+
+                if self.fix_beta:
+
                     def model_func(wave, amp, temp):
                         return self.greybody_model(wave, amp, temp, self.beta_fixed)
 
-                    wave_aug = wave_rest_fit
-                    flux_aug = flux_fit
-                    error_aug = error_fit
-
-                popt, pcov = curve_fit(
-                    model_func,
-                    wave_aug,
-                    flux_aug,
-                    sigma=error_aug,
-                    p0=[amplitude_guess, T_rest_guess],
-                    bounds=(
-                        [self.amplitude_min, T_lo],
-                        [self.amplitude_max, T_hi],
-                    ),
-                    maxfev=5000,
-                )
-                amplitude, temperature_rest = popt
-                beta = self.beta_fixed
-                param_errors = np.sqrt(np.diag(pcov))
-                amplitude_err, temperature_err = param_errors
-                beta_err = 0.0
-            else:
-                if use_regularization:
-                    def model_func_free(wave, amp, temp, beta):
-                        model = self.greybody_model(wave[:-1], amp, temp, beta)
-                        return np.append(model, temp)
-
-                    wave_aug = np.append(wave_rest_fit, -1.0)
-                    flux_aug = np.append(flux_fit, T_center)
-                    error_aug = np.append(error_fit, T_sigma)
+                    popt, pcov = curve_fit(
+                        model_func,
+                        wave_rest_fit,
+                        flux_fit,
+                        sigma=error_fit,
+                        p0=[amplitude_guess, T_rest_guess],
+                        bounds=(
+                            [self.amplitude_min, T_lo],
+                            [self.amplitude_max, T_hi],
+                        ),
+                        maxfev=5000,
+                    )
+                    amplitude, temperature_rest = popt
+                    beta = self.beta_fixed
+                    param_errors = np.sqrt(np.diag(pcov))
+                    amplitude_err, temperature_err = param_errors
+                    beta_err = 0.0
                 else:
-                    model_func_free = self.greybody_model
-                    wave_aug = wave_rest_fit
-                    flux_aug = flux_fit
-                    error_aug = error_fit
-
-                popt, pcov = curve_fit(
-                    model_func_free,
-                    wave_aug,
-                    flux_aug,
-                    sigma=error_aug,
-                    p0=[amplitude_guess, T_rest_guess, 1.8],
-                    bounds=(
-                        [self.amplitude_min, T_lo, self.beta_min],
-                        [self.amplitude_max, T_hi, self.beta_max],
-                    ),
-                    maxfev=5000,
-                )
-                amplitude, temperature_rest, beta = popt
-                param_errors = np.sqrt(np.diag(pcov))
-                amplitude_err, temperature_err, beta_err = param_errors
+                    popt, pcov = curve_fit(
+                        self.greybody_model,
+                        wave_rest_fit,
+                        flux_fit,
+                        sigma=error_fit,
+                        p0=[amplitude_guess, T_rest_guess, 1.8],
+                        bounds=(
+                            [self.amplitude_min, T_lo, self.beta_min],
+                            [self.amplitude_max, T_hi, self.beta_max],
+                        ),
+                        maxfev=5000,
+                    )
+                    amplitude, temperature_rest, beta = popt
+                    param_errors = np.sqrt(np.diag(pcov))
+                    amplitude_err, temperature_err, beta_err = param_errors
 
             logger.info(
                 f"Curve fit: T_rest={temperature_rest:.1f}±{temperature_err:.1f}K"

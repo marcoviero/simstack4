@@ -993,3 +993,51 @@ class TestCurveFitRegularization:
         assert result["fit_success"]
         # Should recover true T without prior interference
         assert abs(result["temperature_rest_frame"] - T_rest) < 5.0
+
+
+class TestTierBAmplitudeStability:
+    """
+    Verify that tier-B two-step solve prevents amplitude inflation
+    on the Wien side at high z.
+    """
+
+    def test_high_z_low_snr_amplitude_bounded(
+        self, fitter_with_prior, herschel_wavelengths
+    ):
+        """
+        At z=4 with moderate noise, amplitude should not diverge.
+        The old joint curve_fit would inflate A to compensate for a
+        prior-constrained T on the Wien side.
+        """
+        T_rest_true = 40.0  # Hot dust at high z
+        z = 4.0
+        np.random.seed(123)
+
+        fluxes, errors, _ = _make_synthetic_sed(
+            fitter_with_prior, herschel_wavelengths, T_rest_true, z,
+            noise_frac=0.3,
+        )
+
+        result = fitter_with_prior.fit_sed(
+            herschel_wavelengths, fluxes, errors, z
+        )
+
+        if result["fit_success"]:
+            # Model fluxes at observed wavelengths should be in the same
+            # order of magnitude as the data, not 100× higher
+            beta = fitter_with_prior.beta_fixed
+            z1 = 1 + z
+            wave_rest = herschel_wavelengths / z1
+            model_fluxes = fitter_with_prior.greybody_model(
+                wave_rest, result["amplitude"],
+                result["temperature_rest_frame"], beta,
+            )
+            positive = fluxes > 0
+            if np.any(positive):
+                ratio = np.median(model_fluxes[positive] / fluxes[positive])
+                assert ratio < 10, (
+                    f"Model/data ratio = {ratio:.1f}× — amplitude is inflated. "
+                    f"tier={result['fit_quality_tier']}, "
+                    f"A={result['amplitude']:.2f}, "
+                    f"T={result['temperature_rest_frame']:.1f}K"
+                )

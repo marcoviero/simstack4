@@ -4,6 +4,7 @@ Sky maps handling for Simstack4
 This module handles loading, processing, and manipulating astronomical maps.
 Supports FITS files with proper WCS handling, PSF convolution, and coordinate transformations.
 """
+import os
 import pdb
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,7 @@ class MapData:
     map_name: str
     units: str = "Jy/beam"
     valid_pixel_mask: np.ndarray | None = None  # True where observed (non-NaN, non-zero)
+    psf_file: str | None = None  # Optional path to measured PSF FITS file
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -210,6 +212,7 @@ class SkyMaps:
             color_correction=map_config.color_correction,
             map_name=map_name,
             units=units,
+            psf_file=map_config.beam.psf_file,
         )
 
         # Convert units if needed
@@ -359,11 +362,14 @@ class SkyMaps:
 
     def create_psf_kernel(self, map_name: str, normalize: bool = True) -> np.ndarray:
         """
-        Create PSF kernel for the specified map
+        Create PSF kernel for the specified map.
+
+        If the map has a psf_file configured, loads the measured PSF from that
+        FITS file. Otherwise builds a Gaussian from beam FWHM.
 
         Args:
             map_name: Name of the map
-            normalize: Whether to normalize the kernel
+            normalize: Whether to normalize the kernel (peak=1)
 
         Returns:
             2D PSF kernel array
@@ -373,7 +379,11 @@ class SkyMaps:
 
         map_data = self.maps[map_name]
 
-        # Get beam FWHM in pixels
+        # Load from FITS file if configured
+        if map_data.psf_file:
+            return self._load_psf_from_file(map_data.psf_file, normalize)
+
+        # Otherwise build Gaussian from beam FWHM
         beam_fwhm_pix = map_data.beam_fwhm_pixels
 
         # Convert FWHM to sigma
@@ -399,6 +409,61 @@ class SkyMaps:
             kernel = kernel.array
 
         return kernel
+
+    def _load_psf_from_file(
+        self, psf_path: str, normalize: bool = True
+    ) -> np.ndarray:
+        """
+        Load a measured PSF from a FITS file.
+
+        The PSF should be a 2D image centered on the peak. If the array has
+        even dimensions, it is trimmed by one row/column to make it odd
+        (required for symmetric stamping).
+
+        Args:
+            psf_path: Path to FITS file containing PSF image
+            normalize: Whether to peak-normalise (peak=1)
+
+        Returns:
+            2D PSF kernel array (odd dimensions, centered)
+        """
+        if not os.path.exists(psf_path):
+            raise MapError(f"PSF file not found: {psf_path}")
+
+        with fits.open(psf_path) as hdul:
+            # Use first HDU with 2D data
+            psf = None
+            for hdu in hdul:
+                if hdu.data is not None and hdu.data.ndim == 2:
+                    psf = hdu.data.astype(np.float64)
+                    break
+
+            if psf is None:
+                raise MapError(f"No 2D image found in PSF file: {psf_path}")
+
+        # Force odd dimensions (trim one row/col from the end if even)
+        if psf.shape[0] % 2 == 0:
+            psf = psf[:-1, :]
+        if psf.shape[1] % 2 == 0:
+            psf = psf[:, :-1]
+
+        # Replace NaNs with zero
+        psf = np.nan_to_num(psf, nan=0.0)
+
+        if normalize:
+            peak = np.max(psf)
+            if peak > 0:
+                psf = psf / peak
+            else:
+                raise MapError(f"PSF has no positive values: {psf_path}")
+
+        logger.info(
+            f"  Loaded PSF from {os.path.basename(psf_path)}: "
+            f"{psf.shape[0]}×{psf.shape[1]} pixels, "
+            f"sum={np.sum(psf):.2f}"
+        )
+
+        return psf
 
     def convolve_with_psf(
         self, data: np.ndarray, map_name: str, method: str = "fft"
