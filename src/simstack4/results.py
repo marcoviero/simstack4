@@ -201,14 +201,17 @@ class GreybodyFitter:
 
     def _validate_data(self, wavelengths, fluxes, flux_errors):
         """
-        Validate and filter data, handling the huge dynamic range in your data
+        Validate and filter data for SED fitting.
 
-        Returns:
-        --------
+        Handles the large dynamic range typical of multi-band IR photometry
+        (e.g., MIPS 24μm through SCUBA 850μm).
+
+        Returns
+        -------
         valid_mask : array
-            Boolean mask for valid data points
+            Boolean mask for valid data points.
         use_for_fit : array
-            Boolean mask for data to use in fitting (more restrictive)
+            Boolean mask for data to use in fitting (more restrictive).
         """
         # Basic validity checks
         valid = (
@@ -222,24 +225,19 @@ class GreybodyFitter:
         # Calculate SNR
         snr = np.abs(fluxes) / flux_errors
 
-        # For your data, we need to be smart about what to include:
-        # 1. Strong positive detections (>2σ)
+        # Strong positive detections (>2σ)
         strong_detections = (fluxes > 0) & (snr > 2.0)
 
-        # 2. Reasonable measurements (>1σ, including negatives)
-        reasonable_measurements = (snr > 1.0) & (
-            snr < 1000
-        )  # Cap very high SNR that might be outliers
+        # Reasonable measurements (>1σ, cap very high SNR outliers)
+        reasonable_measurements = (snr > 1.0) & (snr < 1000)
 
-        # 3. Exclude measurements with extremely large errors (like SCUBA in your data)
-        # If error is >100x the typical error, it's probably not useful
+        # Exclude bands with extremely large errors (>100× median error),
+        # which typically contribute no constraining power
         log_errors = np.log10(flux_errors)
         median_log_error = np.median(log_errors)
-        reasonable_errors = (
-            log_errors - median_log_error
-        ) < 2.0  # Within 100x of median
+        reasonable_errors = (log_errors - median_log_error) < 2.0
 
-        # Final selection: use measurements that are reasonable AND either strong detections OR reasonable measurements
+        # Final: reasonable errors AND (strong detection OR reasonable measurement)
         use_for_fit = (
             valid & reasonable_errors & (strong_detections | reasonable_measurements)
         )
@@ -366,35 +364,27 @@ class GreybodyFitter:
 
     def log_likelihood(self, theta, wavelengths, fluxes, flux_errors):
         """
-        Improved log likelihood that handles negative fluxes properly
+        Gaussian log-likelihood for SED fitting.
+
+        Handles negative observed fluxes (common in stacking).
         """
         amplitude, temperature = theta
 
         try:
-            # Calculate model fluxes
             model_fluxes = self.greybody_model(
                 wavelengths, amplitude, temperature, self.beta_fixed
             )
 
-            # Check for invalid model fluxes
-            if not np.all(np.isfinite(model_fluxes)):
+            if not np.all(np.isfinite(model_fluxes)) or np.any(model_fluxes <= 0):
                 return -np.inf
 
-            # Prevent completely unreasonable model values
-            if np.any(model_fluxes <= 0) or np.any(model_fluxes > 1000):
-                return -np.inf
-
-            # Calculate chi-squared (can handle negative observed fluxes)
             residuals = (fluxes - model_fluxes) / flux_errors
             chi2 = np.sum(residuals**2)
 
-            # Sanity check
             if not np.isfinite(chi2) or chi2 > 10000:
                 return -np.inf
 
-            # Log likelihood
             log_like = -0.5 * chi2 - 0.5 * np.sum(np.log(2 * np.pi * flux_errors**2))
-
             return log_like
 
         except (FloatingPointError, OverflowError, ValueError):
@@ -901,22 +891,38 @@ class GreybodyFitter:
         finally:
             self._prior_override = None
 
-    # Include all the other methods (greybody_model, calculate_LIR, etc.) from the original class
     def greybody_model(
         self, wavelength_um, amplitude, temperature, beta=1.8, alpha=2.0
     ):
-        """Greybody model with power law extensions."""
-        # Convert wavelength to frequency
-        c_light = 299792458.0  # m/s
-        nu_in = c_light * 1.0e6 / wavelength_um  # Hz
+        """
+        Modified blackbody (greybody) model with Wien-side power-law extension.
 
-        # Linear amplitude
+        At long wavelengths: ν^β × B_ν(T) (modified blackbody).
+        At short wavelengths (ν > ν_cut): ν^(-α) power law, matched
+        continuously at ν_cut = (3 + β + α) × k_B T / h.
+
+        Parameters
+        ----------
+        wavelength_um : array
+            Wavelengths in microns (rest-frame if fitting in rest frame).
+        amplitude : float
+            log10 amplitude.
+        temperature : float
+            Dust temperature (K).
+        beta : float
+            Emissivity index.
+        alpha : float
+            Wien-side power-law slope.
+        """
+        nu_in = self.c * 1.0e6 / wavelength_um  # Hz
         A = 10**amplitude
 
-        # Calculate transition frequency
-        nu_cut = (3.0 + beta + alpha) * 0.208367e11 * temperature
+        # Transition frequency: Wien peak of modified blackbody
+        nu_cut = (3.0 + beta + alpha) * self.k_B / self.h * temperature
 
-        # Constants for power law normalization
+        # Power-law normalization: matched to greybody at ν_cut
+        # Constants use h in units of 1e-34 J·s, k_B in 1e-23 J/K, c in 1e8 m/s
+        # to avoid overflow in intermediate products.
         base = (
             2.0
             * (6.626) ** (-2.0 - beta - alpha)
@@ -929,10 +935,10 @@ class GreybodyFitter:
         w_den = np.exp(3.0 + beta + alpha) - 1.0
         w_div = w_num / w_den
 
-        # Modified blackbody (long wavelength side)
+        # Modified blackbody (Rayleigh-Jeans side)
         graybody = A * nu_in**beta * self.black(nu_in, temperature)[0] / 1000.0
 
-        # Power law (short wavelength side)
+        # Power law (Wien side)
         powerlaw = w_div * nu_in ** (-alpha)
 
         # Apply transition
@@ -943,9 +949,15 @@ class GreybodyFitter:
         return flux_density
 
     def black(self, nu_in, T):
-        """Blackbody function"""
-        a0 = 1.4718e-21  # 2*h*10^29/c^2
-        a1 = 4.7993e-11  # h/k
+        """
+        Planck function B_ν(T) in units that give mJy when multiplied by ν^β.
+
+        Constants:
+            a0 = 2h/c² × 1e29 = 1.4718e-21  (converts to ~mJy scale)
+            a1 = h/k_B = 4.7993e-11 s·K  (exponent scale)
+        """
+        a0 = 1.4718e-21  # 2h × 10^29 / c²
+        a1 = 4.7993e-11  # h / k_B
 
         num = a0 * nu_in**3.0
         den = np.exp(a1 * np.outer(1.0 / T, nu_in)) - 1.0
@@ -963,99 +975,98 @@ class GreybodyFitter:
         temperature_err=None,
     ):
         """
-        Calculate L_IR from rest-frame greybody parameters.
+        Calculate total infrared luminosity from rest-frame greybody parameters.
 
-        Parameters are from the rest-frame fit:
-          amplitude: log10 amplitude (rest-frame parameterization)
-          temperature: T_rest (K)
-          beta: emissivity index
+        L_IR = 4π D_L² / (1+z) × ∫(8–1000 μm rest) S_ν(ν_rest) dν_rest
 
-        L_IR = 4π D_L² / (1+z) × ∫(8–1000 μm rest) model(λ_rest) dν_rest
+        The 1/(1+z) factor accounts for the bandwidth compression when
+        converting from observed-frame flux density to rest-frame luminosity.
+
+        Parameters
+        ----------
+        amplitude, temperature, beta : float
+            Rest-frame greybody parameters.
+        redshift : float
+            Source redshift.
+
+        Returns
+        -------
+        L_IR : float
+            Total IR luminosity in L_sun.
+        L_IR_error : float
+            Propagated uncertainty in L_sun.
         """
         if np.isnan(redshift) or redshift <= 0:
             redshift = 0.01
 
-        z1 = 1 + redshift
+        D_L = self.luminosity_distance(redshift)  # Mpc
+        L_IR = self._integrate_LIR(amplitude, temperature, beta, redshift, D_L)
 
-        # Get luminosity distance (in Mpc)
-        D_L = self.luminosity_distance(redshift)
-
-        # Rest-frame wavelength range: 8–1000 μm
-        wav_min = 8.0
-        wav_max = 1000.0
-        wavelength_range = np.logspace(np.log10(wav_min), np.log10(wav_max), 1000)
-
-        # Evaluate model in rest frame
-        model_sed_jy = self.greybody_model(
-            wavelength_range, amplitude, temperature, beta
-        )
-
-        # Convert rest-frame wavelengths to frequencies
-        c_light = 299792458.0  # m/s
-        nu_rest = c_light * 1.0e6 / wavelength_range  # Hz
-
-        # Frequency intervals
-        dnu = nu_rest[:-1] - nu_rest[1:]
-        dnu = np.append(dnu[0], dnu)
-
-        # Integrate: model gives S_ν,obs as function of λ_rest
-        # L_IR = 4π D_L² / (1+z) × ∫ S_ν,obs dν_rest
-        Lir_jy_hz = np.sum(model_sed_jy * dnu) / z1
-
-        # Convert to solar luminosities
-        conversion = 4.0 * np.pi * (1.0e-13 * D_L * 3.08568025e22) ** 2.0 / self.L_sun
-        L_IR_solar = Lir_jy_hz * conversion
-
-        # Error propagation
+        # Error propagation via finite differences
         if amplitude_err is not None and temperature_err is not None:
             delta_amp = max(0.001, abs(amplitude_err) * 0.1)
             delta_temp = max(0.1, abs(temperature_err) * 0.1)
 
             try:
-                L_IR_plus_amp = self._calculate_LIR_single(
-                    amplitude + delta_amp, temperature, beta, redshift, D_L, conversion
+                L_plus_a = self._integrate_LIR(
+                    amplitude + delta_amp, temperature, beta, redshift, D_L
                 )
-                L_IR_minus_amp = self._calculate_LIR_single(
-                    amplitude - delta_amp, temperature, beta, redshift, D_L, conversion
+                L_minus_a = self._integrate_LIR(
+                    amplitude - delta_amp, temperature, beta, redshift, D_L
                 )
-                dLIR_damp = (L_IR_plus_amp - L_IR_minus_amp) / (2 * delta_amp)
+                dL_damp = (L_plus_a - L_minus_a) / (2 * delta_amp)
 
-                L_IR_plus_temp = self._calculate_LIR_single(
-                    amplitude, temperature + delta_temp, beta, redshift, D_L, conversion
+                L_plus_t = self._integrate_LIR(
+                    amplitude, temperature + delta_temp, beta, redshift, D_L
                 )
-                L_IR_minus_temp = self._calculate_LIR_single(
-                    amplitude, temperature - delta_temp, beta, redshift, D_L, conversion
+                L_minus_t = self._integrate_LIR(
+                    amplitude, temperature - delta_temp, beta, redshift, D_L
                 )
-                dLIR_dtemp = (L_IR_plus_temp - L_IR_minus_temp) / (2 * delta_temp)
+                dL_dtemp = (L_plus_t - L_minus_t) / (2 * delta_temp)
 
                 L_IR_error = np.sqrt(
-                    (dLIR_damp * amplitude_err) ** 2
-                    + (dLIR_dtemp * temperature_err) ** 2
+                    (dL_damp * amplitude_err) ** 2
+                    + (dL_dtemp * temperature_err) ** 2
                 )
-
             except Exception as e:
-                logger.warning(f"Error propagation failed: {e}, using 15% estimate")
-                L_IR_error = L_IR_solar * 0.15
+                logger.warning(f"L_IR error propagation failed: {e}, using 15%")
+                L_IR_error = L_IR * 0.15
         else:
-            L_IR_error = L_IR_solar * 0.15
+            L_IR_error = L_IR * 0.15
 
-        return L_IR_solar, L_IR_error
+        return L_IR, L_IR_error
 
-    def _calculate_LIR_single(
-        self, amplitude, temperature, beta, redshift, D_L, conversion
-    ):
-        """Helper for L_IR calculation (rest-frame parameters)."""
-        z1 = 1 + redshift
-        wavelength_range = np.logspace(np.log10(8.0), np.log10(1000.0), 1000)
+    def _integrate_LIR(self, amplitude, temperature, beta, redshift, D_L_mpc):
+        """
+        Core L_IR integration (rest-frame 8–1000 μm).
+
+        Parameters
+        ----------
+        D_L_mpc : float
+            Luminosity distance in Mpc.
+
+        Returns
+        -------
+        L_IR in solar luminosities.
+        """
+        wavelength_rest = np.logspace(np.log10(8.0), np.log10(1000.0), 1000)
         model_sed_jy = self.greybody_model(
-            wavelength_range, amplitude, temperature, beta
+            wavelength_rest, amplitude, temperature, beta
         )
-        c_light = 299792458.0
-        nu_rest = c_light * 1.0e6 / wavelength_range
-        dnu = nu_rest[:-1] - nu_rest[1:]
-        dnu = np.append(dnu[0], dnu)
-        Lir_jy_hz = np.sum(model_sed_jy * dnu) / z1
-        return Lir_jy_hz * conversion
+
+        # Convert rest-frame wavelengths to frequencies (decreasing order)
+        nu_rest = self.c * 1.0e6 / wavelength_rest  # Hz
+
+        # Integrate S_ν dν using trapezoidal rule (negate because ν decreasing)
+        integral_jy_hz = -np.trapezoid(model_sed_jy, nu_rest)
+
+        # L_IR = 4π D_L² / (1+z) × ∫ S_ν dν
+        # Jy → W/m²/Hz: × 1e-26
+        # D_L: Mpc → m: × 3.08568025e22
+        D_L_m = D_L_mpc * 3.08568025e22
+        L_IR_watts = 4.0 * np.pi * D_L_m**2 * 1e-26 * integral_jy_hz / (1 + redshift)
+
+        return L_IR_watts / self.L_sun
 
     def luminosity_distance(self, z):
         """Calculate luminosity distance in Mpc using proper cosmology."""
@@ -1378,7 +1389,7 @@ class CovarianceGreybodyFitter(GreybodyFitter):
         else:
             self.covariance_matrix = instrumental_cov
 
-        # Rest of method unchanged (positive definite check, Cholesky, etc.)
+        # Positive definite check + Cholesky decomposition
         eigenvals = np.linalg.eigvals(self.covariance_matrix)
         if np.any(eigenvals <= 0):
             logger.warning(
@@ -1399,11 +1410,7 @@ class CovarianceGreybodyFitter(GreybodyFitter):
             self.inv_cov_chol = np.diag(1.0 / flux_errors_filtered)
 
     def log_likelihood_with_covariance(self, theta, wavelengths, fluxes, flux_errors):
-        """
-        Log likelihood using full covariance matrix
-
-        This is the key improvement that should make the Schreiber prior more effective
-        """
+        """Log-likelihood using full covariance matrix (Cholesky decomposition)."""
         amplitude, temperature = theta
 
         try:
@@ -1504,8 +1511,12 @@ class CovarianceGreybodyFitter(GreybodyFitter):
             amp_trial = amplitude_guess + np.random.normal(0, 0.2)
             temp_trial = T_start + np.random.normal(0, T_spread)
 
-            amp_trial = np.clip(amp_trial, -37.5, -30.5)
-            temp_trial = np.clip(temp_trial, 16, 58)
+            amp_trial = np.clip(
+                amp_trial, self.amplitude_min + 3.5, self.amplitude_max + 1.5
+            )
+            temp_trial = np.clip(
+                temp_trial, self.T_rest_min + 1, self.T_rest_max - 2
+            )
 
             test_prob = self.log_posterior_with_covariance(
                 [amp_trial, temp_trial], wavelengths, fluxes, flux_errors, redshift
@@ -1893,7 +1904,6 @@ class SimstackResults:
 
         return sed_result
 
-    # Rest of the methods remain the same...
     def _calculate_derived_quantities(
         self, sed_result: SEDResults
     ) -> DerivedQuantities:
@@ -1982,24 +1992,24 @@ class SimstackResults:
                                 f"MCMC uncertainty calculation failed for {sed_result.population_id}: {e}"
                             )
 
-                    print(
-                        f"✓ Population {sed_result.population_id}: L_IR = {total_ir_lum:.2e} L_sun"
+                    logger.info(
+                        f"Population {sed_result.population_id}: L_IR = {total_ir_lum:.2e} L_sun"
                     )
                     if total_ir_lum_mcmc_err:
-                        print(
+                        logger.info(
                             f"  MCMC uncertainties: +{total_ir_lum_mcmc_err[1]:.2e}/-{total_ir_lum_mcmc_err[0]:.2e}"
                         )
 
                 except Exception as e:
-                    print(
-                        f"⚠️  L_IR calculation failed for {sed_result.population_id}: {e}"
+                    logger.warning(
+                        f"L_IR calculation failed for {sed_result.population_id}: {e}"
                     )
                     total_ir_lum = 0.0
                     total_ir_lum_err = 0.0
             else:
-                print(f"⚠️  Missing fit parameters for {sed_result.population_id}")
+                logger.warning(f"Missing fit parameters for {sed_result.population_id}")
         else:
-            print(f"⚠️  No successful greybody fit for {sed_result.population_id}")
+            logger.warning(f"No successful greybody fit for {sed_result.population_id}")
 
         # Convert IR luminosity to star formation rate
         # Use Kennicutt (1998) relation: SFR [M_sun/yr] = L_IR [L_sun] / 1e10
@@ -2061,6 +2071,8 @@ class SimstackResults:
 
         # === Pass 2: Re-fit low-SNR SEDs with empirical prior ===
         n_refit = 0
+        empirical_z_values = np.array(list(empirical_prior.keys())) if empirical_prior else np.array([])
+
         for pop_label, sed_result in pass1_results.items():
             tier = sed_result.fit_quality_tier
             if tier not in ("B", "C"):
@@ -2069,7 +2081,15 @@ class SimstackResults:
                 continue
 
             z = sed_result.median_redshift
-            emp = empirical_prior.get(z)
+
+            # Find nearest empirical anchor (within Δz < 0.5)
+            emp = None
+            if len(empirical_z_values) > 0:
+                nearest_idx = np.argmin(np.abs(empirical_z_values - z))
+                nearest_z = empirical_z_values[nearest_idx]
+                if abs(nearest_z - z) < 0.5:
+                    emp = empirical_prior[nearest_z]
+
             if emp is None:
                 # No empirical anchor for this z — keep pass 1
                 self.sed_results[pop_label] = sed_result
