@@ -1912,10 +1912,10 @@ class SimstackResults:
         sed_result.prior_sigma = greybody_results.get("prior_sigma")
 
         # Per-bin median catalog properties
-        if self.raw_results.bin_properties is not None:
-            sed_result.bin_properties = self.raw_results.bin_properties.get(
-                pop_label, {}
-            )
+        if isinstance(self.raw_results.bin_properties, dict):
+            props = self.raw_results.bin_properties.get(pop_label)
+            if isinstance(props, dict):
+                sed_result.bin_properties = props
 
         return sed_result
 
@@ -2265,9 +2265,15 @@ class SimstackResults:
                 ] = derived.dust_temperature_mcmc_error[1]
 
             # Add per-bin median catalog properties
-            if sed_result.bin_properties:
+            if isinstance(sed_result.bin_properties, dict) and sed_result.bin_properties:
                 for col_name, val in sed_result.bin_properties.items():
                     row[f"median_{col_name}"] = val
+            elif sed_result.bin_properties is not None:
+                logger.debug(
+                    f"Unexpected bin_properties type for {pop_id}: "
+                    f"{type(sed_result.bin_properties).__name__} = "
+                    f"{sed_result.bin_properties!r}"
+                )
 
             data.append(row)
 
@@ -2503,7 +2509,7 @@ class SimstackResults:
                 sed_grp.attrs["n_sources"] = sed.n_sources
 
                 # Save per-bin catalog properties
-                if sed.bin_properties:
+                if isinstance(sed.bin_properties, dict) and sed.bin_properties:
                     for col_name, val in sed.bin_properties.items():
                         sed_grp.attrs[f"median_{col_name}"] = val
 

@@ -298,7 +298,12 @@ class SimstackAlgorithm:
         # Step 1: Full solve for flux estimates (reused for final output)
         full_solve_results = {}
         for map_name in self.sky_maps.maps.keys():
+            logger.info(f"  Full solve: {map_name}...")
             full_solve_results[map_name] = self._stack_single_map_standard(map_name)
+        logger.info(
+            f"  Full solves complete, mem {memory_usage_gb():.2f}GB. "
+            f"Starting per-bin error estimation..."
+        )
 
         # Step 2: Per-bin error estimation — one map at a time
         per_bin_errors = {
@@ -498,44 +503,27 @@ class SimstackAlgorithm:
         """
         Build cropped base layers for one map + crop geometry.
 
+        Memory-efficient: computes crop mask first, then builds each layer
+        at full resolution and immediately crops it — never holding all
+        layers at full resolution simultaneously.
+
         Returns
         -------
         cache : (n_layers, n_crop_pixels) float64
             Cropped, mean-subtracted base layers (+ foreground if enabled).
         crop_info : dict
-            flat_to_crop : (n_full_pixels,) int32 — maps flat pixel index to
-                crop index (-1 if not in crop mask).
-            obs_vector : (n_crop_pixels,) — cropped, mean-subtracted observed map.
-            n_crop : int — number of cropped pixels.
+            flat_to_crop, obs_vector, n_crop, flat_indices.
         """
         map_data = self.sky_maps[map_name]
         map_shape = map_data.shape
         n_full = map_shape[0] * map_shape[1]
         n_pops = len(population_ids)
+        n_layers = n_pops + (1 if self.add_foreground else 0)
 
-        # Build full layer matrix (one convolution per population)
-        layer_list = []
-        for pid in population_ids:
-            pop = self.population_manager.populations[pid]
-            if pop.n_sources > 0:
-                ra, dec = self._get_coordinates_from_indices(pop.indices)
-                layer = self._create_and_convolve_layer(
-                    map_name, ra, dec, map_shape
-                )
-            else:
-                layer = np.zeros(n_full)
-            layer_list.append(layer)
-
-        if self.add_foreground:
-            layer_list.append(np.ones(n_full))
-
-        full_matrix = np.array(layer_list)  # (n_layers, n_full)
-        n_layers = full_matrix.shape[0]
-
-        # Crop
+        # ---- Step 1: Compute crop mask (no layer data needed) ----
         if self.crop_circles:
-            full_matrix, obs_vector, flat_indices = self._crop_to_circles(
-                full_matrix, map_data.data, map_name
+            flat_indices, obs_vector = self._compute_crop_geometry(
+                map_name, map_data
             )
         else:
             obs_flat = map_data.data.ravel()
@@ -543,9 +531,30 @@ class SimstackAlgorithm:
             flat_indices = np.where(valid)[0]
             obs_vector = obs_flat[flat_indices]
             obs_vector -= np.nanmean(obs_vector)
-            full_matrix = full_matrix[:, flat_indices]
 
         n_crop = len(flat_indices)
+        logger.info(
+            f"  {map_name}: crop mask ready — {n_crop} pixels, "
+            f"building {n_layers} layers..."
+        )
+
+        # ---- Step 2: Pre-allocate cropped cache ----
+        cache = np.zeros((n_layers, n_crop), dtype=np.float64)
+
+        # ---- Step 3: Build each layer, crop immediately ----
+        for i, pid in enumerate(population_ids):
+            pop = self.population_manager.populations[pid]
+            if pop.n_sources > 0:
+                ra, dec = self._get_coordinates_from_indices(pop.indices)
+                layer_full = self._create_and_convolve_layer(
+                    map_name, ra, dec, map_shape
+                )
+                cache[i] = layer_full[flat_indices]
+                # layer_full freed on next iteration
+            # else: row stays zero
+
+        if self.add_foreground:
+            cache[n_layers - 1] = 1.0  # uniform foreground
 
         # Build flat→crop lookup
         flat_to_crop = np.full(n_full, -1, dtype=np.int32)
@@ -553,7 +562,7 @@ class SimstackAlgorithm:
 
         logger.info(
             f"  Cached {map_name}: {n_layers} layers × {n_crop} pixels "
-            f"({full_matrix.nbytes / 1e9:.2f} GB)"
+            f"({cache.nbytes / 1e9:.2f} GB), mem {memory_usage_gb():.2f}GB"
         )
 
         crop_info = {
@@ -563,7 +572,54 @@ class SimstackAlgorithm:
             "flat_indices": flat_indices,
         }
 
-        return full_matrix, crop_info
+        return cache, crop_info
+
+    def _compute_crop_geometry(
+        self, map_name: str, map_data
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Compute crop mask and observed vector without any layer data.
+
+        Returns
+        -------
+        flat_indices : (n_crop,) int array
+        obs_vector : (n_crop,) float array, mean-subtracted
+        """
+        observed_map = map_data.data
+        mask = np.zeros(observed_map.shape, dtype=bool)
+        circle_radius_pix = max(3.0, map_data.beam_fwhm_pixels)
+
+        for pop_bin in self.population_manager.iter_populations():
+            if pop_bin.n_sources == 0:
+                continue
+            try:
+                ra, dec = self._get_coordinates_from_indices(pop_bin.indices)
+                x_pix, y_pix = self.sky_maps.world_to_pixel(map_name, ra, dec)
+
+                for x, y in zip(x_pix, y_pix, strict=True):
+                    ix, iy = int(np.round(x)), int(np.round(y))
+                    if (
+                        0 <= ix < observed_map.shape[1]
+                        and 0 <= iy < observed_map.shape[0]
+                    ):
+                        self._add_circle_to_mask(mask, x, y, circle_radius_pix)
+            except Exception as e:
+                logger.warning(f"Crop mask error for {pop_bin.id_label}: {e}")
+                continue
+
+        valid_pixels_2d = mask & ~np.isnan(observed_map)
+
+        # Fallback if too few pixels
+        min_pixels = len(list(self.population_manager.iter_populations())) + 1
+        if np.sum(valid_pixels_2d) < min_pixels:
+            logger.warning("Too few cropped pixels, using all valid pixels")
+            valid_pixels_2d = ~np.isnan(observed_map)
+
+        flat_indices = np.where(valid_pixels_2d.ravel())[0]
+        obs_vector = observed_map.ravel()[flat_indices].copy()
+        obs_vector -= np.nanmean(obs_vector)
+
+        return flat_indices, obs_vector
 
     def _build_psf_kernel(self, map_name: str) -> tuple[np.ndarray, int]:
         """
