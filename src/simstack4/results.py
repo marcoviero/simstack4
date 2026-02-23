@@ -32,6 +32,21 @@ from .utils import setup_logging
 logger = setup_logging()
 
 
+def _ensure_dict(obj):
+    """Convert bin_properties value to dict if it was stringified during serialization."""
+    if isinstance(obj, dict):
+        return obj
+    if isinstance(obj, str):
+        import ast
+        try:
+            parsed = ast.literal_eval(obj)
+            if isinstance(parsed, dict):
+                return parsed
+        except (ValueError, SyntaxError):
+            pass
+    return None
+
+
 @dataclass
 class SEDResults:
     """Spectral Energy Distribution results for a population"""
@@ -1913,8 +1928,8 @@ class SimstackResults:
 
         # Per-bin median catalog properties
         if isinstance(self.raw_results.bin_properties, dict):
-            props = self.raw_results.bin_properties.get(pop_label)
-            if isinstance(props, dict):
+            props = _ensure_dict(self.raw_results.bin_properties.get(pop_label))
+            if props is not None:
                 sed_result.bin_properties = props
 
         return sed_result
@@ -2265,15 +2280,10 @@ class SimstackResults:
                 ] = derived.dust_temperature_mcmc_error[1]
 
             # Add per-bin median catalog properties
-            if isinstance(sed_result.bin_properties, dict) and sed_result.bin_properties:
-                for col_name, val in sed_result.bin_properties.items():
+            bp = _ensure_dict(sed_result.bin_properties)
+            if bp:
+                for col_name, val in bp.items():
                     row[f"median_{col_name}"] = val
-            elif sed_result.bin_properties is not None:
-                logger.debug(
-                    f"Unexpected bin_properties type for {pop_id}: "
-                    f"{type(sed_result.bin_properties).__name__} = "
-                    f"{sed_result.bin_properties!r}"
-                )
 
             data.append(row)
 
@@ -2509,8 +2519,9 @@ class SimstackResults:
                 sed_grp.attrs["n_sources"] = sed.n_sources
 
                 # Save per-bin catalog properties
-                if isinstance(sed.bin_properties, dict) and sed.bin_properties:
-                    for col_name, val in sed.bin_properties.items():
+                bp = _ensure_dict(sed.bin_properties)
+                if bp:
+                    for col_name, val in bp.items():
                         sed_grp.attrs[f"median_{col_name}"] = val
 
                 # Save MCMC samples if available

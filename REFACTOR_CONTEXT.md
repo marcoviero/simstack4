@@ -39,23 +39,22 @@ TOML config
 
 This branch has significant upgrades over main. All work should be done on this branch.
 
-### Repo Layout (with line counts — streamline-code-2)
+### Repo Layout (with line counts — streamline-code-2, as of Session 14)
 ```
 src/simstack4/
   __init__.py            (82)   - Public API, placeholder fallbacks
-  algorithm.py          (1130)  - Core stacking + bootstrap split logic [was 1013→734→1130]
+  algorithm.py          (~1100) - Core stacking + per_bin cache + Gram solve [was 734]
   cli.py                 (194)  - Command-line interface
-  config.py              (449)  - TOML config parsing, generalized binning
+  config.py             (~480)  - TOML config parsing, generalized binning, bin_property_columns, psf_file
   cosmology.py           (344)  - Luminosity distance, SFR calculations
-  populations.py         (719)  - Generalized PopulationManager (arbitrary bin dims) [was 721]
-  results.py            (2155)  - Results, GreybodyFitter, CovarianceGreybodyFitter, MCMC
-  sky_catalogs.py        (402)  - Catalog loading (pandas/polars) [was 492]
-  sky_maps.py            (505)  - FITS map loading, PSF convolution, WCS [was 508]
+  populations.py         (719)  - Generalized PopulationManager (arbitrary bin dims)
+  results.py           (~2600)  - Results, GreybodyFitter, MCMC, bin_properties, HDF5 save
+  sky_catalogs.py        (402)  - Catalog loading (pandas/polars)
+  sky_maps.py            (505)  - FITS map loading, PSF convolution, WCS
   toolbox.py             (638)  - Math/coordinate utilities (overlaps with utils.py)
   utils.py               (275)  - Logging, memory, environment checks
   wrapper.py            (1865)  - Pipeline orchestration, JSON save/load, metadata
   plots.py               (748)  - Matplotlib visualization
-  sed_grid_plot.py             - SED grid plot with 3D binning support (grid_dims parameter)
   exceptions/             (72)  - Custom exception classes
   scripts/
     cli_stacking_script.py    (412)  - CLI runner with argparse
@@ -64,9 +63,11 @@ src/simstack4/
     simmap_stacking.py        (277)  - Simulation stacking script
     simstack_simulation_generator.py (602) - Simulation generator
     clean_cosmos_merger.py    (432)  - COSMOS catalog merger
+    clean_cosmos_wijesekera.py(280)  - Wijesekera+2026 selection catalog builder
+    irx_plots.py             (~400)  - IRX-β and IRX-M* plotting with reference curves
     analyze_results.py         (39)  - Results analysis stub
 ```
-Total: ~11,800 lines Python
+Total: ~13,000 lines Python
 
 ---
 
@@ -79,13 +80,20 @@ Total: ~11,800 lines Python
   `@property` accessors for backward compatibility
 - **Bootstrap A/B split approach**: algorithm.py splits each population into A and B
   halves, builds doubled layer matrix, solves simultaneously, sums flux_A + flux_B
+- **Per-bin caching + Gram matrix solve**: 10.4× speedup via cached layers, 130× faster
+  linear algebra via Gram matrix updates instead of full lstsq
+- **PSF stamping**: 1000× faster layer creation for per_bin iterations
 - **GreybodyFitter** and **CovarianceGreybodyFitter** with optional MCMC (emcee)
+- **Tier-stratified SED fitting**: A (data, SNR≥3), B (prior-assisted), C (prior-dominated)
+- **bin_properties**: per-population median catalog statistics stored in StackingResults
 - **Self-contained JSON output**: wrapper.py embeds config + catalog metadata so
   results can be loaded without the original TOML/catalog files
+- **Measured PSF file support**: `beam.psf_file` in TOML config
 - **Hardcoded 8×8 correlation matrix** (24–850μm) in wrapper.py
 - **Dead code from main removed** from algorithm.py (get_population_data_method,
   enhanced_wrapper_integration, string literals)
-- **New scripts**: cli_stacking_script.py, cosmos_stacking_clean.py
+- **New scripts**: cli_stacking_script.py, cosmos_stacking_clean.py,
+  clean_cosmos_wijesekera.py (Wijesekera+2026 selection), irx_plots.py
 
 ### Known debris / issues on this branch:
 - ~~`sky_catalogs.py`: COSMOS-specific `load_cosmos_catalog` commented out~~ **FIXED**
@@ -94,35 +102,26 @@ Total: ~11,800 lines Python
 - ~~`algorithm.py`: ProgressTracker excessive emoji logging~~ **FIXED**
 - ~~`populations.py`: Column validation wrapped in docstring~~ **FIXED**
 - `wrapper.py`: 1865 lines — serialize/deserialize/reconstruct logic is very long.
-- `results.py`: 2155 lines — GreybodyFitter + CovarianceGreybodyFitter + MCMC is
-- `results.py`: 2155 lines — GreybodyFitter + CovarianceGreybodyFitter + MCMC is
-  a lot of new code without any tests.
+- `results.py`: ~2600 lines — GreybodyFitter + CovarianceGreybodyFitter + MCMC +
+  bin_properties + HDF5 save. Functional but long.
 - `results.py`: ~~**BUG #1**~~ **FIXED** — `GreybodyFitter.luminosity_distance()` now delegates
   to `CosmologyCalculator` (Planck18 via astropy). Previously used Hubble-law `c*z/H0`.
   Injected via `cosmology_calc` parameter at init.
 - `results.py`: ~~**BUG #2**~~ **FIXED** — SED fitting now operates in rest frame.
   `fit_sed()` transforms λ_obs → λ_rest = λ_obs/(1+z) before fitting, so the
-  temperature parameter is T_rest directly. Bounds [T_rest_min, T_rest_max] are
-  configurable (default 15–80K). Tier-stratified amplitude solving prevents
-  inflation at high-z low-mass (Wien side).
+  temperature parameter is T_rest directly. Bounds [15, 60]K are stable at all z.
   `calculate_LIR()` integrates rest-frame model over 8–1000μm with 1/(1+z) factor.
 - `results.py`: **Both bugs verified fixed** — `test_luminosity.py` (32 tests) confirms
   D_L matches astropy to machine precision, and `calculate_LIR` matches independent
   rest-frame integration to < 0.5% at all redshifts z=0.1–3.0.
-- `results.py`: ~~**T_dust(z) investigation**~~ **FIXED** — The old observed-frame fitter
-  had hard bounds T_obs ∈ [12, 55]K that clamped T_obs at z > 1.5 (where T_obs_true < 12K),
-  biasing T_rest by +3K at z=2, +8K at z=3, +11K at z=4, and inflating L_IR by up to 2.8×.
-  Additionally, `schreiber_temperature_prior()` had a hardcoded σ=2K override (line 258)
-  that killed the z-dependent sigma, and clipped T_obs at 15K. All fixed by moving to
-  rest-frame fitting:
-  - `fit_sed()`: transforms to rest frame, fits T_rest with stable [15, 60]K bounds
-  - `schreiber_temperature_prior()`: returns T_rest (not T_obs), z-dependent σ (3–5K)
-  - `log_prior()`: rest-frame bounds [15, 60]K
-  - `calculate_LIR()`: rest-frame integration with 1/(1+z) bandwidth factor
-  - MCMC paths (`run_mcmc`, `run_mcmc_with_covariance`): return `temperature_rest_frame`
-  - Duplicate MCMC run block in `run_mcmc()` removed
-  - `_calculate_derived_quantities()`: passes T_rest to `calculate_LIR`/`calculate_dust_mass`
-  - `test_sed_fitting.py` (51 tests) validates recovery z=0→4, MCMC, covariance, dust mass
+- `results.py`: ~~**T_dust(z) investigation**~~ **FIXED** (Session 8)
+- `results.py`: ~~**N_src=0 display**~~ **FIXED** (Session 13) — uses `raw_results.n_sources`
+- `results.py`: ~~**bin_properties type error**~~ **FIXED** (Session 13) — isinstance guards
+- ~~`algorithm.py`: **OOM crash in per_bin cache**~~ **FIXED** (Session 13) — 5× memory reduction
+- ~~`algorithm.py`: **Progress tracker 494%**~~ **FIXED** (Session 13)
+- **χ²_red pathological values** (median 15,543, max ~10³¹): Observed in production run.
+  Likely cause: bootstrap errors underestimated for some populations, or greybody model
+  mismatch (e.g., PAH contamination at 24μm). Needs investigation.
 
 ---
 
@@ -294,8 +293,8 @@ simultaneous splitting.
 **Implementation plan**:
 - [x] Add `method` config option to `BootstrapConfig`: `"all_bins"` (default), `"per_bin"`
 - [x] Implement `_run_per_bin_error_estimation()` in algorithm.py
-- [x] Cache the full layer matrix from step 1 + Gram matrix solve + PSF stamping
-      (was rebuilding layers each iteration — now ~100× faster, see Session 10)
+- [ ] Cache the full layer matrix from step 1; currently rebuilds layers each iteration
+      (correct but slower — optimization for later)
 - [x] Renamed `_run_bootstrap_stacking()` → `_run_all_bins_error_estimation()`
 - [x] `split_fraction` parameter applies to both methods identically
 - [x] Validated with `test_per_bin_errors.py` (10 tests)
@@ -498,156 +497,131 @@ But `crop_circles=False` gave biased results (-7% to -24%).
 
 **Total: 119 tests passing** (16 stacking + 32 luminosity + 10 per_bin + 10 integration + 51 SED fitting)
 
+### Session 9 — 2026-02-21/22: Per-Bin Caching + Performance Optimization
+
+**Problem**: per_bin bootstrap was rebuilding all layers from scratch every iteration
+(614K redundant PSF convolutions for 135 pops × 7 maps × 100 iters). Also had
+progress tracker bugs (showing 494% completion) and memory issues.
+
+**Fixes**:
+- **Layer matrix caching**: Pre-build full layer matrix once per map, replace only the
+  split row each iteration. 10.4× speedup.
+- **Gram matrix solve**: Pre-compute A^T W A and update only the split row's contribution
+  per iteration → lstsq on (N_pop × N_pop) Gram matrix instead of (N_pop × N_pix).
+  130× faster linear algebra per iteration.
+- **PSF stamping**: Place PSF stamps at source positions instead of full-map FFT
+  convolution → 1000× faster layer creation.
+- **Sequential map processing**: Process maps one at a time → 7× less peak memory.
+- **Progress tracker**: Fixed per_bin to use n_populations × n_maps as total steps
+  (was using bootstrap_iterations, giving "iter 82/10" at 494%).
+
+### Session 10 — 2026-02-22: PSF Normalization Fix
+
+**Problem**: per_bin producing enormous error bars (100× too large).
+**Root cause**: PSF kernel normalization mismatch — stamping code used peak=1
+convention but the layer builder expected sum-normalized kernels.
+**Fix**: Use `sky_maps.create_psf_kernel()` directly; match peak=1 convention.
+Added optional measured PSF file loading via `config.beam.psf_file`.
+
+### Session 11 — 2026-02-22: SED Fitter Cleanup + Fit Quality Tiers
+
+**Refactored** `results.py` GreybodyFitter:
+- SNR-aware two-pass fitting: Tier A (data-driven, SNR≥3 in ≥3 bands),
+  Tier B (prior-assisted, 2 bands), Tier C (prior-dominated, ≤1 band)
+- Tier B uses analytical amplitude solve (fixes inflation on Wien side)
+- Configurable temperature bounds, SNR thresholds, amplitude bounds
+- Replaced print statements with logging, removed hardcoded constants
+
+### Session 12 — 2026-02-22: results.py Cleanup
+
+- Removed duplicate code in GreybodyFitter
+- Replaced hardcoded constants with class attributes
+- Improved numerical integration
+- Cleaned user-specific comments
+- Fixed empirical T(z) lookup fragility
+
+### Session 13 — 2026-02-23: Bug Fixes + bin_properties Feature
+
+**Bugs fixed**:
+- **N_src=0 display**: `_create_sed_for_population` was reading `pop_bin.n_sources`
+  (returning 0) instead of `StackingResults.n_sources` dict. Fixed with fallback.
+- **OOM crash in per_bin cache**: Peak 10.6 GB from building full layer list then
+  copying to matrix. Refactored `_build_per_bin_cache` to compute crop mask first,
+  then build+crop one layer at a time. Peak reduced to ~2.2 GB (5× reduction).
+- **bin_properties type error**: `sed_result.bin_properties` was sometimes a string
+  instead of dict. Added isinstance guards at assignment, summary, and HDF5 save sites.
+
+**Feature — bin_properties**:
+- `config.py`: `ClassificationConfig.bin_property_columns` — extra catalog columns
+  to summarize per population bin (e.g., `["l_nuv", "sfr"]`). Binning axis columns
+  auto-included. `all_property_columns` property merges and dedupes.
+- `algorithm.py`: Computes median of each property column per population using
+  `catalog_df.iloc[pop_bin.indices]`. Stored in `StackingResults.bin_properties`.
+- `results.py`: `SEDResults.bin_properties` field. Flows into `get_population_summary()`
+  as `median_{col}` columns and into `print_results_summary()` dynamic formatting.
+- `config.py`: Also merged `BeamConfig.psf_file` with `__post_init__` env var expansion.
+
+### Session 14 — 2026-02-23: Wijesekera+2026 Catalog Builder + IRX Plots
+
+**Context**: Preparing to reproduce Wijesekera, Koprowski et al. (2026) A&A —
+"Evolution of dust attenuation in star-forming galaxies with UV slope, stellar
+mass, and redshift out to z~5" — using simstack4 on COSMOS data.
+
+**Catalog builder** (`clean_cosmos_wijesekera.py`):
+- NUVrJ quiescent removal (Ilbert+2013): `(NUV−r) > 3(r−J)+1` AND `(NUV−r) > 3.1`,
+  using rest-frame magnitudes, applied only at z < 4
+- Mass-completeness cuts per z-bin (Table A.1, McLeod+2021)
+- Starburst removal: SFR/SFR_MS > 3 (Schreiber+2015 main sequence reference)
+- Star removal, χ² quality cut
+- Output: parquet file with standardized column names for simstack4
+
+**TOML configs** matching the paper's binning:
+- `cosmos_irx_mstar.toml`: 8 z-bins × 8 M*-bins = 64 pops (Table A.3, Fig 6/8)
+- `cosmos_irx_beta.toml`: 5 z-bins × 7 β-bins = 35 pops (Table A.1, Fig 1)
+
+**IRX plotting** (`irx_plots.py`):
+- Single `create_irx_plot()` function, `x_axis` selects IRX-β or IRX-M* mode
+- Reference curves: Wijesekera+2026 Eqs 9/10/11, SMC (dA/dβ=0.91), Meurer+99
+- Mass-dependent reddening curves when `color_by='stellar_mass'` (Fig 3)
+- z-dependent IRX-M* model curves when `x_axis='stellar_mass'` (Fig 6)
+- L_UV from `bin_properties` (`median_l_nuv`); falls back to L_IR-only plot
+- Adaptive y-axis limits for IRX vs L_IR modes
+
+**Current stacking run**: 3-axis binning (β × z × M*) with `bin_property_columns = ["l_nuv"]`.
+Waiting for completion to enable IRX computation.
+
 **Remaining work (backlog)**:
 - Per-bin diagnostics: flag bins where per_bin >> formal error
 - test_basic.py stale import (ClassificationBins no longer exists)
 - wrapper.py: 1865 lines of serialize/deserialize/reconstruct, untested
-- ~~Cache full layer matrix in per_bin path~~ **DONE** (Session 10 — Gram matrix + PSF stamping)
-- Add `[catalog.classification.binning.beta_uv]` section to config for 3D binning
-- Test tier-B fits at high-z low-mass with real data (verify no amplitude inflation)
+- ~~Cache full layer matrix in per_bin path~~ **DONE** (Session 9)
 
-### Session 8 — 2026-02-17: T_dust Rest-Frame Fix + SED Fitting Tests
+**New backlog items**:
 
-**Problem investigated**: `GreybodyFitter.fit_sed()` operated in observed frame with
-hard T_obs bounds [12, 55]K. At z > 1.5, the physically correct T_obs drops below 12K,
-clamping the fit and biasing T_rest by +3K (z=2) to +11K (z=4). L_IR inflated by up
-to 2.8× at z=3. Additionally, `schreiber_temperature_prior()` had a hardcoded σ=2K
-override and clipped T_obs at 15K.
+- **Template / main-sequence SED fitting**: The smooth greybody model cannot capture
+  PAH emission features (3.3, 6.2, 7.7, 8.6, 11.3, 12.7 μm). At z~1–2, the 7.7μm
+  PAH shifts into MIPS 24μm, causing excess flux the greybody can't fit → biases
+  temperature and amplitude. Candidate approach: fit empirical template libraries
+  (Chary & Elbaz 2001, Dale & Helou 2002, Schreiber+2018) parameterized by L_IR or
+  heating intensity α. One-parameter families give L_IR directly without overfitting.
+  Architecture: `TemplateFitter` class with same interface as `GreybodyFitter`,
+  selectable via config. Everything upstream unchanged — fitter only called in
+  results.py on N flux points per population. Could also run as hybrid: template
+  for full SED (capturing PAH), greybody for FIR-only subset (PACS+SPIRE+SCUBA).
+  Open decisions: which library, replacement vs complement to greybody.
 
-**Fix — rest-frame fitting**:
-- `fit_sed()`: transforms λ_obs → λ_rest = λ_obs/(1+z) before fitting. Temperature
-  parameter is T_rest with stable bounds [15, 60]K at all redshifts.
-- `schreiber_temperature_prior()`: returns (T_rest, σ) where σ is z-dependent (3–5K).
-  Removed hardcoded σ=2K override and 15K clip.
-- `log_prior()`: rest-frame bounds [15, 60]K, Gaussian prior centered on Schreiber T_rest.
-- `_get_initial_guess()`: rest-frame T guess and bounds.
-- `calculate_LIR()`: integrates model over rest-frame 8–1000μm with 1/(1+z) bandwidth
-  factor: L_IR = 4πD_L² / (1+z) × ∫ S_ν dν_rest.
-- MCMC: `run_mcmc()` and `run_mcmc_with_covariance()` return `temperature_rest_frame`.
-  Fixed duplicate MCMC run block. Walker initialization uses rest-frame T bounds.
-- `_calculate_derived_quantities()`: passes T_rest (not T_obs) to `calculate_LIR`
-  and `calculate_dust_mass`. MCMC sample loop no longer applies ×(1+z) to T samples
-  (they're already T_rest).
-- `test_luminosity.py`: Updated `TestFrameMixing` and `TestCombinedLIRErrors` for
-  rest-frame API (independent integration now uses 8–1000μm with 1/(1+z) factor).
-
-**Verification**: Synthetic SED recovery now accurate to < 1K across z=0.25–4.0
-(was failing at z ≥ 2 with +3K to +11K bias).
-
-**Confirmed non-issues**:
-- `_run_all_bins_error_estimation()` already uses full-solve fluxes (not bootstrap mean)
-- Bootstrap implementation intact and correct after earlier compaction
-
-**Tests added**: `tests/test_sed_fitting.py` — 51 tests covering:
-
-| Test class | # tests | What it validates |
-|---|---|---|
-| `TestFitSEDRestFrame` | 11 | Rest-frame transform, T_rest recovery z=0→4, hot/cold dust, T_obs↔T_rest consistency, wavelengths_fit in rest frame |
-| `TestFitSEDOutputContract` | 5 | Required keys, types, failure mode, amplitude recovery, χ² |
-| `TestFreeBeta` | 1 | Free-beta recovery |
-| `TestSchreiberPrior` | 4 | Returns T_rest, z-dependent σ, no σ=2K hardcode, prior effect |
-| `TestLogPrior` | 6 | [15,60]K rest-frame bounds, amplitude bounds, Gaussian shape |
-| `TestCovarianceFitter` | 3 | Basic fit, matches base fitter, error inflation |
-| `TestMCMCFitting` | 4 | MCMC succeeds, returns T_rest, samples shape, samples in rest-frame range |
-| `TestMCMCWithCovariance` | 1 | MCMC+covariance path |
-| `TestDustMass` | 4 | Positive, scales with amplitude/distance, NaN handling |
-| `TestLIRRestFrame` | 6 | Positive, fit↔direct consistency, physically reasonable across z |
-| `TestEndToEndHighZ` | 7 | z=3 full chain, no clamping bias, L_IR not inflated at z=1→4 |
-
-**Total: ~135 tests passing** (16 stacking + 32 luminosity + 10 per_bin + 10 integration + 51 SED fitting + 1 tier-B amplitude stability + 4 Gram matrix per_bin + ~11 configurable bounds)
-
-### Session 9 — 2026-02-21: Configurable Greybody Bounds + Tier-Stratified Amplitude Solving
-
-**Problem 1: Hardcoded constants scattered across code**
-T_rest_max=60K insufficient for high-z populations where Schreiber+2015 predicts T>60K
-at z>4. Constants hardcoded in ~15 locations across fit_sed, log_prior,
-schreiber_temperature_prior, _get_initial_guess, _initialize_walkers.
-
-**Fix**: Consolidated all constants into `GreybodyFitter.__init__` parameters:
-- `T_rest_min/T_rest_max` (15/80K), `amplitude_min/max`, `beta_min/max`
-- `snr_high/snr_low` (tier A/C thresholds), `snr_sigma_clip_min/max`
-- All ~15 hardcoded values replaced with `self.*` attributes
-- Parameters flow through: `wrapper.run_analysis_only(**greybody_kwargs)` →
-  `_run_analysis()` → `create_results_processor()` → `GreybodyFitter.__init__()`
-
-**Problem 2: Amplitude inflation at high-z low-mass**
-Tier-B fits (SNR 2–5) used regularized curve_fit with T constrained but A free.
-On Wien side (high-z rest frame), small T change → huge flux change → curve_fit
-cranked A up orders of magnitude to compensate.
-
-**Fix — tier-stratified amplitude solving**:
-- Tier A (SNR ≥ 5): standard curve_fit, A and T both free (data-driven)
-- Tier B (2 ≤ SNR < 5): **two-step**
-  - Step 1: 1-parameter curve_fit for T only via `model_func_T_only()`
-    which internally solves A = Σ(f·t/σ²)/Σ(t²/σ²) at each trial T
-  - Step 2: final A solved analytically at fitted T
-  - Guarantees A is always linear least-squares optimum — cannot inflate
-- Tier C (SNR < 2): T fixed at prior mean, A solved analytically
-
-**Problem 3: Plotting function not detecting beta_uv dimension**
-Config had `beta_uv_formula` but no `[catalog.classification.binning.beta_uv]` section.
-Fix: add binning section to config. Also rewrote `sed_grid_plot.py` with:
-- `grid_dims` parameter for explicit 2D grid axis control
-- Proper 3D binning: third dimension → viridis colormap with actual bin values
-- Model curve uses `sed.median_redshift` instead of bin average
-
-**Tests added**: `TestTierBAmplitudeStability` (z=4, 30% noise, model/data ratio < 10×),
-plus configurable bounds tests in existing suite. 134 tests passing.
-
-**Files modified**: `results.py`, `wrapper.py`, `test_sed_fitting.py`, `sed_grid_plot.py`
-
-### Session 10 — 2026-02-22: Per-Bin Bootstrap ~100× Speedup
-
-**Problem**: Per-bin bootstrap was rebuilding ALL 133 layers from scratch (FFT
-convolution) and solving lstsq on (3.3M × 133) for EVERY iteration of EVERY
-population of EVERY map. With 132 pops × 7 maps × 5 iters = 4,620 calls, each
-doing 133 FFT convolutions + enormous lstsq. ~614K convolutions, hours of runtime.
-
-**Fix — three optimizations**:
-
-1. **Gram matrix solve** (130× faster linear algebra):
-   Pre-compute G = AᵀA (133×133) and h = Aᵀb (133-vector) once per map.
-   Each iteration builds (134×134) system and calls `np.linalg.solve` —
-   microseconds vs seconds for lstsq on (3.3M × 133).
-
-2. **PSF stamping** (~1000× faster layer creation):
-   Stamp discrete Gaussian PSF kernel at source pixel positions into cropped
-   buffer (~0.01s for 582 sources) instead of FFT convolution over full map (~7s).
-   `layer_B = cache[k] - layer_A` — zero convolutions for B.
-   Vectorized: outer sums of (n_src × n_kpix) positions, bounds check, scatter-add.
-
-3. **Sequential map processing** (7× less peak memory):
-   Process one map at a time, free cache before next map.
-   Peak memory ≈ one map's cache (~3.5 GB) instead of all seven (~8 GB).
-
-**Performance**:
-| | Old | New |
-|---|---|---|
-| Cache build | 22 min | 22 min (same — unavoidable) |
-| Per iteration | ~7s (FFT + lstsq) | ~0.08s (stamp + Gram) |
-| Iteration total | ~9 hours | ~6 min |
-| Peak memory | ~8 GB | ~3.5 GB |
-
-**New methods in algorithm.py**:
-- `_build_per_bin_cache()` — cropped base layers + crop geometry for one map
-- `_build_psf_kernel()` — Gaussian kernel from `beam_fwhm_pixels`
-- `_stamp_psf_cropped()` — vectorized PSF stamping into cropped pixel buffer
-
-**Tests added**: `test_gram_per_bin.py` — 4 tests:
-| Test | What it validates |
-|---|---|
-| `TestGramMatrixSolveEquivalence` | G x = h matches lstsq exactly |
-| `TestPSFStampingAccuracy` | PSF stamp correlates >0.99 with FFT convolution |
-| `TestPerBinGramVsNaive` | flux_A + flux_B matches between naive and Gram methods |
-| `TestPerBinErrorConsistency` | Bootstrap errors positive, finite, reasonable |
-
-**Files modified**: `algorithm.py` (734→1130 lines)
-**Files added**: `test_gram_per_bin.py`, `PER_BIN_OPTIMIZATION_PROGRESS.md`
-
-**Next**:
-- Test on real data — verify per_bin completes in ~30 min instead of hours
-- Add `[catalog.classification.binning.beta_uv]` to config for 3D binning
-- Test tier-B fits at high-z low-mass with T_rest_max=80K
+- **Optimal binning for signal-to-noise**: Current bins are manually defined (e.g.,
+  Δ log M* = 0.25, Δz = 0.5). Some high-z / low-mass bins have very few sources
+  and low SNR stacked fluxes, while other bins oversample the parameter space
+  (many sources, high SNR, little physical variation across adjacent bins).
+  Goal: develop a method to find bin edges that equalize SNR across populations,
+  or that maximize information content (minimize total uncertainty on derived
+  quantities like L_IR or SFR) subject to a constraint on number of bins.
+  Approaches: (a) adaptive binning — iteratively merge low-SNR adjacent bins
+  until all exceed a threshold; (b) quantile-based — bin edges at equal source
+  counts; (c) information-theoretic — optimize bin edges to minimize total
+  posterior uncertainty on the SED parameters. Could be a standalone utility
+  that takes a catalog + map noise level and proposes bin edges before stacking.
 
 ---
 
@@ -665,10 +639,9 @@ doing 133 FFT convolutions + enormous lstsq. ~614K convolutions, hours of runtim
 | Support both `all_bins` and `per_bin` | Can compare joint vs isolated variance; user chooses |
 | Test framework: pytest with synthetic data | Known-answer tests; no dependency on real FITS files |
 | Keep generalized binning (arbitrary dimensions) | Already implemented and working on this branch |
-| Configurable GreybodyFitter bounds via __init__ | T_rest_max=60K too low for high-z; all constants consolidated |
-| Tier-stratified amplitude solving (A/B/C) | Prevents amplitude inflation on Wien side at high-z low-mass |
-| Gram matrix + PSF stamping for per_bin | ~100× speedup; eliminates redundant FFT convolutions and lstsq |
-| Sequential map processing in per_bin | Peak memory = 1 map cache (~3.5 GB) not all 7 (~8 GB) |
+| bin_properties for catalog stats per population | Results self-contained, no dependency on population manager at analysis time |
+| Fitter interface: `GreybodyFitter` / future `TemplateFitter` | Same API, selectable via config; upstream stacking unchanged |
+| Wijesekera+2026 as reference analysis | Well-defined selection, binning, and published results to validate against |
 | This file is the cross-session "memory" | Copy into new conversations verbatim |
 
 ---
@@ -696,31 +669,23 @@ entire repo every time — the context file has the architecture map.
 
 ## 7. File-Level Notes
 
-### algorithm.py (1130 lines) — Core stacking
+### algorithm.py (~1100 lines) — Core stacking
 - `BootstrapSplit` dataclass: container for A/B split indices
 - `ProgressTracker`: lightweight progress logging (elapsed/ETA/memory)
-- `StackingResults`: expanded dataclass with bootstrap fields
+- `StackingResults`: expanded dataclass with bootstrap fields + `bin_properties`
 - `SimstackAlgorithm`: main class
   - `run_stacking()` → dispatches to bootstrap or single path
   - `_run_all_bins_error_estimation()` → all-bins bootstrap (full-solve fluxes, bootstrap std for errors)
   - `_run_single_stacking()` → non-bootstrap path
-  - `_stack_single_map_with_bootstrap_splits()` → builds A/B layer specs, delegates
-  - `_stack_single_map_standard()` → builds standard layer specs, delegates
   - `_stack_single_map(map_name, layer_specs)` → shared pipeline: layers → foreground → crop → solve
   - `_create_layer_matrix(map_name, layer_specs)` → unified: takes `(label, indices)` pairs
   - `_create_and_convolve_layer()` → PSF convolution for a single layer
   - `_crop_to_circles()` → spatial masking around source positions
+  - `_compute_crop_geometry()` → crop mask extraction (used by per_bin cache builder)
+  - `_build_per_bin_cache()` → memory-efficient one-layer-at-a-time cache construction
   - `_solve_linear_system()` → scipy.linalg.lstsq (WLS if noise map available)
-  - `_compile_results()` → assembles StackingResults dataclass
-  - `_run_per_bin_error_estimation()` → **optimized** per-bin bootstrap (Session 10):
-    - Processes maps sequentially (peak memory = 1 map's cache, not all 7)
-    - Pre-computes Gram matrix G = AᵀA (133×133) and projection h = Aᵀb
-    - PSF stamping for split layers (~1000× faster than FFT convolution)
-    - layer_B = cache[k] - layer_A (zero convolutions for B)
-    - Solves (134×134) normal equations per iteration (microseconds vs seconds)
-  - `_build_per_bin_cache()` → builds cropped base layers + crop geometry for one map
-  - `_build_psf_kernel()` → Gaussian kernel from beam_fwhm_pixels
-  - `_stamp_psf_cropped()` → vectorized PSF stamping into cropped pixel buffer
+  - `_compile_results()` → assembles StackingResults + computes bin_properties
+  - `_run_per_bin_error_estimation()` → per-bin bootstrap with Gram matrix solve + PSF stamping
 
 ### cosmology.py (344 lines)
 - `CosmologyCalculator`: proper astropy-based cosmology (Planck15/18)
@@ -732,11 +697,14 @@ entire repo every time — the context file has the architecture map.
   For stacking (where we fit a greybody), the K-correction should come from
   the fitted SED shape, not a fixed power law. Worth testing.
 
-### config.py (449 lines)
+### config.py (~480 lines)
 - `BinConfig`: generic bin definition (id, label, bins, optional formula_ref)
 - `ClassificationConfig.binning`: `dict[str, BinConfig]` — arbitrary dimensions
+- `ClassificationConfig.bin_property_columns`: extra catalog columns to summarize per bin
+- `ClassificationConfig.all_property_columns`: merged binning axes + explicit extras (deduped)
+- `BeamConfig.psf_file`: optional path to measured PSF FITS file (env var expansion)
 - `FormulaParams`: for calculated variables (β_UV, etc.)
-- `BootstrapConfig`: now has `split_fraction` field
+- `BootstrapConfig`: now has `split_fraction` field + `method` ("all_bins"/"per_bin")
 - `SplitType`: added `FORMULA` option
 
 ### populations.py (721 lines)
@@ -744,34 +712,26 @@ entire repo every time — the context file has the architecture map.
 - `PopulationManager`: uses `itertools.product` over arbitrary dimensions
 - Legacy `@property` accessors: `redshift_range`, `stellar_mass_range`, etc.
 
-### results.py (~2155 lines)
+### results.py (~2600 lines)
 - `GreybodyFitter`: modified blackbody SED fitting (T_dust, β, amplitude)
-  - **Configurable bounds** via `__init__` parameters (Session 9):
-    - `T_rest_min/max` (default 15/80K), `amplitude_min/max`, `beta_min/max`
-    - `snr_high/low` (tier A/C thresholds, default 5.0/2.0)
-    - `snr_sigma_clip_min/max` (prior sigma scaling)
-    - All hardcoded constants consolidated; flow through full call chain
   - `greybody_model()`: modified BB + Wien-side power law
-  - `fit_sed()`: fits in REST FRAME; λ_obs → λ_rest = λ_obs/(1+z)
-    - **Tier-stratified amplitude solving** (Session 9):
-      - Tier A (SNR ≥ 5): standard curve_fit, A and T both free
-      - Tier B (2 ≤ SNR < 5): 1-parameter curve_fit for T only, analytical A solve
-        - `model_func_T_only()` internally solves A = Σ(f·t/σ²)/Σ(t²/σ²) at each trial T
-        - Prevents amplitude inflation on Wien side at high-z low-mass
-      - Tier C (SNR < 2): T fixed at prior mean, analytical A solve
-    - `_solve_amplitude_at_T()`: helper for analytical amplitude (used by tiers B and C)
+  - `fit_sed()`: fits in REST FRAME; λ_obs → λ_rest = λ_obs/(1+z); T_rest bounded [15, 60]K
+  - Tier-stratified fitting: A (data-driven, SNR≥3 in ≥3 bands), B (prior-assisted),
+    C (prior-dominated). Tier B uses analytical amplitude solve.
   - `calculate_LIR()`: integrates rest-frame model over 8–1000μm with 1/(1+z) factor → L_sun
   - `luminosity_distance()`: delegates to `CosmologyCalculator` (Planck18 via astropy)
   - `calculate_dust_mass()`: from rest-frame fit parameters + proper D_L
   - `schreiber_temperature_prior()`: returns (T_rest, σ), z-dependent σ (3–5K)
-  - `log_prior()`: rest-frame T bounds [T_rest_min, T_rest_max] + optional Schreiber Gaussian prior
+  - `log_prior()`: rest-frame T bounds [15, 60]K + optional Schreiber Gaussian prior
 - `CovarianceGreybodyFitter`: correlated errors via Cholesky decomposition
-  - `fit_sed_with_covariance()`: transforms to rest frame, sets up covariance, delegates to super
-  - `run_mcmc_with_covariance()`: MCMC with covariance-aware likelihood, returns T_rest
 - MCMC support via emcee (optional)
+- `SEDResults.bin_properties`: per-population median catalog statistics
 - `SimstackResults`: post-processing, luminosity integration, SFR calculation
-  - `_calculate_derived_quantities()`: passes T_rest to calculate_LIR/calculate_dust_mass
-  - MCMC samples are [amplitude, T_rest] — no frame conversion needed
+  - `_create_sed_for_population()`: uses `raw_results.n_sources` (with fallback),
+    pulls bin_properties from raw_results
+  - `get_population_summary()`: adds `median_{col}` columns from bin_properties
+  - `print_results_summary()`: dynamic bin_property column detection
+  - HDF5 save: bin_properties stored as per-SED attrs
 
 ### wrapper.py (1865 lines)
 - `EnhancedJSONEncoder`: numpy/pandas/enum serialization
@@ -779,5 +739,3 @@ entire repo every time — the context file has the architecture map.
 - `estimate_bootstrap_covariance()`: covariance from bootstrap samples
 - Hardcoded 8×8 wavelength correlation matrix (24–850μm)
 - Config reconstruction from saved JSON
-- `run_analysis_only(**greybody_kwargs)`: passes T_rest_max, snr_high, etc. through
-  to `GreybodyFitter.__init__` (Session 9)
