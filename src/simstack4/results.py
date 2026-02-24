@@ -88,6 +88,12 @@ class SEDResults:
     # Per-bin median catalog properties (from bin_property_columns config)
     bin_properties: dict[str, float] | None = None
 
+    # Regression greybody fit results (from global polynomial fit)
+    regression_T_rest: float | None = None  # K
+    regression_log10_A: float | None = None
+    regression_L_IR: float | None = None  # L_sun
+    regression_chi2: float | None = None  # per-population χ²
+
 
 @dataclass
 class DerivedQuantities:
@@ -1695,6 +1701,301 @@ class CovarianceGreybodyFitter(GreybodyFitter):
         )
 
 
+# ---------------------------------------------------------------------------
+# Regression Greybody Fitter
+# ---------------------------------------------------------------------------
+
+class _DesignMatrix:
+    """Polynomial design matrix with standardized inputs."""
+
+    def __init__(self, property_names, degree='linear'):
+        self.property_names = list(property_names)
+        self.degree = degree
+        self._fitted = False
+
+    def fit_transform(self, properties):
+        n = len(next(iter(properties.values())))
+        self.means_ = {k: np.nanmean(properties[k]) for k in self.property_names}
+        self.stds_ = {k: max(np.nanstd(properties[k]), 1e-10)
+                      for k in self.property_names}
+        self._fitted = True
+        return self._build(properties, n)
+
+    def transform(self, properties):
+        assert self._fitted
+        n = len(next(iter(properties.values())))
+        return self._build(properties, n)
+
+    def _build(self, properties, n):
+        std = {}
+        for name in self.property_names:
+            std[name] = (np.asarray(properties[name]) - self.means_[name]) / self.stds_[name]
+
+        cols = [np.ones(n)]
+        names = ['1']
+        for name in self.property_names:
+            cols.append(std[name])
+            names.append(name)
+
+        if self.degree in ('interactions', 'quadratic'):
+            for i, n1 in enumerate(self.property_names):
+                for n2 in self.property_names[i + 1:]:
+                    cols.append(std[n1] * std[n2])
+                    names.append(f'{n1}×{n2}')
+
+        if self.degree == 'quadratic':
+            for name in self.property_names:
+                cols.append(std[name]**2)
+                names.append(f'{name}²')
+
+        self.col_names_ = names
+        return np.column_stack(cols)
+
+    @property
+    def n_features(self):
+        return len(self.col_names_)
+
+
+class RegressionGreybodyFitter:
+    """
+    Fit greybody SEDs across all populations simultaneously, with T_rest
+    and log10(A) parameterized as polynomial functions of (M★, z, β_UV).
+
+    Model per population i:
+        ln(T_rest_i) = X_i @ θ_T
+        log10(A_i)   = X_i @ θ_A
+        S_ν(λ)       = greybody(λ/(1+z_i), log10(A_i), T_rest_i)
+
+    Minimizes χ² = Σ_i Σ_j [(S_obs_ij − S_model_ij) / σ_ij]²
+    """
+
+    def __init__(self, greybody_fitter, property_names=None,
+                 degree='linear', T_bounds=(12.0, 80.0),
+                 min_sources=5):
+        """
+        Parameters
+        ----------
+        greybody_fitter : GreybodyFitter
+            Existing fitter instance (provides greybody_model, calculate_LIR).
+        property_names : list of str
+            Population properties for the polynomial. Default: M*, z, β.
+        degree : str
+            'linear', 'interactions', or 'quadratic'.
+        T_bounds : tuple
+            (T_min, T_max) clipping bounds for predicted T_rest.
+        min_sources : int
+            Minimum sources per population to include in fit.
+        """
+        self.gb = greybody_fitter
+        self.property_names = property_names or ['stellar_mass', 'redshift', 'beta_uv']
+        self.degree = degree
+        self.T_bounds = T_bounds
+        self.min_sources = min_sources
+        self.dm = _DesignMatrix(self.property_names, degree)
+
+    def _predict_params(self, theta, X):
+        nf = X.shape[1]
+        ln_T = X @ theta[:nf]
+        T_rest = np.clip(np.exp(ln_T), self.T_bounds[0], self.T_bounds[1])
+        log10_A = X @ theta[nf:2 * nf]
+        return T_rest, log10_A
+
+    def _predict_fluxes(self, theta, X, wavelengths_obs, redshifts):
+        T_rest, log10_A = self._predict_params(theta, X)
+        N_pop = len(redshifts)
+        N_bands = len(wavelengths_obs)
+        S = np.zeros((N_pop, N_bands))
+        for i in range(N_pop):
+            wav_rest = wavelengths_obs / (1 + redshifts[i])
+            S[i] = self.gb.greybody_model(wav_rest, log10_A[i], T_rest[i],
+                                          self.gb.beta_fixed)
+        return S
+
+    def _cost(self, theta, X, wavelengths_obs, fluxes, errors, redshifts):
+        S_model = self._predict_fluxes(theta, X, wavelengths_obs, redshifts)
+        valid = errors > 0
+        residuals = np.where(valid, (fluxes - S_model) / errors, 0.0)
+        return np.sum(residuals**2)
+
+    def _init_from_individual_fits(self, X, sed_results):
+        """Initialize θ via OLS on existing per-population fits."""
+        T_vals, A_vals, X_valid = [], [], []
+        for i, (pop_id, sed) in enumerate(sed_results.items()):
+            if (sed.dust_temperature_rest_frame is not None
+                    and np.isfinite(sed.dust_temperature_rest_frame)
+                    and sed.dust_temperature_rest_frame > 0
+                    and sed.amplitude is not None
+                    and np.isfinite(sed.amplitude)):
+                T_vals.append(sed.dust_temperature_rest_frame)
+                A_vals.append(sed.amplitude)
+                X_valid.append(X[i])
+
+        if len(T_vals) < X.shape[1]:
+            return None
+
+        T_vals = np.array(T_vals)
+        A_vals = np.array(A_vals)
+        X_valid = np.array(X_valid)
+
+        theta_T, _, _, _ = np.linalg.lstsq(X_valid, np.log(T_vals), rcond=None)
+        theta_A, _, _, _ = np.linalg.lstsq(X_valid, A_vals, rcond=None)
+        logger.info(f"Regression init from {len(T_vals)} individual fits "
+                    f"(T={T_vals.min():.1f}–{T_vals.max():.1f}K)")
+        return np.concatenate([theta_T, theta_A])
+
+    def _init_from_flux_ratios(self, X, wavelengths_obs, fluxes, errors,
+                               redshifts):
+        """Fallback init: grid-search T per population, regress."""
+        N_pop = len(redshifts)
+        T_est = np.full(N_pop, 30.0)
+        A_est = np.full(N_pop, -35.0)
+
+        for i in range(N_pop):
+            wav_rest = wavelengths_obs / (1 + redshifts[i])
+            f, e = fluxes[i], errors[i]
+            snr = np.where(e > 0, np.abs(f / e), 0)
+            good = snr > 1
+            if np.sum(good) < 2:
+                good = np.isin(np.arange(len(f)), np.argsort(-snr)[:2])
+
+            best_chi2 = np.inf
+            for T_try in np.arange(15, 75, 2):
+                model = self.gb.greybody_model(wav_rest, 0.0, T_try,
+                                               self.gb.beta_fixed)
+                valid = (e > 0) & good
+                if not np.any(valid):
+                    continue
+                m, fi, ei = model[valid], f[valid], e[valid]
+                denom = np.sum(m**2 / ei**2)
+                if denom == 0:
+                    continue
+                A_lin = np.sum(fi * m / ei**2) / denom
+                if A_lin <= 0:
+                    A_lin = 1e-10
+                chi2 = np.sum(((fi - A_lin * m) / ei)**2)
+                if chi2 < best_chi2:
+                    best_chi2 = chi2
+                    T_est[i] = T_try
+                    A_est[i] = np.log10(A_lin)
+
+        theta_T, _, _, _ = np.linalg.lstsq(X, np.log(T_est), rcond=None)
+        theta_A, _, _, _ = np.linalg.lstsq(X, A_est, rcond=None)
+        logger.info(f"Regression init from flux ratios "
+                    f"(T={T_est.min():.0f}–{T_est.max():.0f}K)")
+        return np.concatenate([theta_T, theta_A])
+
+    def fit(self, wavelengths_obs, fluxes, errors, redshifts, properties,
+            sed_results=None):
+        """
+        Fit the regression greybody model to all populations.
+
+        Parameters
+        ----------
+        wavelengths_obs : (N_bands,) array, microns
+        fluxes : (N_pop, N_bands) array, Jy
+        errors : (N_pop, N_bands) array, Jy
+        redshifts : (N_pop,) array
+        properties : dict of {name: (N_pop,) array}
+        sed_results : dict of {pop_id: SEDResults} or None
+            Existing per-population fits for initialization.
+
+        Returns
+        -------
+        result : dict
+        """
+        from scipy.optimize import minimize as sp_minimize
+
+        X = self.dm.fit_transform(properties)
+        nf = self.dm.n_features
+        N_pop, N_bands = fluxes.shape
+        n_valid = np.sum(errors > 0)
+        n_params = 2 * nf
+
+        logger.info(f"Regression greybody: {N_pop} pops × {N_bands} bands "
+                    f"= {N_pop * N_bands} points, {n_params} params "
+                    f"({self.dm.col_names_})")
+
+        # Initialize
+        theta0 = None
+        if sed_results is not None:
+            theta0 = self._init_from_individual_fits(X, sed_results)
+        if theta0 is None:
+            theta0 = self._init_from_flux_ratios(
+                X, wavelengths_obs, fluxes, errors, redshifts
+            )
+
+        chi2_init = self._cost(theta0, X, wavelengths_obs, fluxes, errors,
+                               redshifts)
+        n_dof = n_valid - n_params
+        logger.info(f"Regression init χ²/dof = {chi2_init / max(n_dof, 1):.2f}")
+
+        # Optimize: Nelder-Mead then L-BFGS-B refinement
+        result = sp_minimize(
+            self._cost, theta0,
+            args=(X, wavelengths_obs, fluxes, errors, redshifts),
+            method='Nelder-Mead',
+            options={'maxiter': 100_000, 'xatol': 1e-10, 'fatol': 1e-10,
+                     'adaptive': True}
+        )
+
+        try:
+            result2 = sp_minimize(
+                self._cost, result.x,
+                args=(X, wavelengths_obs, fluxes, errors, redshifts),
+                method='L-BFGS-B',
+                options={'maxiter': 10_000}
+            )
+            if result2.fun < result.fun:
+                result = result2
+        except Exception:
+            pass
+
+        chi2_final = result.fun
+        T_rest, log10_A = self._predict_params(result.x, X)
+        S_model = self._predict_fluxes(result.x, X, wavelengths_obs, redshifts)
+
+        # Per-population χ²
+        valid = errors > 0
+        residuals = np.where(valid, (fluxes - S_model) / errors, np.nan)
+        chi2_per_pop = np.nansum(residuals**2, axis=1)
+
+        # L_IR per population
+        L_IR = np.zeros(N_pop)
+        for i in range(N_pop):
+            D_L = self.gb.luminosity_distance(redshifts[i])
+            L_IR[i] = self.gb._integrate_LIR(
+                log10_A[i], T_rest[i], self.gb.beta_fixed,
+                redshifts[i], D_L
+            )
+
+        # Polynomial coefficients
+        theta_T = result.x[:nf]
+        theta_A = result.x[nf:2 * nf]
+
+        logger.info(f"Regression final χ²/dof = {chi2_final / max(n_dof, 1):.2f} "
+                    f"(T={T_rest.min():.1f}–{T_rest.max():.1f}K, "
+                    f"converged={result.success})")
+        logger.info("Regression coefficients (standardized):")
+        for j, col in enumerate(self.dm.col_names_):
+            logger.info(f"  {col:<20} θ_T={theta_T[j]:+.4f}  "
+                        f"θ_A={theta_A[j]:+.4f}")
+
+        return {
+            'theta_T': theta_T,
+            'theta_A': theta_A,
+            'T_rest': T_rest,
+            'log10_A': log10_A,
+            'L_IR': L_IR,
+            'chi2': chi2_final,
+            'chi2_per_pop': chi2_per_pop,
+            'n_dof': n_dof,
+            'chi2_reduced': chi2_final / max(n_dof, 1),
+            'S_model': S_model,
+            'converged': result.success,
+            'design_columns': self.dm.col_names_,
+        }
+
+
 class SimstackResults:
     """Process and analyze stacking results"""
 
@@ -1714,6 +2015,12 @@ class SimstackResults:
         correlation_matrix: dict | None = None,  # NEW
         inflation_factors: dict | None = None,  # NEW
         bootstrap_covariances: dict | None = None,
+        # --- Regression greybody configuration ---
+        use_regression: bool = False,
+        use_regression_prior: bool = False,
+        regression_degree: str = 'linear',
+        regression_property_names: list | None = None,
+        regression_min_sources: int = 5,
         # --- Greybody fitter configuration (forwarded to GreybodyFitter) ---
         T_rest_min: float = 15.0,
         T_rest_max: float = 80.0,
@@ -1797,6 +2104,14 @@ class SimstackResults:
         self.sed_results: dict[str, SEDResults] = {}
         self.derived_quantities: dict[str, DerivedQuantities] = {}
         self.band_results: dict[str, dict[str, Any]] = {}
+        self.regression_result: dict | None = None
+
+        # Store regression configuration
+        self.use_regression = use_regression or use_regression_prior
+        self.use_regression_prior = use_regression_prior
+        self.regression_degree = regression_degree
+        self.regression_property_names = regression_property_names  # None = auto-detect
+        self.regression_min_sources = regression_min_sources
 
         # Process results
         self._process_results()
@@ -1928,8 +2243,9 @@ class SimstackResults:
 
         # Per-bin median catalog properties
         if isinstance(self.raw_results.bin_properties, dict):
-            props = _ensure_dict(self.raw_results.bin_properties.get(pop_label))
-            if props is not None:
+            props = self.raw_results.bin_properties.get(pop_label)
+            props = _ensure_dict(props)
+            if props:
                 sed_result.bin_properties = props
 
         return sed_result
@@ -2067,10 +2383,15 @@ class SimstackResults:
         """
         Process raw results into SEDs and derived quantities.
 
-        Two-pass approach:
+        Multi-pass approach:
           Pass 1: Fit all SEDs with SNR-scaled Schreiber prior.
           Pass 2: Compute empirical T(z) from high-confidence fits,
                   re-fit low-SNR SEDs with empirical prior center.
+          Pass 3 (optional): Regression greybody fit — polynomial T(M*,z,β)
+                  and A(M*,z,β) across all populations simultaneously.
+          Pass 4 (optional): Refit per-population SEDs using regression
+                  surface as prior. High-SNR populations free to depart;
+                  low-SNR pulled toward "main sequence".
         """
         logger.info("Processing stacking results...")
 
@@ -2160,6 +2481,14 @@ class SimstackResults:
         # Process band-by-band results
         self._process_band_results()
 
+        # === Pass 3 (optional): Regression greybody fit ===
+        if self.use_regression:
+            self._run_regression_fit()
+
+        # === Pass 4 (optional): Refit with regression as prior ===
+        if self.use_regression_prior and self.regression_result is not None:
+            self._refit_with_regression_prior(pop_indices)
+
         logger.info(f"Processed results for {len(self.sed_results)} populations")
 
     def _compute_empirical_t_of_z(
@@ -2204,6 +2533,248 @@ class SimstackResults:
             logger.info("No empirical T(z) anchors (too few tier-A fits)")
 
         return empirical
+
+    def _run_regression_fit(self) -> None:
+        """
+        Pass 3: Fit regression greybody model across all populations.
+
+        Parameterizes T_rest and log10(A) as polynomial functions of
+        population properties (M*, z, β_UV), fitting ~8 coefficients
+        instead of ~900 independent parameters.
+
+        Results are stored alongside (not replacing) existing per-population fits.
+        """
+        logger.info("Pass 3: Regression greybody fit...")
+
+        # Build ordered lists aligned with sed_results
+        pop_ids = list(self.sed_results.keys())
+        N_pop = len(pop_ids)
+        if N_pop == 0:
+            logger.warning("No populations to fit regression model")
+            return
+
+        # Auto-detect binning dimensions from PopulationManager
+        available_dims = set()
+        for pop_id in pop_ids:
+            if pop_id in self.population_manager.populations:
+                br = self.population_manager.populations[pop_id].bin_ranges
+                available_dims.update(br.keys())
+                break
+
+        # Determine which property names to use
+        if self.regression_property_names is not None:
+            # User specified — validate against available dimensions
+            prop_names = []
+            for pname in self.regression_property_names:
+                if pname == 'redshift' or pname in available_dims:
+                    prop_names.append(pname)
+                else:
+                    logger.warning(
+                        f"Regression property '{pname}' not in binning "
+                        f"dimensions {available_dims}, skipping"
+                    )
+            if not prop_names:
+                prop_names = ['redshift']  # always available
+        else:
+            # Auto-detect: use binning dimensions + redshift
+            prop_names = []
+            # Always include these if they're binning axes
+            for candidate in ['stellar_mass', 'redshift', 'beta_uv']:
+                if candidate in available_dims or candidate == 'redshift':
+                    prop_names.append(candidate)
+
+        logger.info(f"Regression properties: {prop_names} "
+                    f"(binning dims: {available_dims})")
+
+        # Gather wavelengths from first SED
+        first_sed = self.sed_results[pop_ids[0]]
+        wavelengths_obs = first_sed.wavelengths.copy()
+        N_bands = len(wavelengths_obs)
+
+        fluxes = np.zeros((N_pop, N_bands))
+        errors = np.zeros((N_pop, N_bands))
+        redshifts = np.zeros(N_pop)
+        n_sources = np.zeros(N_pop, dtype=int)
+
+        # Build property arrays dynamically
+        prop_arrays = {pname: np.zeros(N_pop) for pname in prop_names}
+
+        for i, pop_id in enumerate(pop_ids):
+            sed = self.sed_results[pop_id]
+            fluxes[i] = sed.flux_densities
+            errors[i] = sed.flux_errors
+            redshifts[i] = sed.median_redshift
+            n_sources[i] = sed.n_sources
+
+            # Get bin centers from PopulationManager
+            if pop_id in self.population_manager.populations:
+                pop_bin = self.population_manager.populations[pop_id]
+                br = pop_bin.bin_ranges
+                for pname in prop_names:
+                    if pname == 'redshift':
+                        if 'redshift' in br:
+                            prop_arrays['redshift'][i] = (
+                                br['redshift'][0] + br['redshift'][1]) / 2
+                        else:
+                            prop_arrays['redshift'][i] = sed.median_redshift
+                    elif pname == 'stellar_mass':
+                        if 'stellar_mass' in br:
+                            prop_arrays['stellar_mass'][i] = (
+                                br['stellar_mass'][0] + br['stellar_mass'][1]) / 2
+                        else:
+                            prop_arrays['stellar_mass'][i] = sed.median_mass
+                    elif pname in br:
+                        prop_arrays[pname][i] = (
+                            br[pname][0] + br[pname][1]) / 2
+            else:
+                if 'redshift' in prop_arrays:
+                    prop_arrays['redshift'][i] = sed.median_redshift
+                if 'stellar_mass' in prop_arrays:
+                    prop_arrays['stellar_mass'][i] = sed.median_mass
+
+        # Filter to populations with enough sources
+        mask = n_sources >= self.regression_min_sources
+        n_excluded = np.sum(~mask)
+        if n_excluded > 0:
+            logger.info(f"Regression: excluding {n_excluded} populations "
+                        f"with < {self.regression_min_sources} sources")
+
+        idx_map = np.where(mask)[0]  # maps filtered index → original index
+        fluxes_f = fluxes[mask]
+        errors_f = errors[mask]
+        redshifts_f = redshifts[mask]
+        props_f = {pname: arr[mask] for pname, arr in prop_arrays.items()}
+
+        n_min_params = 2 * (len(prop_names) + 1)  # T and A each get intercept + slopes
+        if len(redshifts_f) < n_min_params:
+            logger.warning(f"Too few populations ({len(redshifts_f)}) "
+                           f"for {n_min_params}-param regression fit")
+            return
+
+        # Build ordered sed_results dict for initialization (filtered)
+        filtered_pop_ids = [pop_ids[j] for j in idx_map]
+        filtered_seds = {pid: self.sed_results[pid] for pid in filtered_pop_ids}
+
+        # Create and run the regression fitter
+        reg_fitter = RegressionGreybodyFitter(
+            greybody_fitter=self.greybody_fitter,
+            property_names=prop_names,
+            degree=self.regression_degree,
+            min_sources=self.regression_min_sources,
+        )
+
+        try:
+            reg_result = reg_fitter.fit(
+                wavelengths_obs, fluxes_f, errors_f, redshifts_f,
+                props_f, sed_results=filtered_seds,
+            )
+        except Exception as e:
+            logger.error(f"Regression fit failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return
+
+        # Store global result
+        self.regression_result = reg_result
+
+        # Write regression values back into SEDResults for included populations
+        for fi, orig_i in enumerate(idx_map):
+            pid = pop_ids[orig_i]
+            sed = self.sed_results[pid]
+            sed.regression_T_rest = float(reg_result['T_rest'][fi])
+            sed.regression_log10_A = float(reg_result['log10_A'][fi])
+            sed.regression_L_IR = float(reg_result['L_IR'][fi])
+            sed.regression_chi2 = float(reg_result['chi2_per_pop'][fi])
+
+        logger.info(
+            f"Regression fit complete: χ²/dof={reg_result['chi2_reduced']:.2f}, "
+            f"T={reg_result['T_rest'].min():.1f}–{reg_result['T_rest'].max():.1f}K, "
+            f"{len(idx_map)} populations"
+        )
+
+    def _refit_with_regression_prior(self, pop_indices: dict) -> None:
+        """
+        Pass 4: Refit per-population SEDs using the regression surface as prior.
+
+        The regression provides a smooth "main sequence" prediction for T_rest
+        as a function of (M★, z, β). This is used as prior_center for refitting,
+        with sigma derived from the scatter of high-confidence (tier A) individual
+        fits around the regression surface. The existing SNR-scaled prior
+        mechanism then handles the strength:
+
+            High-SNR (tier A): σ_eff ≈ σ_regression (prior barely matters,
+                               population free to depart from MS)
+            Low-SNR (tier B/C): σ_eff ≈ 0.3 × σ_regression (pulled toward MS)
+
+        This replaces the Schreiber/empirical priors from Passes 1-2 with a
+        data-driven prior from the regression surface.
+        """
+        reg = self.regression_result
+        if reg is None:
+            return
+
+        # Compute regression prior sigma from tier-A scatter
+        # around the regression surface
+        T_residuals = []
+        for pop_id, sed in self.sed_results.items():
+            if (sed.fit_quality_tier == "A"
+                    and sed.regression_T_rest is not None
+                    and sed.dust_temperature_rest_frame is not None
+                    and np.isfinite(sed.dust_temperature_rest_frame)):
+                T_residuals.append(
+                    sed.dust_temperature_rest_frame - sed.regression_T_rest
+                )
+
+        if len(T_residuals) < 3:
+            logger.warning("Too few tier-A fits to compute regression prior sigma")
+            return
+
+        T_residuals = np.array(T_residuals)
+        # Robust sigma: 1.4826 × MAD
+        regression_sigma = 1.4826 * np.median(np.abs(T_residuals - np.median(T_residuals)))
+        regression_sigma = max(regression_sigma, 3.0)  # floor at 3K
+
+        logger.info(
+            f"Pass 4: Refitting with regression prior "
+            f"(σ_regression = {regression_sigma:.1f}K from "
+            f"{len(T_residuals)} tier-A residuals)"
+        )
+
+        # Refit all populations that have a regression prediction
+        n_refit = 0
+        for pop_id, sed in list(self.sed_results.items()):
+            if sed.regression_T_rest is None:
+                continue
+
+            T_prior = sed.regression_T_rest
+            pop_index = pop_indices.get(pop_id)
+            if pop_index is None:
+                continue
+
+            try:
+                sed_refit = self._create_sed_for_population(
+                    pop_id, pop_index,
+                    prior_override=(T_prior, regression_sigma),
+                )
+                # Preserve regression fields from Pass 3
+                sed_refit.regression_T_rest = sed.regression_T_rest
+                sed_refit.regression_log10_A = sed.regression_log10_A
+                sed_refit.regression_L_IR = sed.regression_L_IR
+                sed_refit.regression_chi2 = sed.regression_chi2
+
+                self.sed_results[pop_id] = sed_refit
+                n_refit += 1
+
+                # Recompute derived quantities
+                derived = self._calculate_derived_quantities(sed_refit)
+                self.derived_quantities[pop_id] = derived
+
+            except Exception as e:
+                logger.error(f"Pass 4 refit failed for {pop_id}: {e}")
+
+        logger.info(
+            f"Pass 4 complete: {n_refit} populations refitted with regression prior"
+        )
 
     def _process_band_results(self) -> None:
         """Process results for individual bands"""
@@ -2280,10 +2851,23 @@ class SimstackResults:
                 ] = derived.dust_temperature_mcmc_error[1]
 
             # Add per-bin median catalog properties
-            bp = _ensure_dict(sed_result.bin_properties)
-            if bp:
-                for col_name, val in bp.items():
+            props = _ensure_dict(sed_result.bin_properties)
+            if props:
+                for col_name, val in props.items():
                     row[f"median_{col_name}"] = val
+            elif sed_result.bin_properties is not None:
+                logger.debug(
+                    f"Unexpected bin_properties type for {pop_id}: "
+                    f"{type(sed_result.bin_properties).__name__} = "
+                    f"{sed_result.bin_properties!r}"
+                )
+
+            # Add regression greybody results if available
+            if sed_result.regression_T_rest is not None:
+                row["regression_T_rest_K"] = sed_result.regression_T_rest
+                row["regression_log10_A"] = sed_result.regression_log10_A
+                row["regression_L_IR_lsun"] = sed_result.regression_L_IR
+                row["regression_chi2"] = sed_result.regression_chi2
 
             data.append(row)
 
@@ -2519,9 +3103,9 @@ class SimstackResults:
                 sed_grp.attrs["n_sources"] = sed.n_sources
 
                 # Save per-bin catalog properties
-                bp = _ensure_dict(sed.bin_properties)
-                if bp:
-                    for col_name, val in bp.items():
+                props = _ensure_dict(sed.bin_properties)
+                if props:
+                    for col_name, val in props.items():
                         sed_grp.attrs[f"median_{col_name}"] = val
 
                 # Save MCMC samples if available
@@ -2574,6 +3158,11 @@ def create_results_processor(
     correlation_matrix: dict | None = None,
     inflation_factors: dict | None = None,
     bootstrap_covariances: dict | None = None,
+    use_regression: bool = False,
+    use_regression_prior: bool = False,
+    regression_degree: str = 'linear',
+    regression_property_names: list | None = None,
+    regression_min_sources: int = 5,
     **greybody_kwargs,
 ) -> SimstackResults:
     """
@@ -2592,6 +3181,13 @@ def create_results_processor(
         use_covariance: Whether to use covariance-aware fitting
         correlation_matrix: Custom correlation matrix (uses default if None)
         bootstrap_covariances: Dict mapping population_id -> bootstrap covariance matrix
+        use_regression: Whether to also fit a regression greybody model
+        use_regression_prior: Whether to use regression as prior for refitting
+            (implies use_regression=True). High-SNR populations can depart from
+            the regression surface; low-SNR are pulled toward it.
+        regression_degree: Polynomial degree ('linear', 'interactions', 'quadratic')
+        regression_property_names: Properties for regression (default: M*, z, β)
+        regression_min_sources: Min sources per population for regression
         **greybody_kwargs: Additional kwargs forwarded to GreybodyFitter
             (T_rest_min, T_rest_max, snr_high, snr_low, etc.)
 
@@ -2612,5 +3208,10 @@ def create_results_processor(
         correlation_matrix=correlation_matrix,
         inflation_factors=inflation_factors,
         bootstrap_covariances=bootstrap_covariances,
+        use_regression=use_regression,
+        use_regression_prior=use_regression_prior,
+        regression_degree=regression_degree,
+        regression_property_names=regression_property_names,
+        regression_min_sources=regression_min_sources,
         **greybody_kwargs,
     )
