@@ -284,7 +284,7 @@ class SimstackWrapper:
         if isinstance(bootstrap_data, dict):
             # Check if it's the map-based structure like yours
             map_names = list(bootstrap_data.keys())
-            if all(isinstance(bootstrap_data[key], list) for key in map_names):
+            if map_names and all(isinstance(bootstrap_data[key], list) for key in map_names):
                 # This looks like: {'mips_24': [...], 'pacs_green': [...], ...}
                 logger.info(
                     f"Found map-based bootstrap structure with {len(map_names)} bands"

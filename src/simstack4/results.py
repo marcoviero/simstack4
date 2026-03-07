@@ -140,6 +140,8 @@ class GreybodyFitter:
         # --- Prior sigma scaling ---
         snr_sigma_clip_min: float = 0.3,  # Floor for σ_eff / σ_base
         snr_sigma_clip_max: float = 2.0,  # Ceiling for σ_eff / σ_base
+        # --- Error inflation ---
+        inflation_factors: dict | None = None,
     ):
         """
         Initialize fitter.
@@ -189,6 +191,9 @@ class GreybodyFitter:
         self.SNR_LOW = snr_low
         self.snr_sigma_clip_min = snr_sigma_clip_min
         self.snr_sigma_clip_max = snr_sigma_clip_max
+
+        # Error inflation
+        self.inflation_factors = inflation_factors
 
         # Cosmology — use proper calculator if provided, else fall back to Planck18
         if cosmology_calc is not None:
@@ -573,6 +578,45 @@ class GreybodyFitter:
             "effective_burn_in": effective_burn_in,
         }
 
+    def _inflate_band_errors(self, wavelengths, flux_errors):
+        """
+        Inflate uncertainties for specific bands.
+
+        Parameters
+        ----------
+        wavelengths : array
+            Wavelengths in microns.
+        flux_errors : array
+            Original flux errors.
+
+        Returns
+        -------
+        Inflated copy (or original if no inflation configured).
+        """
+        if self.inflation_factors is None:
+            return flux_errors
+
+        inflated_errors = flux_errors.copy()
+
+        for key, factor in self.inflation_factors.items():
+            if isinstance(key, tuple):
+                wave_min, wave_max = key
+                mask = (wavelengths >= wave_min) & (wavelengths <= wave_max)
+            else:
+                wave_target = float(key)
+                mask = np.abs(wavelengths - wave_target) < (wave_target * 0.1)
+
+            inflated_errors[mask] *= factor
+
+            if np.any(mask):
+                affected_waves = wavelengths[mask]
+                logger.info(
+                    f"Inflated errors by {factor}x for {key} "
+                    f"(affected: {affected_waves})"
+                )
+
+        return inflated_errors
+
     def fit_sed(self, wavelengths, fluxes, flux_errors, redshift,
                 prior_override=None):
         """
@@ -588,6 +632,9 @@ class GreybodyFitter:
             (T_center, T_sigma) to override Schreiber prior.
             Used by two-pass empirical Bayes fitting.
         """
+        # Apply error inflation before anything else
+        flux_errors = self._inflate_band_errors(wavelengths, flux_errors)
+
         # Validate and filter data (in observed frame)
         valid_mask, fit_mask = self._validate_data(wavelengths, fluxes, flux_errors)
 
@@ -662,15 +709,27 @@ class GreybodyFitter:
                 """
                 Linear least-squares for 10^A at fixed T, beta.
                 flux_i = 10^A × template_i  →  x = Σ(f·t/σ²) / Σ(t²/σ²)
+
+                Uses only positive-flux bands for the solve.  Negative
+                fluxes in stacked data indicate noise-dominated bands
+                where the template shape has no constraining power; they
+                can make x_opt negative, producing a fallback amplitude
+                that is *not* physically negligible.
                 """
+                # Filter to positive detections — matching the approach
+                # that works in the Schreiber overlay plot.
+                pos = flux_fit > 0
+                if np.sum(pos) < 1:
+                    return self.amplitude_min, 1.0
+
                 template = self.greybody_model(
-                    wave_rest_fit, 0.0, T_rest, beta_val
+                    wave_rest_fit[pos], 0.0, T_rest, beta_val
                 )
-                w = 1.0 / error_fit**2
+                w = 1.0 / error_fit[pos]**2
                 denom = np.sum(template**2 * w)
                 if denom <= 0:
-                    return -35.0, 1.0
-                x_opt = np.sum(flux_fit * template * w) / denom
+                    return self.amplitude_min, 1.0
+                x_opt = np.sum(flux_fit[pos] * template * w) / denom
 
                 if x_opt > 0:
                     amp = np.clip(
@@ -678,7 +737,9 @@ class GreybodyFitter:
                     )
                     amp_err = np.sqrt(1.0 / denom) / (x_opt * np.log(10))
                 else:
-                    amp = -35.0
+                    # All positive-flux bands still give negative x_opt:
+                    # truly no detection.
+                    amp = self.amplitude_min
                     amp_err = 1.0
                 return amp, amp_err
 
@@ -720,15 +781,20 @@ class GreybodyFitter:
 
                 # Step 1: fit T only (amplitude pinned to a reasonable value
                 # from the initial guess, regularized toward T_center)
+                pos_mask = flux_fit > 0
+                flux_pos = flux_fit[pos_mask] if np.any(pos_mask) else flux_fit
+                error_pos = error_fit[pos_mask] if np.any(pos_mask) else error_fit
+
                 def model_func_T_only(wave, temp):
                     """1-parameter model: solve A analytically at each T."""
-                    template = self.greybody_model(
+                    template_full = self.greybody_model(
                         wave, 0.0, temp, self.beta_fixed
                     )
-                    w = 1.0 / error_fit**2
-                    x = np.sum(flux_fit * template * w) / np.sum(template**2 * w)
+                    template_pos = template_full[pos_mask] if np.any(pos_mask) else template_full
+                    w = 1.0 / error_pos**2
+                    x = np.sum(flux_pos * template_pos * w) / np.sum(template_pos**2 * w)
                     x = max(x, 1e-40)
-                    return template * x
+                    return template_full * x
 
                 try:
                     popt_T, pcov_T = curve_fit(
@@ -1181,11 +1247,10 @@ class CovarianceGreybodyFitter(GreybodyFitter):
             Either a dict mapping wavelengths to correlation matrix,
             or a 2D numpy array for the correlation matrix
         """
-        super().__init__(**kwargs)
+        super().__init__(inflation_factors=inflation_factors, **kwargs)
         self.correlation_matrix = correlation_matrix
         self.covariance_matrix = None
         self.inv_cov_chol = None  # Cholesky decomposition for efficiency
-        self.inflation_factors = inflation_factors  # NEW
 
     def set_correlation_matrix_from_dict(self, corr_dict, wavelengths):
         """
@@ -1325,42 +1390,6 @@ class CovarianceGreybodyFitter(GreybodyFitter):
         logger.info(
             f"Set up correlation matrix for {n_bands} bands: {valid_wavelengths}"
         )
-
-    def _inflate_band_errors(self, wavelengths, flux_errors):
-        """
-        Inflate uncertainties for specific bands
-
-        Parameters:
-        -----------
-        wavelengths : array
-            Wavelengths in microns
-        flux_errors : array
-            Original flux errors
-        """
-        if self.inflation_factors is None:
-            return flux_errors
-
-        inflated_errors = flux_errors.copy()
-
-        for key, factor in self.inflation_factors.items():
-            if isinstance(key, tuple):
-                # Range format: (wave_min, wave_max)
-                wave_min, wave_max = key
-                mask = (wavelengths >= wave_min) & (wavelengths <= wave_max)
-            else:
-                # Single wavelength format: find closest match within 10%
-                wave_target = float(key)
-                mask = np.abs(wavelengths - wave_target) < (wave_target * 0.1)
-
-            inflated_errors[mask] *= factor
-
-            if np.any(mask):
-                affected_waves = wavelengths[mask]
-                logger.info(
-                    f"Inflated errors by {factor}x for {key} (affected: {affected_waves})"
-                )
-
-        return inflated_errors
 
     def _setup_covariance_matrix(
         self, flux_errors_filtered, original_fit_mask, bootstrap_cov=None
@@ -1770,7 +1799,7 @@ class RegressionGreybodyFitter:
     """
 
     def __init__(self, greybody_fitter, property_names=None,
-                 degree='linear', T_bounds=(12.0, 80.0),
+                 degree='linear', T_bounds=(12.0, 140.0),
                  min_sources=5):
         """
         Parameters
@@ -2015,6 +2044,7 @@ class SimstackResults:
         correlation_matrix: dict | None = None,  # NEW
         inflation_factors: dict | None = None,  # NEW
         bootstrap_covariances: dict | None = None,
+        exclude_wavelengths: list[float] | None = None,  # NEW
         # --- Regression greybody configuration ---
         use_regression: bool = False,
         use_regression_prior: bool = False,
@@ -2023,7 +2053,7 @@ class SimstackResults:
         regression_min_sources: int = 5,
         # --- Greybody fitter configuration (forwarded to GreybodyFitter) ---
         T_rest_min: float = 15.0,
-        T_rest_max: float = 80.0,
+        T_rest_max: float = 140.0,
         amplitude_min: float = -41.0,
         amplitude_max: float = -29.0,
         beta_min: float = 0.5,
@@ -2047,6 +2077,9 @@ class SimstackResults:
             use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
             use_covariance: Whether to use covariance-aware fitting
             correlation_matrix: Custom correlation matrix (uses default if None)
+            exclude_wavelengths: Wavelengths (µm) to exclude from SED fitting.
+                e.g. [24.0] to skip MIPS 24µm (PAH emission, not dust continuum).
+                Excluded bands still appear in SED data for plotting.
             T_rest_min: Minimum rest-frame T_dust bound (K)
             T_rest_max: Maximum rest-frame T_dust bound (K). Raise for high-z.
             snr_high: SED SNR threshold for tier-A (data-driven) fits
@@ -2082,13 +2115,13 @@ class SimstackResults:
             beta_max=beta_max,
             snr_high=snr_high,
             snr_low=snr_low,
+            inflation_factors=inflation_factors,
         )
 
         # Initialize greybody fitter with MCMC and covariance options
         if use_covariance:
             self.greybody_fitter = CovarianceGreybodyFitter(
                 correlation_matrix=correlation_matrix,
-                inflation_factors=inflation_factors,
                 **fitter_kwargs,
             )
             logger.info("Using covariance-aware greybody fitter")
@@ -2099,12 +2132,13 @@ class SimstackResults:
         # Store settings for logging
         self.inflation_factors = inflation_factors
         self.use_bootstrap_covariance = bool(bootstrap_covariances)
+        self.exclude_wavelengths = exclude_wavelengths or []
 
         # Initialize processed results containers
         self.sed_results: dict[str, SEDResults] = {}
         self.derived_quantities: dict[str, DerivedQuantities] = {}
         self.band_results: dict[str, dict[str, Any]] = {}
-        self.regression_result: dict | None = None
+        self.regression_result: dict[str, dict] | None = None  # type → result
 
         # Store regression configuration
         self.use_regression = use_regression or use_regression_prior
@@ -2138,7 +2172,27 @@ class SimstackResults:
 
             # Get flux and error
             flux = self.raw_results.flux_densities[map_name][pop_index]
-            error = self.raw_results.flux_errors[map_name][pop_index]
+            err_bootstrap = self.raw_results.flux_errors[map_name][pop_index]
+
+            # Combine bootstrap and formal (systematic) errors in quadrature.
+            # Per-bin bootstrap only captures source-assignment variance;
+            # formal errors capture map noise.  Both are needed.
+            # When bootstrap is NOT run, both arrays are identical —
+            # skip combination to avoid double-counting.
+            err_formal = 0.0
+            if hasattr(self.raw_results, 'flux_errors_systematic'):
+                sys_errors = self.raw_results.flux_errors_systematic.get(
+                    map_name, None
+                )
+                if sys_errors is not None:
+                    err_formal = sys_errors[pop_index]
+
+            if err_formal > 0 and abs(err_bootstrap - err_formal) > 1e-30:
+                # Bootstrap was run — errors are independent components
+                error = np.sqrt(err_bootstrap**2 + err_formal**2)
+            else:
+                # No bootstrap, or both are identical — use as-is
+                error = err_bootstrap
 
             flux_densities.append(flux)
             flux_errors.append(error)
@@ -2180,15 +2234,35 @@ class SimstackResults:
                 f"Using bootstrap covariance for {pop_label}: {bootstrap_cov.shape}"
             )
 
+        # Exclude specified wavelengths from fitting (but keep in SED data)
+        fit_mask = np.ones(len(wavelengths), dtype=bool)
+        if self.exclude_wavelengths:
+            for exc_wave in self.exclude_wavelengths:
+                # Match within 10% tolerance
+                band_match = np.abs(wavelengths - exc_wave) < (exc_wave * 0.1)
+                fit_mask &= ~band_match
+                if np.any(band_match):
+                    logger.info(
+                        f"Excluding {wavelengths[band_match]} µm from fit "
+                        f"for {pop_label}"
+                    )
+
+        wave_fit = wavelengths[fit_mask]
+        flux_fit = flux_densities[fit_mask]
+        error_fit = flux_errors[fit_mask]
+        bootstrap_cov_fit = None
+        if bootstrap_cov is not None:
+            bootstrap_cov_fit = bootstrap_cov[np.ix_(fit_mask, fit_mask)]
+
         # Fit greybody model
         if isinstance(self.greybody_fitter, CovarianceGreybodyFitter):
             greybody_results = self.greybody_fitter.fit_sed_with_covariance(
-                wavelengths, flux_densities, flux_errors, z_median, bootstrap_cov,
+                wave_fit, flux_fit, error_fit, z_median, bootstrap_cov_fit,
                 prior_override=prior_override,
             )
         else:
             greybody_results = self.greybody_fitter.fit_sed(
-                wavelengths, flux_densities, flux_errors, z_median,
+                wave_fit, flux_fit, error_fit, z_median,
                 prior_override=prior_override,
             )
 
@@ -2534,6 +2608,42 @@ class SimstackResults:
 
         return empirical
 
+    @staticmethod
+    def _extract_pop_type(pop_id: str) -> str:
+        """
+        Extract population type from ID.  Handles both prefix and suffix
+        styles that PopulationManager can produce:
+
+        Prefix:  'sfg__stellar_mass_9.5_10.0__redshift_0.5_1.0'      → 'sfg'
+        Suffix:  'redshift_0.01_0.5__stellar_mass_8.5_10.0__split_0'  → 'split_0'
+        Neither: 'stellar_mass_9.5_10.0__redshift_0.5_1.0'            → '_all_'
+        """
+        segments = pop_id.split('__')
+
+        # Check first segment (prefix style: sfg__...)
+        first = segments[0]
+        if not any(c.isdigit() for c in first):
+            return first
+
+        # Check last segment (suffix style: ...__split_0)
+        if len(segments) > 1:
+            last = segments[-1]
+            parts = last.split('_')
+            # A bin-range segment has ≥3 parts ending in two floats
+            # e.g. "stellar_mass_8.5_10.0"  →  skip
+            # A type-label segment does not, e.g. "split_0"
+            if len(parts) >= 3:
+                try:
+                    float(parts[-2])
+                    float(parts[-1])
+                    return '_all_'
+                except ValueError:
+                    return last
+            else:
+                return last
+
+        return '_all_'
+
     def _run_regression_fit(self) -> None:
         """
         Pass 3: Fit regression greybody model across all populations.
@@ -2541,6 +2651,10 @@ class SimstackResults:
         Parameterizes T_rest and log10(A) as polynomial functions of
         population properties (M*, z, β_UV), fitting ~8 coefficients
         instead of ~900 independent parameters.
+
+        Fits SEPARATE regression surfaces per population type (sfg,
+        quiescent, agn, etc.) since different types have fundamentally
+        different FIR properties.
 
         Results are stored alongside (not replacing) existing per-population fits.
         """
@@ -2591,12 +2705,12 @@ class SimstackResults:
         wavelengths_obs = first_sed.wavelengths.copy()
         N_bands = len(wavelengths_obs)
 
+        # Collect data and group by population type
+        pop_types = {}  # type → list of (pop_idx, pop_id)
         fluxes = np.zeros((N_pop, N_bands))
         errors = np.zeros((N_pop, N_bands))
         redshifts = np.zeros(N_pop)
         n_sources = np.zeros(N_pop, dtype=int)
-
-        # Build property arrays dynamically
         prop_arrays = {pname: np.zeros(N_pop) for pname in prop_names}
 
         for i, pop_id in enumerate(pop_ids):
@@ -2605,6 +2719,10 @@ class SimstackResults:
             errors[i] = sed.flux_errors
             redshifts[i] = sed.median_redshift
             n_sources[i] = sed.n_sources
+
+            # Group by type
+            ptype = self._extract_pop_type(pop_id)
+            pop_types.setdefault(ptype, []).append(i)
 
             # Get bin centers from PopulationManager
             if pop_id in self.population_manager.populations:
@@ -2632,65 +2750,83 @@ class SimstackResults:
                 if 'stellar_mass' in prop_arrays:
                     prop_arrays['stellar_mass'][i] = sed.median_mass
 
-        # Filter to populations with enough sources
-        mask = n_sources >= self.regression_min_sources
-        n_excluded = np.sum(~mask)
-        if n_excluded > 0:
-            logger.info(f"Regression: excluding {n_excluded} populations "
-                        f"with < {self.regression_min_sources} sources")
+        logger.info(f"Population types found: {list(pop_types.keys())} "
+                    f"({', '.join(f'{k}: {len(v)}' for k, v in pop_types.items())})")
 
-        idx_map = np.where(mask)[0]  # maps filtered index → original index
-        fluxes_f = fluxes[mask]
-        errors_f = errors[mask]
-        redshifts_f = redshifts[mask]
-        props_f = {pname: arr[mask] for pname, arr in prop_arrays.items()}
+        # Fit separate regression surface per type
+        self.regression_result = {}  # type → result dict
+        n_min_params = 2 * (len(prop_names) + 1)
 
-        n_min_params = 2 * (len(prop_names) + 1)  # T and A each get intercept + slopes
-        if len(redshifts_f) < n_min_params:
-            logger.warning(f"Too few populations ({len(redshifts_f)}) "
-                           f"for {n_min_params}-param regression fit")
-            return
+        for ptype, type_indices in pop_types.items():
+            type_indices = np.array(type_indices)
 
-        # Build ordered sed_results dict for initialization (filtered)
-        filtered_pop_ids = [pop_ids[j] for j in idx_map]
-        filtered_seds = {pid: self.sed_results[pid] for pid in filtered_pop_ids}
+            # Filter to populations with enough sources
+            source_mask = n_sources[type_indices] >= self.regression_min_sources
+            type_indices_f = type_indices[source_mask]
+            n_excluded = np.sum(~source_mask)
 
-        # Create and run the regression fitter
-        reg_fitter = RegressionGreybodyFitter(
-            greybody_fitter=self.greybody_fitter,
-            property_names=prop_names,
-            degree=self.regression_degree,
-            min_sources=self.regression_min_sources,
-        )
+            if n_excluded > 0:
+                logger.info(f"  [{ptype}] excluding {n_excluded} populations "
+                            f"with < {self.regression_min_sources} sources")
 
-        try:
-            reg_result = reg_fitter.fit(
-                wavelengths_obs, fluxes_f, errors_f, redshifts_f,
-                props_f, sed_results=filtered_seds,
+            if len(type_indices_f) < n_min_params:
+                logger.warning(
+                    f"  [{ptype}] too few populations ({len(type_indices_f)}) "
+                    f"for {n_min_params}-param regression, skipping")
+                continue
+
+            # Extract data for this type
+            fluxes_t = fluxes[type_indices_f]
+            errors_t = errors[type_indices_f]
+            redshifts_t = redshifts[type_indices_f]
+            props_t = {pname: arr[type_indices_f]
+                       for pname, arr in prop_arrays.items()}
+
+            # Build sed_results for initialization
+            type_pop_ids = [pop_ids[j] for j in type_indices_f]
+            type_seds = {pid: self.sed_results[pid] for pid in type_pop_ids}
+
+            # Create and run the regression fitter
+            reg_fitter = RegressionGreybodyFitter(
+                greybody_fitter=self.greybody_fitter,
+                property_names=prop_names,
+                degree=self.regression_degree,
+                min_sources=self.regression_min_sources,
             )
-        except Exception as e:
-            logger.error(f"Regression fit failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return
 
-        # Store global result
-        self.regression_result = reg_result
+            try:
+                reg_result = reg_fitter.fit(
+                    wavelengths_obs, fluxes_t, errors_t, redshifts_t,
+                    props_t, sed_results=type_seds,
+                )
+            except Exception as e:
+                logger.error(f"  [{ptype}] regression fit failed: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                continue
 
-        # Write regression values back into SEDResults for included populations
-        for fi, orig_i in enumerate(idx_map):
-            pid = pop_ids[orig_i]
-            sed = self.sed_results[pid]
-            sed.regression_T_rest = float(reg_result['T_rest'][fi])
-            sed.regression_log10_A = float(reg_result['log10_A'][fi])
-            sed.regression_L_IR = float(reg_result['L_IR'][fi])
-            sed.regression_chi2 = float(reg_result['chi2_per_pop'][fi])
+            # Store per-type result
+            self.regression_result[ptype] = reg_result
 
-        logger.info(
-            f"Regression fit complete: χ²/dof={reg_result['chi2_reduced']:.2f}, "
-            f"T={reg_result['T_rest'].min():.1f}–{reg_result['T_rest'].max():.1f}K, "
-            f"{len(idx_map)} populations"
-        )
+            # Write regression values back into SEDResults
+            for fi, orig_i in enumerate(type_indices_f):
+                pid = pop_ids[orig_i]
+                sed = self.sed_results[pid]
+                sed.regression_T_rest = float(reg_result['T_rest'][fi])
+                sed.regression_log10_A = float(reg_result['log10_A'][fi])
+                sed.regression_L_IR = float(reg_result['L_IR'][fi])
+                sed.regression_chi2 = float(reg_result['chi2_per_pop'][fi])
+
+            logger.info(
+                f"  [{ptype}] χ²/dof={reg_result['chi2_reduced']:.2f}, "
+                f"T={reg_result['T_rest'].min():.1f}–"
+                f"{reg_result['T_rest'].max():.1f}K, "
+                f"{len(type_indices_f)} populations"
+            )
+
+        if not self.regression_result:
+            logger.warning("No regression fits succeeded")
+            self.regression_result = None
 
     def _refit_with_regression_prior(self, pop_indices: dict) -> None:
         """
@@ -2699,46 +2835,49 @@ class SimstackResults:
         The regression provides a smooth "main sequence" prediction for T_rest
         as a function of (M★, z, β). This is used as prior_center for refitting,
         with sigma derived from the scatter of high-confidence (tier A) individual
-        fits around the regression surface. The existing SNR-scaled prior
-        mechanism then handles the strength:
+        fits around the regression surface, COMPUTED PER TYPE.
 
+        The existing SNR-scaled prior mechanism then handles the strength:
             High-SNR (tier A): σ_eff ≈ σ_regression (prior barely matters,
                                population free to depart from MS)
             Low-SNR (tier B/C): σ_eff ≈ 0.3 × σ_regression (pulled toward MS)
-
-        This replaces the Schreiber/empirical priors from Passes 1-2 with a
-        data-driven prior from the regression surface.
         """
         reg = self.regression_result
         if reg is None:
             return
 
-        # Compute regression prior sigma from tier-A scatter
-        # around the regression surface
-        T_residuals = []
+        # Compute regression prior sigma PER TYPE from tier-A scatter
+        type_sigmas = {}
         for pop_id, sed in self.sed_results.items():
             if (sed.fit_quality_tier == "A"
                     and sed.regression_T_rest is not None
                     and sed.dust_temperature_rest_frame is not None
                     and np.isfinite(sed.dust_temperature_rest_frame)):
-                T_residuals.append(
+                ptype = self._extract_pop_type(pop_id)
+                type_sigmas.setdefault(ptype, []).append(
                     sed.dust_temperature_rest_frame - sed.regression_T_rest
                 )
 
-        if len(T_residuals) < 3:
-            logger.warning("Too few tier-A fits to compute regression prior sigma")
+        regression_sigmas = {}
+        for ptype, residuals in type_sigmas.items():
+            if len(residuals) < 3:
+                logger.warning(f"  [{ptype}] too few tier-A fits "
+                               f"({len(residuals)}) for regression sigma")
+                continue
+            residuals = np.array(residuals)
+            sigma = 1.4826 * np.median(np.abs(residuals - np.median(residuals)))
+            regression_sigmas[ptype] = max(sigma, 3.0)  # floor at 3K
+
+        if not regression_sigmas:
+            logger.warning("No types have enough tier-A fits for regression sigma")
             return
 
-        T_residuals = np.array(T_residuals)
-        # Robust sigma: 1.4826 × MAD
-        regression_sigma = 1.4826 * np.median(np.abs(T_residuals - np.median(T_residuals)))
-        regression_sigma = max(regression_sigma, 3.0)  # floor at 3K
-
-        logger.info(
-            f"Pass 4: Refitting with regression prior "
-            f"(σ_regression = {regression_sigma:.1f}K from "
-            f"{len(T_residuals)} tier-A residuals)"
-        )
+        for ptype, sigma in regression_sigmas.items():
+            n_tier_a = len(type_sigmas[ptype])
+            logger.info(
+                f"Pass 4 [{ptype}]: σ_regression = {sigma:.1f}K "
+                f"(from {n_tier_a} tier-A residuals)"
+            )
 
         # Refit all populations that have a regression prediction
         n_refit = 0
@@ -2746,7 +2885,12 @@ class SimstackResults:
             if sed.regression_T_rest is None:
                 continue
 
+            ptype = self._extract_pop_type(pop_id)
+            if ptype not in regression_sigmas:
+                continue
+
             T_prior = sed.regression_T_rest
+            sigma = regression_sigmas[ptype]
             pop_index = pop_indices.get(pop_id)
             if pop_index is None:
                 continue
@@ -2754,7 +2898,7 @@ class SimstackResults:
             try:
                 sed_refit = self._create_sed_for_population(
                     pop_id, pop_index,
-                    prior_override=(T_prior, regression_sigma),
+                    prior_override=(T_prior, sigma),
                 )
                 # Preserve regression fields from Pass 3
                 sed_refit.regression_T_rest = sed.regression_T_rest
@@ -3158,6 +3302,7 @@ def create_results_processor(
     correlation_matrix: dict | None = None,
     inflation_factors: dict | None = None,
     bootstrap_covariances: dict | None = None,
+    exclude_wavelengths: list[float] | None = None,
     use_regression: bool = False,
     use_regression_prior: bool = False,
     regression_degree: str = 'linear',
@@ -3208,6 +3353,7 @@ def create_results_processor(
         correlation_matrix=correlation_matrix,
         inflation_factors=inflation_factors,
         bootstrap_covariances=bootstrap_covariances,
+        exclude_wavelengths=exclude_wavelengths,
         use_regression=use_regression,
         use_regression_prior=use_regression_prior,
         regression_degree=regression_degree,
