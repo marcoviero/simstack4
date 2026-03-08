@@ -1154,7 +1154,7 @@ class SimstackWrapper:
         use_mcmc: bool = False,
         mcmc_iterations: int = 1000,
         mcmc_burn_in: int = 200,
-        use_schreiber_prior: bool = False,
+        temperature_prior: str = "flat",  # "flat", "schreiber", "viero"
         save_csv_path: str | None = None,
         use_covariance: bool | None = None,
         correlation_matrix: dict | None = None,
@@ -1181,7 +1181,7 @@ class SimstackWrapper:
         )
 
         fitting_method = "MCMC" if use_mcmc else "curve_fit"
-        prior_type = "Schreiber+2015" if use_schreiber_prior else "flat"
+        prior_type = temperature_prior
         covariance_status = (
             "with covariance" if covariance_enabled else "diagonal errors"
         )
@@ -1198,7 +1198,7 @@ class SimstackWrapper:
                 use_mcmc=use_mcmc,
                 mcmc_iterations=mcmc_iterations,
                 mcmc_burn_in=mcmc_burn_in,
-                use_schreiber_prior=use_schreiber_prior,
+                temperature_prior=temperature_prior,
                 use_covariance=covariance_enabled,
                 correlation_matrix=correlation_data,
                 inflation_factors=inflation_factors,
@@ -1542,7 +1542,7 @@ class SimstackWrapper:
         use_mcmc: bool = False,
         mcmc_iterations: int = 1000,
         mcmc_burn_in: int = 200,
-        use_schreiber_prior: bool = False,
+        temperature_prior: str = "flat",  # "flat", "schreiber", "viero"
         save_csv_path: str | None = None,
         use_covariance: bool | None = None,
         correlation_matrix: dict | None = None,
@@ -1597,7 +1597,7 @@ class SimstackWrapper:
             use_mcmc=use_mcmc,
             mcmc_iterations=mcmc_iterations,
             mcmc_burn_in=mcmc_burn_in,
-            use_schreiber_prior=use_schreiber_prior,
+            temperature_prior=temperature_prior,
             save_csv_path=save_csv_path,
             use_covariance=use_covariance,
             correlation_matrix=instrumental_correlation,
@@ -1612,7 +1612,7 @@ class SimstackWrapper:
         use_mcmc: bool = False,
         mcmc_iterations: int = 1000,
         mcmc_burn_in: int = 200,
-        use_schreiber_prior: bool = False,
+        temperature_prior: str = "flat",  # "flat", "schreiber", "viero"
         save_path: str | None = None,
     ) -> SimstackResults:
         """Run both stacking and analysis"""
@@ -1621,7 +1621,7 @@ class SimstackWrapper:
             use_mcmc=use_mcmc,
             mcmc_iterations=mcmc_iterations,
             mcmc_burn_in=mcmc_burn_in,
-            use_schreiber_prior=use_schreiber_prior,
+            temperature_prior=temperature_prior,
             save_csv_path=save_path,
         )
         return self.processed_results
@@ -1772,7 +1772,7 @@ def run_analysis_only(
     use_mcmc: bool = False,
     mcmc_iterations: int = 1000,
     mcmc_burn_in: int = 200,
-    use_schreiber_prior: bool = False,
+    temperature_prior: str = "flat",  # "flat", "schreiber", "viero"
 ) -> SimstackResults:
     """
     Run analysis from self-contained JSON file (no config needed!)
@@ -1784,7 +1784,7 @@ def run_analysis_only(
         use_mcmc: Whether to use MCMC fitting (requires emcee)
         mcmc_iterations: Number of MCMC iterations
         mcmc_burn_in: Number of burn-in iterations to discard
-        use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
+        temperature_prior: Temperature prior ("flat", "schreiber", "viero")
 
     Returns:
         Processed results object
@@ -1795,7 +1795,7 @@ def run_analysis_only(
         use_mcmc=use_mcmc,
         mcmc_iterations=mcmc_iterations,
         mcmc_burn_in=mcmc_burn_in,
-        use_schreiber_prior=use_schreiber_prior,
+        temperature_prior=temperature_prior,
         save_csv_path=save_csv_path,
     )
 

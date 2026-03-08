@@ -123,7 +123,7 @@ class GreybodyFitter:
         use_mcmc: bool = False,
         mcmc_iterations: int = 1000,
         mcmc_burn_in: int = 200,
-        use_schreiber_prior: bool = False,
+        temperature_prior: str = "flat",  # "flat", "schreiber", "viero"
         cosmology_calc: "CosmologyCalculator | None" = None,
         # --- Temperature bounds (rest frame, K) ---
         T_rest_min: float = 15.0,
@@ -160,10 +160,10 @@ class GreybodyFitter:
 
         Prior sigma scaling
         -------------------
-        When use_schreiber_prior is True, the effective prior σ is:
-            σ_eff = σ_schreiber × clip(SNR / snr_high, snr_sigma_clip_min, snr_sigma_clip_max)
-        So at SNR = snr_high: σ_eff = σ_schreiber (prior barely matters).
-        At SNR = 1: σ_eff ≈ 0.3 × σ_schreiber (prior dominates).
+        When temperature_prior != "flat", the effective prior σ is:
+            σ_eff = σ_prior × clip(SNR / snr_high, snr_sigma_clip_min, snr_sigma_clip_max)
+        So at SNR = snr_high: σ_eff = σ_prior (prior barely matters).
+        At SNR = 1: σ_eff ≈ 0.3 × σ_prior (prior dominates).
         """
         # Physical constants
         self.h = 6.62607015e-34  # Planck constant (J⋅s)
@@ -176,7 +176,7 @@ class GreybodyFitter:
         self.use_mcmc = use_mcmc and HAS_EMCEE
         self.mcmc_iterations = mcmc_iterations
         self.mcmc_burn_in = mcmc_burn_in
-        self.use_schreiber_prior = use_schreiber_prior
+        self.temperature_prior = temperature_prior.lower() if isinstance(temperature_prior, str) else "flat"
 
         # Configurable bounds
         self.T_rest_min = T_rest_min
@@ -289,8 +289,8 @@ class GreybodyFitter:
         Temperature guess and bounds are in rest frame.
         """
         try:
-            if self.use_schreiber_prior and redshift > 0:
-                T_guess, _ = self.schreiber_temperature_prior(redshift)
+            if self.temperature_prior != "flat" and redshift > 0:
+                T_guess, _ = self.temperature_prior_relation(redshift)
                 T_guess = np.clip(T_guess, self.T_rest_min + 1, self.T_rest_max - 2)
             else:
                 T_guess = 30.0  # typical rest-frame T
@@ -330,29 +330,53 @@ class GreybodyFitter:
             logger.warning(f"Initial guess estimation failed: {e}")
             return -35.0, 30.0
 
-    def schreiber_temperature_prior(self, redshift: float) -> tuple[float, float]:
+    def temperature_prior_relation(self, redshift: float) -> tuple[float, float]:
         """
-        Calculate expected REST-FRAME dust temperature from Schreiber+2015.
+        Calculate expected REST-FRAME dust temperature from chosen relation.
 
-        Returns T_rest and sigma_T_rest (both in K).
+        Parameters
+        ----------
+        redshift : float
+
+        Returns
+        -------
+        T_rest, sigma_T : tuple[float, float]
+            Expected temperature and intrinsic scatter (both in K).
         """
         if redshift <= 0:
             return 25.0, 5.0
 
-        # Schreiber+2015 relation: T_dust(rest) = 23.8 + 2.7*z + 0.9*z^2
-        T_rest = 23.8 + 2.7 * redshift + 0.9 * redshift**2
+        prior = self.temperature_prior
 
-        # Clip to physically reasonable rest-frame range
-        T_rest = np.clip(T_rest, self.T_rest_min, self.T_rest_max)
+        if prior == "viero":
+            # Viero et al. 2022 (MNRAS Letters 516, L30):
+            # Quadratic T-z from stacking COSMOS2020 + Herschel/SCUBA-2.
+            # Predicts ~105K at z=8.4; "near exponential" evolution.
+            T_rest = 23.8 + 2.7 * redshift + 0.9 * redshift**2
+            # Scatter: ~3K at low-z, growing with redshift
+            T_sigma = 3.0 + 1.0 * min(redshift, 4.0)
 
-        # Uncertainty increases with redshift (scatter in Schreiber+2015)
-        if redshift < 1.0:
-            T_sigma = 3.0
-        elif redshift < 2.0:
-            T_sigma = 4.0
+        elif prior == "schreiber":
+            # Schreiber et al. 2018 (A&A 609, A30):
+            # Linear T-z from stacking CANDELS + Herschel + ALMA.
+            # T_d = 32.9 + 4.60 * (z - 2), valid z ~ 0-4.
+            T_rest = 32.9 + 4.60 * (redshift - 2.0)
+            # Intrinsic scatter ~12% (Schreiber+2018 Section 4.3)
+            T_sigma = max(0.12 * T_rest, 3.0)
+
+        elif prior == "flat":
+            # No preferred temperature — return midpoint with wide sigma
+            T_rest = (self.T_rest_min + self.T_rest_max) / 2.0
+            T_sigma = (self.T_rest_max - self.T_rest_min) / 4.0
+            return T_rest, T_sigma
+
         else:
-            T_sigma = 5.0
+            raise ValueError(
+                f"Unknown temperature_prior '{prior}'. "
+                f"Choose from: 'flat', 'schreiber', 'viero'"
+            )
 
+        T_rest = np.clip(T_rest, self.T_rest_min, self.T_rest_max)
         return T_rest, T_sigma
 
     def log_prior(self, theta: list, redshift: float = 0.0) -> float:
@@ -376,8 +400,8 @@ class GreybodyFitter:
         if self._prior_override is not None:
             T_center, T_sigma = self._prior_override
             log_p_temp = -0.5 * ((temperature - T_center) / T_sigma) ** 2
-        elif self.use_schreiber_prior and redshift > 0:
-            T_expected, T_sigma = self.schreiber_temperature_prior(redshift)
+        elif self.temperature_prior != "flat" and redshift > 0:
+            T_expected, T_sigma = self.temperature_prior_relation(redshift)
             log_p_temp = -0.5 * ((temperature - T_expected) / T_sigma) ** 2
         else:
             # Mild preference for typical dust temperatures
@@ -655,8 +679,8 @@ class GreybodyFitter:
         if prior_override is not None:
             T_center, T_sigma = prior_override
             self._prior_override = prior_override
-        elif self.use_schreiber_prior and redshift > 0:
-            T_center, T_sigma_base = self.schreiber_temperature_prior(redshift)
+        elif self.temperature_prior != "flat" and redshift > 0:
+            T_center, T_sigma_base = self.temperature_prior_relation(redshift)
             # Scale sigma with SNR: σ_eff = σ_base × (SNR_HIGH / max(SNR, 1))
             # At SNR=5: σ=σ_base (prior barely matters)
             # At SNR=2: σ=σ_base×2.5 ... wait, we want TIGHTER at low SNR
@@ -950,7 +974,7 @@ class GreybodyFitter:
                 "model_fluxes": flux_model,
                 "redshift_used": redshift,
                 "mcmc_used": mcmc_results is not None,
-                "schreiber_prior_used": self.use_schreiber_prior,
+                "temperature_prior": self.temperature_prior,
                 "sed_snr": sed_snr,
                 "fit_quality_tier": fit_quality_tier,
                 "prior_center": T_center,
@@ -1539,10 +1563,10 @@ class CovarianceGreybodyFitter(GreybodyFitter):
         logger.info(f"MCMC with covariance: initial T_rest={T_guess:.1f}K")
 
         # Schreiber prior (now returns T_rest)
-        if self.use_schreiber_prior and redshift > 0:
-            T_prior, T_sigma = self.schreiber_temperature_prior(redshift)
+        if self.temperature_prior != "flat" and redshift > 0:
+            T_prior, T_sigma = self.temperature_prior_relation(redshift)
             logger.info(
-                f"Schreiber prior: T_rest={T_prior:.1f}±{T_sigma:.1f}K (z={redshift:.2f})"
+                f"T_dust prior ({self.temperature_prior}): T_rest={T_prior:.1f}±{T_sigma:.1f}K (z={redshift:.2f})"
             )
             alpha = 0.7
             T_start = alpha * T_prior + (1 - alpha) * T_guess
@@ -2039,7 +2063,7 @@ class SimstackResults:
         use_mcmc: bool = False,
         mcmc_iterations: int = 1000,
         mcmc_burn_in: int = 200,
-        use_schreiber_prior: bool = False,
+        temperature_prior: str = "flat",  # "flat", "schreiber", "viero"
         use_covariance: bool = True,  # NEW
         correlation_matrix: dict | None = None,  # NEW
         inflation_factors: dict | None = None,  # NEW
@@ -2074,7 +2098,7 @@ class SimstackResults:
             use_mcmc: Whether to use MCMC fitting (requires emcee)
             mcmc_iterations: Number of MCMC iterations
             mcmc_burn_in: Number of burn-in iterations to discard
-            use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
+            temperature_prior: Temperature prior ("flat", "schreiber", "viero")
             use_covariance: Whether to use covariance-aware fitting
             correlation_matrix: Custom correlation matrix (uses default if None)
             exclude_wavelengths: Wavelengths (µm) to exclude from SED fitting.
@@ -2105,7 +2129,7 @@ class SimstackResults:
             use_mcmc=use_mcmc,
             mcmc_iterations=mcmc_iterations,
             mcmc_burn_in=mcmc_burn_in,
-            use_schreiber_prior=use_schreiber_prior,
+            temperature_prior=temperature_prior,
             cosmology_calc=self.cosmology_calc,
             T_rest_min=T_rest_min,
             T_rest_max=T_rest_max,
@@ -3025,7 +3049,7 @@ class SimstackResults:
 
         fitting_method = "MCMC" if self.greybody_fitter.use_mcmc else "curve_fit"
         prior_type = (
-            "Schreiber+2015" if self.greybody_fitter.use_schreiber_prior else "flat"
+            self.greybody_fitter.temperature_prior
         )
 
         print(f"Fitting method: {fitting_method}")
@@ -3171,7 +3195,7 @@ class SimstackResults:
                 "use_mcmc": self.greybody_fitter.use_mcmc,
                 "mcmc_iterations": self.greybody_fitter.mcmc_iterations,
                 "mcmc_burn_in": self.greybody_fitter.mcmc_burn_in,
-                "use_schreiber_prior": self.greybody_fitter.use_schreiber_prior,
+                "temperature_prior": self.greybody_fitter.temperature_prior,
                 "fix_beta": self.greybody_fitter.fix_beta,
                 "beta_fixed": self.greybody_fitter.beta_fixed,
             },
@@ -3297,7 +3321,7 @@ def create_results_processor(
     use_mcmc: bool = False,
     mcmc_iterations: int = 1000,
     mcmc_burn_in: int = 200,
-    use_schreiber_prior: bool = False,
+    temperature_prior: str = "flat",  # "flat", "schreiber", "viero"
     use_covariance: bool = True,
     correlation_matrix: dict | None = None,
     inflation_factors: dict | None = None,
@@ -3322,7 +3346,7 @@ def create_results_processor(
         use_mcmc: Whether to use MCMC fitting (requires emcee)
         mcmc_iterations: Number of MCMC iterations
         mcmc_burn_in: Number of burn-in iterations to discard
-        use_schreiber_prior: Whether to use Schreiber+2015 T_dust vs redshift prior
+        temperature_prior: Temperature prior ("flat", "schreiber", "viero")
         use_covariance: Whether to use covariance-aware fitting
         correlation_matrix: Custom correlation matrix (uses default if None)
         bootstrap_covariances: Dict mapping population_id -> bootstrap covariance matrix
@@ -3348,7 +3372,7 @@ def create_results_processor(
         use_mcmc=use_mcmc,
         mcmc_iterations=mcmc_iterations,
         mcmc_burn_in=mcmc_burn_in,
-        use_schreiber_prior=use_schreiber_prior,
+        temperature_prior=temperature_prior,
         use_covariance=use_covariance,
         correlation_matrix=correlation_matrix,
         inflation_factors=inflation_factors,

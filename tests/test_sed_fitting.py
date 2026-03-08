@@ -35,7 +35,7 @@ def fitter(cosmo):
         fix_beta=True,
         beta_fixed=1.8,
         use_mcmc=False,
-        use_schreiber_prior=False,
+        temperature_prior="flat",
         cosmology_calc=cosmo,
     )
 
@@ -46,7 +46,7 @@ def fitter_with_prior(cosmo):
         fix_beta=True,
         beta_fixed=1.8,
         use_mcmc=False,
-        use_schreiber_prior=True,
+        temperature_prior="viero",
         cosmology_calc=cosmo,
     )
 
@@ -57,7 +57,7 @@ def cov_fitter(cosmo):
         fix_beta=True,
         beta_fixed=1.8,
         use_mcmc=False,
-        use_schreiber_prior=False,
+        temperature_prior="flat",
         cosmology_calc=cosmo,
     )
 
@@ -220,7 +220,7 @@ class TestFitSEDOutputContract:
             "n_points", "n_positive",
             "wavelengths_fit", "fluxes_fit", "flux_errors_fit",
             "model_wavelengths", "model_fluxes",
-            "redshift_used", "mcmc_used", "schreiber_prior_used",
+            "redshift_used", "mcmc_used", "temperature_prior",
         }
         assert required_keys.issubset(result.keys()), (
             f"Missing keys: {required_keys - result.keys()}"
@@ -316,36 +316,36 @@ class TestFreeBeta:
 class TestSchreiberPrior:
     """Verify the Schreiber+2015 temperature prior."""
 
-    def test_returns_rest_frame_temperature(self, fitter):
-        """schreiber_temperature_prior should return T_rest, not T_obs."""
+    def test_returns_rest_frame_temperature(self, fitter_with_prior):
+        """temperature_prior_relation should return T_rest, not T_obs."""
         z = 2.0
-        T_rest, sigma = fitter.schreiber_temperature_prior(z)
+        T_rest, sigma = fitter_with_prior.temperature_prior_relation(z)
 
-        # Schreiber T_rest = 23.8 + 2.7z + 0.9z² = 32.8K at z=2
+        # Viero T_rest = 23.8 + 2.7z + 0.9z² = 32.8K at z=2
         expected = 23.8 + 2.7 * 2.0 + 0.9 * 4.0
         assert T_rest == pytest.approx(expected, abs=0.1)
         # Must NOT be T_obs = T_rest/(1+z) = 10.9K
         assert T_rest > 20
 
-    def test_sigma_varies_with_redshift(self, fitter):
-        """Sigma should be z-dependent (3, 4, 5 K)."""
-        _, sigma_low = fitter.schreiber_temperature_prior(0.5)
-        _, sigma_mid = fitter.schreiber_temperature_prior(1.5)
-        _, sigma_high = fitter.schreiber_temperature_prior(2.5)
+    def test_sigma_varies_with_redshift(self, fitter_with_prior):
+        """Sigma should increase with redshift (Viero: 3 + min(z, 4))."""
+        _, sigma_low = fitter_with_prior.temperature_prior_relation(0.5)
+        _, sigma_mid = fitter_with_prior.temperature_prior_relation(1.5)
+        _, sigma_high = fitter_with_prior.temperature_prior_relation(2.5)
 
-        assert sigma_low == pytest.approx(3.0)
-        assert sigma_mid == pytest.approx(4.0)
-        assert sigma_high == pytest.approx(5.0)
+        assert sigma_low == pytest.approx(3.5)
+        assert sigma_mid == pytest.approx(4.5)
+        assert sigma_high == pytest.approx(5.5)
 
-    def test_no_hardcoded_sigma_override(self, fitter):
+    def test_no_hardcoded_sigma_override(self, fitter_with_prior):
         """All z values should NOT return σ=2K (the old bug)."""
         for z in [0.5, 1.0, 1.5, 2.0, 3.0]:
-            _, sigma = fitter.schreiber_temperature_prior(z)
+            _, sigma = fitter_with_prior.temperature_prior_relation(z)
             assert sigma != 2.0, f"σ=2K at z={z} — hardcoded override not removed"
 
-    def test_prior_biases_toward_schreiber(self, fitter_with_prior, herschel_wavelengths):
+    def test_prior_biases_toward_expected(self, fitter_with_prior, herschel_wavelengths):
         """
-        With Schreiber prior, a noisy SED should be pulled toward the
+        With temperature prior, a noisy SED should be pulled toward the
         Schreiber relation compared to no prior.
         """
         z = 1.0
@@ -364,7 +364,7 @@ class TestSchreiberPrior:
         # but with 30% noise and 5 points, the data still dominates.
         # Just check it runs and returns reasonable results.
         assert result_prior["fit_success"]
-        assert result_prior["schreiber_prior_used"] is True
+        assert result_prior["temperature_prior"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -399,10 +399,10 @@ class TestLogPrior:
         assert fitter.log_prior([-25.0, 30.0]) == -np.inf
         assert fitter.log_prior([-40.0, 30.0]) == -np.inf
 
-    def test_schreiber_prior_gaussian(self, fitter_with_prior):
-        """With Schreiber prior, log_prior should be Gaussian in T_rest."""
+    def test_temperature_prior_gaussian(self, fitter_with_prior):
+        """With temperature prior, log_prior should be Gaussian in T_rest."""
         z = 1.0
-        T_expected, _ = fitter_with_prior.schreiber_temperature_prior(z)
+        T_expected, _ = fitter_with_prior.temperature_prior_relation(z)
 
         lp_at_peak = fitter_with_prior.log_prior([-34.0, T_expected], z)
         lp_offset = fitter_with_prior.log_prior([-34.0, T_expected + 10.0], z)
@@ -489,7 +489,7 @@ class TestMCMCFitting:
         return GreybodyFitter(
             fix_beta=True, beta_fixed=1.8,
             use_mcmc=True, mcmc_iterations=200, mcmc_burn_in=50,
-            use_schreiber_prior=False,
+            temperature_prior="flat",
             cosmology_calc=cosmo,
         )
 
@@ -575,7 +575,7 @@ class TestMCMCWithCovariance:
         return CovarianceGreybodyFitter(
             fix_beta=True, beta_fixed=1.8,
             use_mcmc=True, mcmc_iterations=200, mcmc_burn_in=50,
-            use_schreiber_prior=False,
+            temperature_prior="flat",
             cosmology_calc=cosmo,
         )
 
