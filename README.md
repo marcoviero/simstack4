@@ -1,444 +1,341 @@
-# Simstack4: Next-Generation Infrared Galaxy Stacking
+# Simstack4: Simultaneous Infrared Galaxy Stacking
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![Package Manager](https://img.shields.io/badge/package%20manager-uv-green.svg)](https://github.com/astral-sh/uv)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Simstack4** is a modernized simultaneous stacking pipeline for measuring average infrared flux densities from populations of galaxies. It accounts for source clustering bias through simultaneous fitting of multiple population layers, replacing the nested loop structure of simstack3 with a more efficient matrix-based approach.
+**Simstack4** is a simultaneous stacking pipeline for measuring average infrared flux densities from populations of galaxies. It accounts for source clustering bias through simultaneous fitting of multiple population layers, with integrated SED fitting, bootstrap error estimation, and publication-quality plotting.
 
-## 🌟 What's New in Simstack4
+Building on [Viero et al. 2013](https://ui.adsabs.harvard.edu/abs/2013ApJ...779...32V) and [Viero et al. 2022](https://ui.adsabs.harvard.edu/abs/2022MNRAS.516L..30V), simstack4 replaces the nested loop structure of simstack3 with a matrix-based approach and adds greybody SED fitting with MCMC support, covariance-aware fitting, and automated bin optimization.
 
-- **Modernized Infrastructure**: Python 3.13+ with [uv](https://github.com/astral-sh/uv) package management
-- **Efficient Algorithm**: Matrix-based simultaneous fitting replaces nested population loops
-- **Flexible Binning**: Dynamic population binning without hardcoded limits  
-- **TOML Configuration**: User-friendly configuration files replace INI format
-- **Type Safety**: Full type hints and Pydantic data validation
-- **Comprehensive Testing**: Automated testing and error handling
-- **Bootstrap Support**: Built-in bootstrap error estimation
-
-## 🚀 Quick Start
+## Quick Start
 
 ### Installation
 
-We use [**uv**](https://github.com/astral-sh/uv) as our package manager because it's:
-- **Fast**: 10-100x faster than pip for dependency resolution
-- **Reliable**: Deterministic dependency resolution with lock files  
-- **Modern**: Built in Rust with excellent Python integration
-- **Simple**: Drop-in replacement for pip/conda workflows
-
-#### 1. Install uv
-
 ```bash
-# On macOS and Linux
+# Install uv (fast Python package manager)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# On Windows
-powershell -c "irm https://astral.sh/uv/install.sh | iex"
-
-# Or with pip
-pip install uv
-```
-
-#### 2. Clone and Install Simstack4
-
-```bash
+# Clone and install
 git clone https://github.com/marcoviero/simstack4.git
 cd simstack4
-
-# Install with development dependencies
 uv sync --extra dev --extra notebooks
-
-# Or install just the basics
-uv sync
 ```
 
-#### 3. Set Environment Variables
+### Environment Variables
 
-Add these to your shell configuration file (`~/.zshrc`, `~/.bashrc`, etc.):
+Add to your shell config (`~/.zshrc` or `~/.bashrc`):
 
 ```bash
-# Path to astronomical maps (FITS files)
 export MAPSPATH="/path/to/your/maps"
-
-# Path to source catalogs (Parquet/CSV files)  
 export CATSPATH="/path/to/your/catalogs"
-
-# Path for output pickles and results
 export PICKLESPATH="/path/to/your/pickles"
 ```
 
-Then reload your shell:
-```bash
-source ~/.zshrc  # or ~/.bashrc
+### Run a Stacking Pipeline
+
+```python
+from simstack4.wrapper import SimstackWrapper
+
+wrapper = SimstackWrapper(
+    "config/cosmos25.toml",
+    read_maps=True,
+    read_catalog=True,
+    stack_automatically=True,
+)
+
+# Run SED analysis
+results = wrapper.run_analysis_only(
+    use_mcmc=False,
+    temperature_prior="flat",       # "flat", "schreiber", or "viero"
+    use_covariance=True,
+    inflation_factors={24: 10},     # downweight 24µm
+)
+
+# Get summary table
+summary = results.get_population_summary()
+summary.to_csv("results.csv")
 ```
 
-#### 4. Verify Installation
+## How Simstack Works
 
-```bash
-# Check system status
-uv run simstack4 --check-system
+When measuring infrared emission from faint galaxy populations, individual sources are often below the detection threshold. Traditional stacking averages flux at source positions but ignores clustering bias — nearby galaxies contribute correlated signal.
 
-# Run basic example
-uv run python examples/basic_usage.py
-```
+Simstack solves this by fitting all populations simultaneously:
 
-## 📖 How Simstack Works
+1. **Population binning**: split galaxies by redshift, stellar mass, UV slope, etc.
+2. **Layer creation**: build 2D templates with unit sources at galaxy positions
+3. **PSF convolution**: convolve each template with the instrument beam
+4. **Simultaneous fitting**: solve `observed_map = Σ (N × F_avg × template) + noise` via least-squares
 
-### The Physics Problem
+This yields unbiased average flux densities per population, which are then fit with greybody SEDs to derive dust temperatures, IR luminosities, and star formation rates.
 
-When measuring infrared emission from faint galaxy populations, individual sources are often below the detection threshold. Traditional stacking averages flux at source positions, but **ignores clustering bias** - nearby galaxies contribute correlated signal that biases measurements.
-
-### The Simstack Solution
-
-Simstack solves this through **simultaneous fitting**:
-
-1. **Population Binning**: Split galaxies into populations by stellar mass, redshift, and type
-2. **Layer Creation**: Create 2D "templates" for each population with unit sources at galaxy positions  
-3. **PSF Convolution**: Convolve each template with the instrument point spread function
-4. **Simultaneous Fitting**: Fit all templates simultaneously to observed maps using least-squares
-
-This accounts for clustering by fitting all correlated populations together, yielding unbiased average flux densities.
-
-### Mathematical Framework
-
-The observed map is modeled as:
-```
-observed_map = Σ_populations (N_pop × F_avg_pop × PSF_convolved_template) + noise
-```
-
-Where:
-- `N_pop` = number of sources in each population
-- `F_avg_pop` = average flux per source (what we solve for)
-- `PSF_convolved_template` = template with sources convolved by PSF
-
-## 📋 What You Need
-
-### Required Data
-
-1. **Astronomical Maps** (FITS format)
-   - Signal maps at multiple wavelengths (e.g., 100, 160, 250, 350, 500 μm)
-   - Noise/uncertainty maps (optional but recommended)
-   - Proper WCS coordinates and beam information
-
-2. **Source Catalog** (Parquet/CSV format)
-   - Right Ascension (`ra`) and Declination (`dec`) coordinates
-   - Redshift measurements
-   - Stellar mass estimates  
-   - Population classification (star-forming vs quiescent)
-
-3. **Configuration File** (TOML format)
-   - Map paths and properties
-   - Catalog column mappings
-   - Population binning scheme
-   - Algorithm parameters
-
-### Example Data Structure
+## Module Structure
 
 ```
-data/
-├── maps/
-│   ├── cosmos/
-│   │   ├── COSMOS_PACS100_signal.fits
-│   │   ├── COSMOS_PACS100_noise.fits
-│   │   ├── COSMOS_SPIRE250_signal.fits
-│   │   └── ...
-├── catalogs/
-│   ├── cosmos/
-│   │   └── COSMOSWeb_clean.parquet
-└── pickles/
-    └── simstack/
-        └── results/
+src/simstack4/
+├── wrapper.py          # Main entry point and pipeline orchestration
+├── config.py           # TOML configuration parsing
+├── sky_catalogs.py     # Catalog loading and column validation
+├── populations.py      # Population binning, formulas (β_UV, L_UV)
+├── sky_maps.py         # Map loading and PSF handling
+├── algorithm.py        # Simultaneous stacking algorithm
+├── greybody.py         # Greybody model, Planck function, priors, L_IR
+├── sed_fitting.py      # Covariance-aware fitting, regression fitting
+├── results.py          # Results orchestration, I/O, derived quantities
+├── plots.py            # Publication-quality plotting
+├── bin_optimizer.py    # Automated bin edge optimization
+└── cosmology.py        # Cosmological calculations
 ```
 
-## ⚙️ Configuration Files
+### SED Fitting Architecture
 
-Configuration files use TOML format and are stored in the `config/` directory. Here's how to create one:
+The fitting pipeline has three layers:
 
-### Basic Structure
+- **`greybody.py`** — `Greybody` class: the core modified blackbody model with Wien-side power-law extension, temperature priors, curve_fit + MCMC fitting, and L_IR integration. Backwards-compatible alias `GreybodyFitter = Greybody`.
+
+- **`sed_fitting.py`** — `CovarianceGreybodyFitter(Greybody)`: extends the base fitter with inter-band covariance matrices (instrumental + bootstrap), Cholesky-decomposed likelihood. `RegressionGreybodyFitter`: multi-population polynomial regression fitting.
+
+- **`results.py`** — `SimstackResults`: orchestrates fitting across all populations, manages I/O, computes derived quantities (L_IR, SFR, dust mass). Re-exports all fitting classes for backwards compatibility.
+
+## Configuration
+
+Configuration uses TOML format. Key sections:
+
+### Catalog and Binning
 
 ```toml
-# config/your_project.toml
-
-# Algorithm settings
-[binning]
-stack_all_z_at_once = true    # Stack all redshifts simultaneously (recommended)
-add_foreground = true         # Include foreground subtraction layer
-crop_circles = true           # Fit only pixels around sources
-
-# Output settings  
-[output]
-folder = "$PICKLESPATH/simstack/results"
-shortname = "your_project_name"
-
-# Catalog configuration
 [catalog]
-path = "$CATSPATH/your_field"
-file = "your_catalog.parquet"
+path = "$CATSPATH/cosmos"
+file = "COSMOSWeb_wijesekera_sfg.parquet"
 
 [catalog.astrometry]
-ra = "ra"              # Column name for right ascension
-dec = "dec"            # Column name for declination
+ra = "ra"
+dec = "dec"
 
-# Population binning scheme
 [catalog.classification]
-split_type = "uvj"     # Options: "labels", "uvj", "nuvrj"
+# Columns whose median values are stored per population bin
+# (e.g., median L_UV within each redshift × mass × β bin)
+bin_property_columns = ["calculated_l_uv"]
 
-[catalog.classification.redshift]
-id = "z_best"          # Redshift column name
-bins = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0]  # Redshift bin edges
-
-[catalog.classification.stellar_mass]  
-id = "mass_best"       # Stellar mass column name (in log solar masses)
-bins = [9.0, 9.5, 10.0, 10.5, 11.0, 12.0]   # Mass bin edges
-
-# Star-forming vs quiescent classification
+# Optional: NUVrJ star-forming / quiescent split
+split_type = "nuvrj"
 [catalog.classification.split_params]
-id = "sfg_flag"        # Population type column
+id = "split_label"
 [catalog.classification.split_params.bins]
-"U-V" = "U_V_color"    # U-V color column (for UVJ classification)
-"V-J" = "V_J_color"    # V-J color column
+"NUV-r" = "mabs_nuv"
+"r-J" = "mabs_r"
+"J" = "mabs_j"
 
-# Map configurations
-[maps.pacs_100]
-wavelength = 100.0
-color_correction = 1.0
-path_map = "$MAPSPATH/your_field/PACS_100_signal.fits"
-path_noise = "$MAPSPATH/your_field/PACS_100_noise.fits"
+# Binning dimensions
+[catalog.classification.binning.redshift]
+id = "zpdf_med"
+label = "Redshift"
+bins = [0.5, 1.0, 1.5, 2.0, 2.5, 3.5, 5.0]
 
-[maps.pacs_100.beam]
-fwhm = 7.0            # Beam FWHM in arcsec
-area = 1.0            # Beam area (1.0 = calculate from FWHM)
+[catalog.classification.binning.stellar_mass]
+id = "mass_med"
+label = "Stellar Mass"
+bins = [8.5, 10.0, 10.3, 10.6, 10.9, 11.2, 12.0]
 
-[maps.spire_250]
-wavelength = 250.0
-color_correction = 1.02
-path_map = "$MAPSPATH/your_field/SPIRE_250_signal.fits" 
-path_noise = "$MAPSPATH/your_field/SPIRE_250_noise.fits"
-
-[maps.spire_250.beam]
-fwhm = 18.1
-area = 1.0
+[catalog.classification.binning.beta_uv]
+id = "calculated_beta_uv"
+label = "UV Slope β"
+bins = [-2.0, -0.95, -0.55, -0.19, 0.33, 1.5]
 ```
 
-### Configuration Options
+### Computed Columns (Formulas)
 
-#### Population Classification (`split_type`)
+Simstack4 can compute derived columns from catalog data before binning. Formulas are evaluated in order, so later formulas can reference earlier outputs.
 
-- **`"labels"`**: Use pre-existing labels in catalog
-- **`"uvj"`**: UVJ color-color classification (star-forming vs quiescent)  
-- **`"nuvrj"`**: NUV-r-J color classification
+```toml
+# β_UV from E(B-V) and dust attenuation law
+# β = β_intrinsic + k_λ × E(B-V)
+# where k_λ depends on the attenuation law (Calzetti/Arnouts/Salim)
+[catalog.classification.beta_uv_formula]
+formula = "beta_uv"
+bins = {"E(B-V)" = "ebv_minchi2", "dust_law" = "law_minchi2"}
+single_law = "calzetti"    # or use per-source law from catalog
 
-#### Algorithm Settings
+# L_UV at 1600Å from L_NUV(2300Å), corrected using β_UV
+# L(1600) = L(2300) × (1600/2300)^β
+# Using L_NUV as L_UV underestimates IRX by 44-130%!
+[catalog.classification.l_uv_formula]
+formula = "l_uv_1600"
+bins = {"l_nuv" = "l_nuv", "beta_uv" = "calculated_beta_uv"}
+```
 
-- **`stack_all_z_at_once`**: Fit all redshift bins simultaneously (recommended, but memory intensive)
-- **`add_foreground`**: Include constant foreground layer to account for background offsets
-- **`crop_circles`**: Only fit pixels within circles around source positions (reduces computation)
+### Maps
 
-#### Error Estimation
+```toml
+[maps.mips_24]
+wavelength = 24.0
+color_correction = 1.0
+path_map = "$MAPSPATH/cosmos/mips_24_GO3_sci_10.fits"
+path_noise = "$MAPSPATH/cosmos/mips_24_GO3_unc_10.fits"
+[maps.mips_24.beam]
+fwhm = 6.32
+
+[maps.spire_psw]
+wavelength = 250.0
+color_correction = 1.018
+path_map = "$MAPSPATH/cosmos/cosmos_spire_psw.fits"
+path_noise = "$MAPSPATH/cosmos/cosmos_spire_psw_noise.fits"
+[maps.spire_psw.beam]
+fwhm = 18.1
+```
+
+### Bootstrap Error Estimation
 
 ```toml
 [error_estimator.bootstrap]
-enabled = true        # Enable bootstrap error estimation  
-iterations = 100      # Number of bootstrap iterations
-initial_seed = 42     # Random seed for reproducibility
+enabled = true
+iterations = 100
+initial_seed = 42
 ```
 
-## 🎯 Running Simstack4
+## SED Analysis
 
-### Basic Usage
+### Temperature Priors
+
+Three options for the dust temperature prior in greybody fitting:
+
+| Prior | Relation | Source |
+|-------|----------|--------|
+| `"flat"` | Uniform over [T_min, T_max] | Default — let the data decide |
+| `"schreiber"` | T = 32.9 + 4.60(z − 2) | Schreiber et al. 2018 (linear, valid z~0–4) |
+| `"viero"` | T = 23.8 + 2.7z + 0.9z² | Viero et al. 2022 (quadratic, ~105K at z~8) |
+
+The prior sigma scales with SNR: high-SNR fits are data-driven, low-SNR fits are pulled toward the prior. Use `"flat"` to see what the data say independently.
 
 ```python
-import simstack4
-
-# Load configuration
-config = simstack4.load_config("config/cosmos.toml")
-
-# Run stacking pipeline
-wrapper = simstack4.SimstackWrapper(
-    config, 
-    read_maps=True, 
-    read_catalog=True, 
-    stack_automatically=True
+results = wrapper.run_analysis_only(
+    temperature_prior="flat",     # no assumed T-z relation
+    use_covariance=True,
 )
-
-# Access results
-results = wrapper.processed_results
-summary_df = results.get_population_summary()
 ```
 
-### Command Line Interface
+### Covariance-Aware Fitting
 
-```bash
-# Run complete pipeline
-uv run simstack4 run config/cosmos.toml
+Supports three covariance sources, combinable:
 
-# Check system and validate config
-uv run simstack4 validate config/cosmos.toml
-
-# Run with bootstrap error estimation
-uv run simstack4 run config/cosmos.toml --bootstrap --iterations 100
-```
-
-### Example Script
+- **Instrumental**: inter-band Pearson correlation matrix (e.g., PACS-SPIRE correlations of 0.04–0.37)
+- **Bootstrap**: per-population covariance from bootstrap iterations
+- **Combined**: sum of instrumental + bootstrap
 
 ```python
-#!/usr/bin/env python3
-"""Example COSMOS stacking pipeline"""
-
-from simstack4.config import load_config
-from simstack4.wrapper import SimstackWrapper
-from pathlib import Path
-
-def run_cosmos_stacking():
-    # Load configuration
-    config = load_config("config/cosmos.toml")
-    
-    # Enable bootstrap errors
-    config.error_estimator.bootstrap.enabled = True
-    config.error_estimator.bootstrap.iterations = 50
-    
-    # Run stacking
-    wrapper = SimstackWrapper(
-        config,
-        read_maps=True,
-        read_catalog=True, 
-        stack_automatically=True
-    )
-    
-    # Save results
-    summary = wrapper.processed_results.get_population_summary()
-    summary.to_csv("cosmos_stacking_results.csv")
-    
-    # Print summary
-    print(f"Completed stacking of {len(summary)} populations")
-    detected = summary[summary['total_ir_luminosity_lsun'] > 0]
-    print(f"Detected IR emission in {len(detected)} populations")
-
-if __name__ == "__main__":
-    run_cosmos_stacking()
+results = wrapper.run_analysis_only(
+    use_covariance=True,
+    inflation_factors={24: 10, 100: 5},  # downweight noisy bands
+)
 ```
 
-## 📊 Understanding Results
+## Plotting
 
-Simstack4 outputs several data products:
+Three main plotting functions:
 
-### Population Summary Table
-CSV table with one row per population containing:
-- Population identifiers (redshift, mass, type)
-- Measured flux densities and uncertainties for each map
-- Derived quantities (IR luminosity, SFR, etc.)
-- Source counts and completeness information
+### SED Grid
 
-### Detailed Results Object
-Pickle file containing:
-- Raw stacking results for all populations and maps
-- Bootstrap error estimates (if enabled)
-- Configuration parameters used
-- Diagnostic information
+```python
+from simstack4.plots import plot_sed_grid
 
-### Key Output Columns
+fig = plot_sed_grid(
+    wrapper,
+    show_prior=True,          # overlay temperature prior SED
+    show_model=True,          # show fitted greybody
+    show_tier=True,           # show fit quality tier (A/B/C)
+    fontsize_legend=7,        # smaller legend text for dense grids
+)
+```
 
-- `total_ir_luminosity_lsun`: Total infrared luminosity (8-1000 μm) in solar units
-- `sfr_msun_yr`: Star formation rate in solar masses per year
-- `n_sources`: Number of sources in population
-- `median_redshift`: Median redshift of population
-- `median_stellar_mass`: Median stellar mass of population
+### T_dust vs Redshift
 
-## 🔧 Troubleshooting
+```python
+from simstack4.plots import create_trf_redshift_plot
 
-### Common Issues
+fig, df = create_trf_redshift_plot(
+    wrapper,
+    min_tier="A",             # only Tier A fits (default)
+    color_by="stellar_mass",
+    fit_data=True,            # quadratic fit to data
+    show_literature=True,     # Schreiber+18, Viero+22, Drew&Casey+22
+)
+```
 
-**Import Errors**
+### IRX–β
+
+```python
+from simstack4.plots import create_lir_luv_beta_plot
+
+fig = create_lir_luv_beta_plot(
+    wrapper,
+    color_by="redshift",
+    min_tier="A",
+)
+```
+
+L_UV is pulled from `bin_property_columns` (median per population) or from binning dimensions. Reference curves: Meurer+99 (MW-like) and SMC-like (Prevot+84).
+
+## Bin Optimization
+
+Automatically optimize bin edges to equalize signal power across bins:
+
+```python
+from simstack4.bin_optimizer import optimize_binning
+
+opt = optimize_binning(
+    wrapper,
+    dims=["redshift", "stellar_mass"],
+    n_bins={"redshift": 8, "stellar_mass": 5},
+    fixed_edges={"redshift": [0.01, 0.5, 1.5, 3.0, 6.0, 10.0]},  # fix one dim
+)
+```
+
+Uses equal-power CDF inversion from SED fits: `power_density(z) = sps² × dn/dz`, where `sps = peak_snr / √N`. Edges placed at equal cumulative power intervals — narrow bins where signal is concentrated (low z), wide where dilute (high z).
+
+## Catalog Preparation
+
+The `scripts/clean_cosmos_wijesekera.py` script builds stacking-ready catalogs from COSMOS2025:
+
+- NUVrJ star-forming selection (Ilbert+2013)
+- Mass-completeness cuts per redshift bin (Wijesekera+2026 Table A.1)
+- Starburst removal (SFR/SFR_MS > 3, Elbaz+2018)
+- **β_UV computation** from E(B-V) and attenuation law
+- **L_UV(1600Å)** corrected from L_NUV using β_UV (critical for IRX-β)
+
 ```bash
-# Ensure you're in the right environment
-uv run python -c "import simstack4; print('Success!')"
+uv run python scripts/clean_cosmos_wijesekera.py
 ```
 
-**Environment Variable Issues**
-```bash
-# Check variables are set
-echo $MAPSPATH $CATSPATH $PICKLESPATH
-
-# Validate paths exist  
-uv run simstack4 --check-system
-```
-
-**Memory Issues**
-```toml
-# In your config file, try:
-[binning] 
-stack_all_z_at_once = false  # Process redshift bins separately
-crop_circles = true           # Reduce number of fitted pixels
-```
-
-**Configuration Errors**
-```bash
-# Validate your config file
-uv run simstack4 validate config/your_config.toml
-```
-
-### Getting Help
-
-- **Documentation**: Full API docs at [https://simstack4.readthedocs.io](https://simstack4.readthedocs.io)
-- **Issues**: Report bugs at [https://github.com/marcoviero/simstack4/issues](https://github.com/marcoviero/simstack4/issues)
-- **Discussions**: Ask questions at [https://github.com/marcoviero/simstack4/discussions](https://github.com/marcoviero/simstack4/discussions)
-
-## 📚 Scientific Background
+## Scientific Background
 
 ### Key Papers
 
-- **Viero et al. 2013**: Original SIMSTACK algorithm and methodology
-- **Duivenvoorden et al. 2020**: Improvements with foreground subtraction and masking
-- **Your Paper**: If you publish results using Simstack4, we'd love to hear about it!
+- **Viero et al. 2013** — Original SIMSTACK algorithm
+- **Duivenvoorden et al. 2020** — Foreground subtraction and masking improvements
+- **Viero et al. 2022** — COSMOS2020 stacking, dust temperature evolution to z~10
+- **Schreiber et al. 2018** — Dust SED library, T_dust-z relation
+- **Wijesekera, Koprowski et al. 2026** — IRX-β evolution with UV slope, mass, and redshift
 
 ### Citation
-
-If you use Simstack4 in your research, please cite:
 
 ```bibtex
 @software{simstack4,
   author = {Marco Viero and Contributors},
-  title = {Simstack4: Next-Generation Infrared Galaxy Stacking},
+  title = {Simstack4: Simultaneous Infrared Galaxy Stacking},
   url = {https://github.com/marcoviero/simstack4},
-  version = {1.0.0},
-  year = {2024}
+  year = {2025}
 }
 ```
 
-## 🤝 Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-### Development Setup
+## Development
 
 ```bash
-# Clone and install in development mode
-git clone https://github.com/marcoviero/simstack4.git
-cd simstack4
 uv sync --extra dev
-
-# Install pre-commit hooks
-uv run pre-commit install
-
-# Run tests
 uv run pytest
-
-# Format code  
-uv run black src/
 uv run ruff check src/
 ```
 
-## 📄 License
+## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- Original SIMSTACK algorithm by Marco Viero
-- Improvements by the HELP survey team
-- Beta testing by the astronomical community
-- Built with modern Python tools: [uv](https://github.com/astral-sh/uv), [Pydantic](https://pydantic.dev/), [Astropy](https://www.astropy.org/)
-
----
-
-**Happy Stacking!** 🌌📡✨
+MIT License — see [LICENSE](LICENSE).
