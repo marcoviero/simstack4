@@ -47,7 +47,7 @@ Usage:
 
     fig = plot_sed_grid(wrapper, save_path='sed_grid.pdf')
 
-    # With Schreiber prior overlay for diagnostics:
+    # With temperature-prior overlay for diagnostics:
     fig = plot_sed_grid(wrapper, show_prior=True, save_path='sed_diag.pdf')
 """
 
@@ -83,7 +83,7 @@ STYLE = {
     "marker_size":          10,
     "marker_alpha":         0.85,
     "marker_fillstyle":     "none",     # open circles
-    "marker_edgewidth":     1.5,
+    "marker_edgewidth":     0.7,
     "capsize":              2,
     "marker_lw":            1.2,
     "model_lw":             1.8,
@@ -138,12 +138,12 @@ _EXTRA_COLORS = [
 
 # Type-specific sequential cmaps for extra-dimension gradients
 _TYPE_CMAPS = {
-    "sfg":        cm.Blues,
-    "quiescent":  cm.Reds,
+    "sfg":        cm.winter,
+    "quiescent":  cm.autumn,
     "agn":        cm.Greens,
     "dusty":      cm.Oranges,
-    "split_0":    cm.Blues,
-    "split_1":    cm.Reds,
+    "split_0":    cm.winter,
+    "split_1":    cm.autumn,
 }
 
 # Short display names for type labels
@@ -256,12 +256,13 @@ def plot_sed_grid(
     row_dim: str | None = None,
     show_errors: bool = True,
     show_model: bool = True,
-    show_prior: bool = False,
+    show_prior: bool = True,
     show_tier: bool = False,
     flux_unit: str = "mJy",
     ylim: tuple[float, float] = (1e-2, 5e2),
     figsize: tuple[float, float] | None = None,
     save_path: str | Path | None = None,
+    fontsize_legend: int | None = None,
     dpi: int = 150,
 ) -> plt.Figure:
     """
@@ -279,9 +280,8 @@ def plot_sed_grid(
     show_model : bool
         Overlay the fitted greybody curve (coloured to match data).
     show_prior : bool
-        Overlay the Schreiber+2015 prior SED (grey dashed) with
-        amplitude scaled to best-fit the data.  Useful for diagnosing
-        whether the prior is sensible for each bin.
+        Overlay the temperature-prior SED (grey dashed) with
+        amplitude scaled to best-fit the data.
     show_tier : bool
         Append the fit quality tier (A/B/C) to each legend entry.
     flux_unit : {'mJy', 'Jy'}
@@ -413,11 +413,11 @@ def plot_sed_grid(
             n = max(len(keys_t), 1)
             cmap = _TYPE_CMAPS.get(t, cm.Purples)
             for j, k in enumerate(keys_t):
-                colour_map[k] = cmap(0.35 + 0.55 * j / max(n - 1, 1))
+                colour_map[k] = cmap(0.3 + 0.6 * j / max(n - 1, 1))
     else:
         n = max(len(colour_keys), 1)
         for j, k in enumerate(colour_keys):
-            colour_map[k] = cm.viridis(0.15 + 0.75 * j / max(n - 1, 1))
+            colour_map[k] = cm.viridis(0.1 + 0.85 * j / max(n - 1, 1))
 
     # ── create figure ────────────────────────────────────────────────────
     if figsize is None:
@@ -537,14 +537,14 @@ def plot_sed_grid(
                         except Exception as e:
                             logger.debug(f"Model failed for {pid}: {e}")
 
-                    # ── Schreiber prior overlay ──────────────────────
+                    # ── Temperature-prior overlay ──────────────────────
                     if show_prior and not prior_plotted:
                         z = sed.median_redshift
                         beta = (sed.emissivity_index or 1.8)
                         try:
                             T_prior, _ = (
                                 pr.greybody_fitter
-                                .schreiber_temperature_prior(z)
+                                .temperature_prior_relation(z)
                             )
 
                             # Solve amplitude analytically at T_prior
@@ -621,21 +621,26 @@ def plot_sed_grid(
 
                 # Add prior to legend once
                 if show_prior and prior_plotted:
-                    # Retrieve the Schreiber T for the label
+                    # Retrieve the prior T for the label
                     _first_sed = sed_results[cell_pops[0]]
-                    _T_sch, _ = pr.greybody_fitter.schreiber_temperature_prior(
+                    _T_prior, _ = pr.greybody_fitter.temperature_prior_relation(
                         _first_sed.median_redshift
                     )
                     legend_handles.append(
                         Line2D([0], [0], color=STYLE["prior_color"],
                                lw=STYLE["prior_lw"], ls="--")
                     )
-                    legend_labels.append(f"Schreiber T_rf={_T_sch:.0f}K")
+                    _pname = getattr(pr.greybody_fitter, "temperature_prior", "prior")
+                    legend_labels.append(f"{_pname} T_rf={_T_prior:.0f}K")
 
                 if legend_handles:
+                    if fontsize_legend is None:
+                        fontsize = FONT["legend"]
+                    else:
+                        fontsize = fontsize_legend
                     ax.legend(
                         legend_handles, legend_labels,
-                        loc="upper left", fontsize=FONT["legend"],
+                        loc="upper left", fontsize=fontsize,
                         framealpha=0.7, edgecolor="0.8",
                         handlelength=1.2, borderpad=0.3,
                         labelspacing=0.3,
@@ -837,7 +842,7 @@ def _plot_sed_simple(
                 try:
                     T_prior, _ = (
                         pr.greybody_fitter
-                        .schreiber_temperature_prior(z)
+                        .temperature_prior_relation(z)
                     )
                     fluxes_jy = np.array([
                         sr.flux_densities[m][idx] for m in map_names
@@ -881,1349 +886,581 @@ def _plot_sed_simple(
 
 
 # =============================================================================
-# T_RF VS REDSHIFT PLOT FOR SIMSTACK4 RESULTS
-# Extracts rest-frame dust temperatures and redshifts from wrapper results
-# =============================================================================
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-import seaborn as sns
-from matplotlib.colors import LogNorm
+# ── T_RF VS REDSHIFT ──────────────────────────────────────────────────────
 
 
-def create_trf_redshift_plot(wrapper,
-                             color_by='l_ir',
-                             size_by='n_sources',
-                             show_errors=True,
-                             show_literature=True,
-                             add_qt=False,
-                             fit_data=True,
-                             figsize=(10, 8),
-                             save_path=None):
+def create_trf_redshift_plot(
+    wrapper,
+    *,
+    color_by="stellar_mass",
+    show_errors=True,
+    show_literature=True,
+    add_qt=False,
+    fit_data=True,
+    min_tier="A",
+    figsize=(10, 8),
+    save_path=None,
+):
     """
-    Create T_rf vs redshift plot from SimstackWrapper results
+    Create T_rest vs redshift plot from SimstackWrapper results.
 
-    Parameters:
-    -----------
+    Parameters
+    ----------
     wrapper : SimstackWrapper
-        Wrapper object with stacking_results and processed_results
+        Must have processed_results with SED fits.
     color_by : str
-        What to color points by: 'l_ir', 'stellar_mass', 'beta_uv', 'population_type', 'chi2'
-    size_by : str
-        What to size points by: 'n_sources', 'l_ir', 'stellar_mass'
+        'stellar_mass', 'l_ir', 'l_uv', 'beta_uv', 'chi2', 'population_type'.
+        Uses bin_properties medians when available, falls back to bin centers.
     show_errors : bool
-        Whether to show error bars on temperature
+        Show temperature error bars.
     show_literature : bool
-        Whether to show literature comparison lines
+        Show Schreiber+18, Viero+22, Drew & Casey 22 relations.
     add_qt : bool
-        Whether to include quiescent galaxies (default: False, star-forming only)
+        Include quiescent galaxies.
     fit_data : bool
-        Whether to fit and show power-law relation to the data
+        Fit and show quadratic T-z relation.
+    min_tier : str
+        Minimum fit quality tier ('A', 'B', 'C').
     figsize : tuple
-        Figure size (width, height)
-    save_path : str or Path or None
-        Path to save the figure
+        Figure size.
+    save_path : str or Path, optional
 
-    Returns:
-    --------
-    fig : matplotlib figure
-        The created figure
-    df_plot : pandas DataFrame
-        The data used for plotting
+    Returns
+    -------
+    fig, df_plot
     """
+    import matplotlib.cm as mcm
+    from matplotlib.colors import BoundaryNorm, ListedColormap
 
-    # Check if we have the required data
-    if not hasattr(wrapper, 'processed_results') or wrapper.processed_results is None:
-        print("❌ No processed results found in wrapper")
+    pr = getattr(wrapper, "processed_results", None)
+    if pr is None or not pr.sed_results:
+        print("No processed SED results found")
         return None, None
 
-    if not hasattr(wrapper.processed_results, 'sed_results'):
-        print("❌ No SED results found in processed results")
-        return None, None
+    tier_rank = {"A": 0, "B": 1, "C": 2}
+    min_rank = tier_rank.get(min_tier.upper(), 2)
 
-    print("✅ Found processed results with SED data")
-
-    # Extract data from SED results
+    # ── extract data ─────────────────────────────────────────────────
     data_list = []
-
-    for pop_id, sed_result in wrapper.processed_results.sed_results.items():
-        # Skip if no greybody fit or no temperature
-        if not sed_result.greybody_fit_success:
+    for pop_id, sed in pr.sed_results.items():
+        if not sed.greybody_fit_success:
+            continue
+        if sed.dust_temperature_rest_frame is None:
+            continue
+        tier = getattr(sed, "fit_quality_tier", None) or "C"
+        if tier_rank.get(tier, 2) > min_rank:
             continue
 
-        if sed_result.dust_temperature_rest_frame is None:
-            continue
-
-        # Get basic data
         row = {
-            'population_id': pop_id,
-            'redshift': sed_result.median_redshift,
-            'T_rest_frame': sed_result.dust_temperature_rest_frame,
-            'T_observed_frame': sed_result.dust_temperature_observed_frame,
-            'T_error': sed_result.dust_temperature_error,
-            'n_sources': sed_result.n_sources,
-            'stellar_mass': sed_result.median_mass,
-            'chi2_reduced': sed_result.chi2_reduced,
-            'beta': sed_result.emissivity_index,
-            'amplitude': sed_result.amplitude,
+            "population_id": pop_id,
+            "redshift": sed.median_redshift,
+            "T_rest_frame": sed.dust_temperature_rest_frame,
+            "T_error": sed.dust_temperature_error,
+            "n_sources": sed.n_sources,
+            "chi2_reduced": sed.chi2_reduced,
+            "fit_quality_tier": tier,
         }
 
-        # Get derived quantities
-        if pop_id in wrapper.processed_results.derived_quantities:
-            derived = wrapper.processed_results.derived_quantities[pop_id]
-            row['l_ir'] = derived.total_ir_luminosity
-            row['l_ir_error'] = derived.total_ir_luminosity_error
-            row['sfr'] = derived.star_formation_rate
-            row['dust_mass'] = derived.dust_mass
+        # Derived quantities
+        derived = pr.derived_quantities.get(pop_id)
+        if derived:
+            row["l_ir"] = derived.total_ir_luminosity or 0
         else:
-            row['l_ir'] = 0
-            row['l_ir_error'] = 0
-            row['sfr'] = 0
-            row['dust_mass'] = None
+            row["l_ir"] = 0
 
-        # Parse population type from ID
-        if 'split_0' in pop_id:
-            row['population_type'] = 'Star-forming'
-            row['pop_type_code'] = 0
-        elif 'split_1' in pop_id:
-            row['population_type'] = 'Quiescent'
-            row['pop_type_code'] = 1
+        # Population type
+        if "split_0" in pop_id:
+            row["pop_type_code"] = 0
+        elif "split_1" in pop_id:
+            row["pop_type_code"] = 1
         else:
-            row['population_type'] = 'Unknown'
-            row['pop_type_code'] = -1
+            row["pop_type_code"] = -1
 
-        # Extract other bin information
-        try:
-            parts = pop_id.split('__')
-            for part in parts:
-                if 'stellar_mass' in part or 'mass' in part:
-                    elements = part.split('_')
-                    if len(elements) >= 3:
-                        try:
-                            mass_min = float(elements[-2])
-                            mass_max = float(elements[-1])
-                            row['mass_bin_center'] = (mass_min + mass_max) / 2
-                        except ValueError:
-                            pass
-                elif 'redshift' in part or '_z_' in part:
-                    elements = part.split('_')
-                    if len(elements) >= 3:
-                        try:
-                            z_min = float(elements[-2])
-                            z_max = float(elements[-1])
-                            row['z_bin_center'] = (z_min + z_max) / 2
-                        except ValueError:
-                            pass
-        except:
-            pass
+        # ── bin_properties (preferred: actual medians) ────────────
+        props = sed.bin_properties
+        if isinstance(props, str):
+            import ast as _ast
+            try:
+                props = _ast.literal_eval(props)
+            except (ValueError, SyntaxError):
+                props = {}
+        if not isinstance(props, dict):
+            props = {}
+
+        for key, val in props.items():
+            kl = key.lower()
+            if "mass" in kl:
+                row["stellar_mass_prop"] = val
+            elif "l_uv" in kl or "luv" in kl:
+                row["l_uv_prop"] = val
+            elif "beta" in kl:
+                row["beta_uv_prop"] = val
+
+        # ── bin centers (fallback) ────────────────────────────────
+        bins = _parse_bins(pop_id)
+        for dim, (lo, hi) in bins.items():
+            dl = dim.lower()
+            if "mass" in dl and "stellar_mass_prop" not in row:
+                row["stellar_mass_bin"] = (lo + hi) / 2
+            elif ("l_uv" in dl or "luv" in dl) and "l_uv_prop" not in row:
+                row["l_uv_bin"] = (lo + hi) / 2
+            elif "beta" in dl and "beta_uv_prop" not in row:
+                row["beta_uv_bin"] = (lo + hi) / 2
+
+        # Resolve: prefer prop over bin center
+        row["stellar_mass"] = row.get("stellar_mass_prop",
+                              row.get("stellar_mass_bin",
+                              getattr(sed, "median_mass", np.nan)))
+        row["l_uv"] = row.get("l_uv_prop", row.get("l_uv_bin", np.nan))
+        row["beta_uv"] = row.get("beta_uv_prop", row.get("beta_uv_bin", np.nan))
 
         data_list.append(row)
 
     if not data_list:
-        print("❌ No valid temperature measurements found")
+        print("No valid temperature measurements found")
         return None, None
 
-    # Create DataFrame
     df_plot = pd.DataFrame(data_list)
 
-    # Filter by population type if requested
+    # Filter quiescent
     if not add_qt:
-        # Keep only star-forming galaxies (default behavior)
-        initial_count = len(df_plot)
-        df_plot = df_plot[df_plot['pop_type_code'] == 0].copy()
-        quiescent_count = initial_count - len(df_plot)
-        if quiescent_count > 0:
-            print(f"🔍 Filtered out {quiescent_count} quiescent galaxies (use add_qt=True to include)")
+        n_pre = len(df_plot)
+        df_plot = df_plot[df_plot["pop_type_code"] == 0].copy()
+        n_qt = n_pre - len(df_plot)
+        if n_qt > 0:
+            print(f"Filtered {n_qt} quiescent galaxies")
 
-    print(f"📊 Found {len(df_plot)} populations with valid T_rest measurements")
     if len(df_plot) == 0:
-        print("❌ No data remaining after filtering")
+        print("No data after filtering")
         return None, None
 
-    print(f"   Redshift range: {df_plot['redshift'].min():.2f} - {df_plot['redshift'].max():.2f}")
-    print(f"   T_rest range: {df_plot['T_rest_frame'].min():.1f} - {df_plot['T_rest_frame'].max():.1f} K")
+    print(f"T-z plot: {len(df_plot)} populations (tier >= {min_tier})")
+    print(f"  z: {df_plot['redshift'].min():.2f} - {df_plot['redshift'].max():.2f}")
+    print(f"  T: {df_plot['T_rest_frame'].min():.0f} - {df_plot['T_rest_frame'].max():.0f} K")
 
-    # Create the plot
-    fig, ax = plt.subplots(1, 1, figsize=figsize)
+    # ── color setup ──────────────────────────────────────────────────
+    color_configs = {
+        "stellar_mass": ("stellar_mass", "log₁₀(M*/M☉)", "viridis"),
+        "l_ir":         ("l_ir",         "log₁₀(L_IR/L☉)", "plasma"),
+        "l_uv":         ("l_uv",         "log₁₀(L_UV/L☉)", "viridis"),
+        "beta_uv":      ("beta_uv",      "β_UV", "coolwarm"),
+        "chi2":         ("chi2_reduced",  "χ²_red", "coolwarm"),
+    }
 
-    # Set up coloring
-    if color_by == 'l_ir':
-        color_data = np.log10(df_plot['l_ir'].replace(0, np.nan))
-        color_label = 'log₁₀(L_IR/L☉)'
-        cmap = 'plasma'
-        vmin, vmax = None, None
-    elif color_by == 'stellar_mass':
-        color_data = df_plot['stellar_mass']
-        color_label = 'log₁₀(M*/M☉)'
-        cmap = 'viridis'
-        vmin, vmax = None, None
-    elif color_by == 'population_type':
-        color_data = df_plot['pop_type_code']
-        color_label = 'Population Type'
-        cmap = 'RdBu'
-        vmin, vmax = -0.5, 1.5
-    elif color_by == 'chi2':
-        color_data = df_plot['chi2_reduced']
-        color_label = 'χ²_reduced'
-        cmap = 'coolwarm'
-        vmin, vmax = 0.5, 2.0
-    elif color_by == 'beta_uv':
-        # Try to get beta_UV from population manager if available
-        color_data = df_plot['beta']
-        color_label = 'β (emissivity index)'
-        cmap = 'coolwarm'
-        vmin, vmax = 1.0, 2.5
+    if color_by in color_configs:
+        col_name, color_label, cmap_name = color_configs[color_by]
+        if col_name == "l_ir":
+            color_data = np.log10(df_plot[col_name].replace(0, np.nan)).values
+        else:
+            color_data = df_plot[col_name].values.astype(float)
+    elif color_by == "population_type":
+        color_data = df_plot["pop_type_code"].values.astype(float)
+        color_label = "Population Type"
+        cmap_name = "RdBu"
     else:
-        color_data = 'blue'
+        color_data = None
         color_label = None
-        cmap = None
-        vmin, vmax = None, None
+        cmap_name = "plasma"
 
-    # Set up sizing
-    if size_by == 'n_sources':
-        size_data = df_plot['n_sources']
-        # Scale sizes: min=20, max=200
-        size_min, size_max = 20, 200
-        sizes = size_min + (size_max - size_min) * (size_data - size_data.min()) / (size_data.max() - size_data.min())
-        size_label = 'N_sources'
-    elif size_by == 'l_ir':
-        size_data = np.log10(df_plot['l_ir'].replace(0, 1e8))
-        size_min, size_max = 20, 200
-        sizes = size_min + (size_max - size_min) * (size_data - size_data.min()) / (size_data.max() - size_data.min())
-        size_label = 'log₁₀(L_IR/L☉)'
-    elif size_by == 'stellar_mass':
-        size_data = df_plot['stellar_mass']
-        size_min, size_max = 20, 200
-        sizes = size_min + (size_max - size_min) * (size_data - size_data.min()) / (size_data.max() - size_data.min())
-        size_label = 'log₁₀(M*/M☉)'
+    # ── plot ──────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=figsize)
+
+    if color_data is not None:
+        valid_mask = np.isfinite(color_data)
     else:
-        sizes = 50
-        size_label = None
+        valid_mask = np.ones(len(df_plot), dtype=bool)
 
-    # pdb.set_trace()
-    # Make the scatter plot
-    if show_errors and 'T_error' in df_plot.columns:
-        # Plot with error bars
-        if isinstance(color_data, str):
-            # Single color
-            scatter = ax.errorbar(df_plot['redshift'], df_plot['T_rest_frame'],
-                                  yerr=df_plot['T_error'],
-                                  fmt='o', color=color_data, markersize=8,
-                                  capsize=3, alpha=0.7, elinewidth=1)
+    if color_data is not None and np.any(valid_mask):
+        valid_vals = color_data[valid_mask]
+
+        # ── discrete colorbar ────────────────────────────────────
+        if color_by == "stellar_mass":
+            boundaries = np.array([8.5, 9.5, 10.0, 10.3, 10.6, 11.0, 12.0])
+        elif color_by in ("l_ir", "l_uv"):
+            boundaries = np.arange(
+                np.floor(np.nanmin(valid_vals)),
+                np.ceil(np.nanmax(valid_vals)) + 0.5, 0.5,
+            )
+        elif color_by == "beta_uv":
+            boundaries = np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.5])
         else:
-            # Color-coded points with error bars (more complex)
-            scatter = ax.scatter(df_plot['redshift'], df_plot['T_rest_frame'],
-                                 c=color_data,  # s=sizes, alpha=0.7,
-                                 cmap=cmap, vmin=vmin, vmax=vmax,
-                                 edgecolors='black', linewidth=0.5)
-            # pdb.set_trace()
-            # Add error bars separately
-            ax.errorbar(df_plot['redshift'], df_plot['T_rest_frame'],
-                        yerr=df_plot['T_error'],
-                        fmt='none', color='gray', alpha=0.3,
-                        capsize=2, elinewidth=0.8)
+            n_disc = min(6, len(np.unique(valid_vals)))
+            boundaries = np.linspace(np.nanmin(valid_vals), np.nanmax(valid_vals), n_disc + 1)
+
+        # Trim to data range
+        boundaries = boundaries[
+            (boundaries >= np.nanmin(valid_vals) - 0.5)
+            & (boundaries <= np.nanmax(valid_vals) + 0.5)
+        ]
+        if len(boundaries) < 2:
+            boundaries = np.linspace(np.nanmin(valid_vals), np.nanmax(valid_vals), 5)
+
+        n_colors = max(len(boundaries) - 1, 1)
+        base_cmap = mcm.get_cmap(cmap_name, n_colors)
+        discrete_cmap = ListedColormap([base_cmap(i) for i in range(n_colors)])
+        norm = BoundaryNorm(boundaries, discrete_cmap.N)
+        bin_labels = [
+            f"{boundaries[i]:.1f}-{boundaries[i+1]:.1f}"
+            for i in range(len(boundaries) - 1)
+        ]
+
+        scatter = ax.scatter(
+            df_plot["redshift"], df_plot["T_rest_frame"],
+            c=color_data, cmap=discrete_cmap, norm=norm,
+            s=80, alpha=0.85, edgecolors="k", linewidth=0.5, zorder=3,
+        )
+
+        if show_errors and "T_error" in df_plot.columns:
+            ax.errorbar(
+                df_plot["redshift"], df_plot["T_rest_frame"],
+                yerr=df_plot["T_error"],
+                fmt="none", color="gray", alpha=0.3,
+                capsize=2, elinewidth=0.8, zorder=1,
+            )
+
+        cbar = plt.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label(color_label, fontsize=13)
+        tick_positions = boundaries[:-1] + np.diff(boundaries) / 2
+        cbar.set_ticks(tick_positions)
+        cbar.set_ticklabels(bin_labels, fontsize=9)
+        for b in boundaries[1:-1]:
+            cbar.ax.axhline(b, color="white", linewidth=0.8)
+
     else:
-        # Plot without error bars
-        if isinstance(color_data, str):
-            scatter = ax.scatter(df_plot['redshift'], df_plot['T_rest_frame'],
-                                 s=sizes, color=color_data, alpha=0.7,
-                                 edgecolors='black', linewidth=0.5)
-        else:
-            scatter = ax.scatter(df_plot['redshift'], df_plot['T_rest_frame'],
-                                 c=color_data, s=sizes, alpha=0.7,
-                                 cmap=cmap, vmin=vmin, vmax=vmax,
-                                 edgecolors='black', linewidth=0.5)
+        ax.scatter(
+            df_plot["redshift"], df_plot["T_rest_frame"],
+            s=80, alpha=0.85, edgecolors="k", linewidth=0.5, zorder=3,
+        )
+        if show_errors and "T_error" in df_plot.columns:
+            ax.errorbar(
+                df_plot["redshift"], df_plot["T_rest_frame"],
+                yerr=df_plot["T_error"],
+                fmt="none", color="gray", alpha=0.3,
+                capsize=2, elinewidth=0.8, zorder=1,
+            )
 
-    # Add colorbar if needed
-    if not isinstance(color_data, str) and color_label:
-        cbar = plt.colorbar(scatter, ax=ax, shrink=0.8)
-        cbar.set_label(color_label, fontsize=12)
-
-        # Special handling for population type
-        if color_by == 'population_type':
-            cbar.set_ticks([0, 1])
-            cbar.set_ticklabels(['Star-forming', 'Quiescent'])
-
-    # Add literature relations if requested
+    # ── literature ───────────────────────────────────────────────────
     if show_literature:
         z_lit = np.linspace(0, 6, 100)
-        z_lit_v22 = np.linspace(0, 9, 100)
+        z_ext = np.linspace(0, 10, 150)
 
-        # Casey et al. 2018: T_d = 25 * (1+z)^0.36 K
-        T_casey = 25 * (1 + z_lit) ** 0.36
-        ax.plot(z_lit, T_casey, '--', color='red', linewidth=2,
-                label='Casey+18: T∝(1+z)^0.36', alpha=0.8)
+        T_schreiber = 32.9 + 4.60 * (z_lit - 2.0)
+        ax.plot(z_lit, T_schreiber, "--", color="green", linewidth=2,
+                label="Schreiber+18: T=23.7+4.6z", alpha=0.8)
 
-        # Magnelli et al. 2014: T_d = 32.9 + 4.6*z K
-        T_magnelli = 32.9 + 4.6 * z_lit
-        ax.plot(z_lit, T_magnelli, '--', color='orange', linewidth=2,
-                label='Magnelli+14: T=32.9+4.6z', alpha=0.8)
+        T_viero = 20.9 + 5.9 * z_ext + 0.5 * z_ext**2
+        ax.plot(z_ext, T_viero, "--", color="purple", linewidth=2,
+                label="Viero+22: T=20.9+5.9z+0.5z²", alpha=0.8)
 
-        # Schreiber et al. 2018: T_d ≈ 24 * (1+z)^0.32 K
-        T_schreiber = 24 * (1 + z_lit) ** 0.32
-        ax.plot(z_lit, T_schreiber, '--', color='green', linewidth=2,
-                label='Schreiber+18: T∝(1+z)^0.32', alpha=0.8)
+        ax.axhline(32, color="gray", ls=":", lw=1, alpha=0.5,
+                   label="Drew & Casey 22: no evol. at fixed L_IR")
 
-        # Viero et al. 2022: Near exponential increase reaching ~100K at z~7
-        # From abstract: "increase of dust temperature with redshift, reaching 100±12 K at z ~ 7"
-        # This suggests a steep rise. Let's approximate as T_d = 25 * (1+z)^0.6
-        T_viero = 20.9 + (5.9 * z_lit_v22) + 0.5 * z_lit_v22 ** 2
-        ax.plot(z_lit_v22, T_viero, '--', color='purple', linewidth=2,
-                label='Viero+22: T∝(1+z)^0.6', alpha=0.8)
-
-    # Fit data if requested
+    # ── fit data ─────────────────────────────────────────────────────
     if fit_data and len(df_plot) >= 3:
         try:
             from scipy.optimize import curve_fit
 
-            # Define fitting functions
-            def power_law(z, T0, alpha):
-                return T0 * (1 + z) ** alpha
+            z_data = df_plot["redshift"].values
+            T_data = df_plot["T_rest_frame"].values
 
-            def linear_law(z, T0, slope):
-                return T0 + slope * z
+            T_errors_raw = df_plot.get("T_error")
+            if T_errors_raw is not None:
+                T_errors = T_errors_raw.values.copy()
+                bad = ~np.isfinite(T_errors) | (T_errors <= 0)
+                if np.all(bad):
+                    T_errors = None
+                elif np.any(bad):
+                    T_errors[bad] = np.median(T_errors[~bad])
+            else:
+                T_errors = None
 
-            # Get data for fitting
-            z_data = df_plot['redshift'].values
-            T_data = df_plot['T_rest_frame'].values
-            T_errors = df_plot['T_error'].values if 'T_error' in df_plot.columns else None
+            def quadratic(z, a, b, c_coeff):
+                return a + b * z + c_coeff * z**2
 
-            # Fit power law: T = T0 * (1+z)^alpha
-            try:
-                if T_errors is not None and np.any(T_errors > 0):
-                    popt_power, pcov_power = curve_fit(power_law, z_data, T_data,
-                                                       sigma=T_errors, p0=[25, 0.4],
-                                                       bounds=([10, 0], [50, 2]))
-                else:
-                    popt_power, pcov_power = curve_fit(power_law, z_data, T_data,
-                                                       p0=[25, 0.4],
-                                                       bounds=([10, 0], [50, 2]))
+            sigma_kw = dict(sigma=T_errors, absolute_sigma=True) if T_errors is not None else {}
+            popt, pcov = curve_fit(
+                quadratic, z_data, T_data, p0=[25, 3, 0.5],
+                bounds=([10, -5, -1], [50, 20, 5]),
+                **sigma_kw,
+            )
+            a, b, c_coeff = popt
+            a_err, b_err, c_err = np.sqrt(np.diag(pcov))
 
-                T0_power, alpha_power = popt_power
-                T0_err, alpha_err = np.sqrt(np.diag(pcov_power))
+            T_pred = quadratic(z_data, *popt)
+            ss_res = np.sum((T_data - T_pred) ** 2)
+            ss_tot = np.sum((T_data - np.mean(T_data)) ** 2)
+            r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
 
-                # Calculate R-squared
-                T_pred_power = power_law(z_data, T0_power, alpha_power)
-                ss_res_power = np.sum((T_data - T_pred_power) ** 2)
-                ss_tot = np.sum((T_data - np.mean(T_data)) ** 2)
-                r2_power = 1 - (ss_res_power / ss_tot)
+            z_fit = np.linspace(0, min(z_data.max() * 1.15, 11), 200)
+            ax.plot(z_fit, quadratic(z_fit, *popt), "-", color="black",
+                    linewidth=2.5, alpha=0.85,
+                    label=f"This work: T={a:.0f}+{b:.1f}z+{c_coeff:.2f}z² (R²={r2:.2f})")
 
-                # Plot fit
-                z_fit = np.linspace(z_data.min(), z_data.max() * 1.1, 100)
-                T_fit_power = power_law(z_fit, T0_power, alpha_power)
-                ax.plot(z_fit, T_fit_power, '-', color='black', linewidth=3, alpha=0.8,
-                        label=f'This work: T={T0_power:.1f}(1+z)^{alpha_power:.2f} (R²={r2_power:.2f})')
+            print(f"Quadratic fit: T = {a:.1f}±{a_err:.1f} + "
+                  f"{b:.1f}±{b_err:.1f}·z + {c_coeff:.2f}±{c_err:.2f}·z²  "
+                  f"(R²={r2:.3f})")
 
-                print(f"🔬 Power-law fit: T = {T0_power:.1f}±{T0_err:.1f} × (1+z)^{alpha_power:.2f}±{alpha_err:.2f}")
-                print(f"   R² = {r2_power:.3f}")
-
-            except Exception as e:
-                print(f"⚠️  Power-law fit failed: {e}")
-
-            # Also try linear fit: T = T0 + slope*z
-            try:
-                if T_errors is not None and np.any(T_errors > 0):
-                    popt_linear, pcov_linear = curve_fit(linear_law, z_data, T_data,
-                                                         sigma=T_errors, p0=[30, 5])
-                else:
-                    popt_linear, pcov_linear = curve_fit(linear_law, z_data, T_data,
-                                                         p0=[30, 5])
-
-                T0_linear, slope_linear = popt_linear
-                T0_linear_err, slope_linear_err = np.sqrt(np.diag(pcov_linear))
-
-                # Calculate R-squared
-                T_pred_linear = linear_law(z_data, T0_linear, slope_linear)
-                ss_res_linear = np.sum((T_data - T_pred_linear) ** 2)
-                r2_linear = 1 - (ss_res_linear / ss_tot)
-
-                print(
-                    f"🔬 Linear fit: T = {T0_linear:.1f}±{T0_linear_err:.1f} + {slope_linear:.1f}±{slope_linear_err:.1f}×z")
-                print(f"   R² = {r2_linear:.3f}")
-
-                # Add best fit info to legend
-                if r2_power > r2_linear:
-                    print(f"📈 Power-law fit is better (R² = {r2_power:.3f} vs {r2_linear:.3f})")
-                else:
-                    print(f"📈 Linear fit is better (R² = {r2_linear:.3f} vs {r2_power:.3f})")
-
-            except Exception as e:
-                print(f"⚠️  Linear fit failed: {e}")
-
-        except ImportError:
-            print("⚠️  scipy not available for fitting")
         except Exception as e:
-            print(f"⚠️  Fitting failed: {e}")
+            print(f"Fit failed: {e}")
 
-    # Formatting
-    ax.set_xlabel('Redshift', fontsize=14)
-    ax.set_ylabel('Rest-frame Dust Temperature (K)', fontsize=14)
-    ax.tick_params(axis='both', which='major', labelsize=12)
-    ax.grid(True, alpha=0.3)
+    # ── formatting ───────────────────────────────────────────────────
+    ax.set_xlabel("Redshift", fontsize=14)
+    ax.set_ylabel("Rest-frame Dust Temperature (K)", fontsize=14)
+    ax.tick_params(axis="both", which="major", labelsize=12)
+    ax.grid(True, alpha=0.2)
 
-    # Set reasonable limits
-    ax.set_xlim(0, df_plot['redshift'].max() * 1.1)
-    ax.set_ylim(df_plot['T_rest_frame'].min() * 0.9,
-                min(df_plot['T_rest_frame'].max() * 1.1, 150))
+    ax.set_xlim(0, df_plot["redshift"].max() * 1.15)
+    T_max = df_plot["T_rest_frame"].max()
+    ax.set_ylim(max(df_plot["T_rest_frame"].min() * 0.8, 10), T_max * 1.2)
 
-    # Title and legend
-    title = f'Rest-frame Dust Temperature vs Redshift'
-    if len(df_plot) > 1:
-        title += f' ({len(df_plot)} populations)'
-    ax.set_title(title, fontsize=16, pad=20)
+    title = f"T_dust vs Redshift ({len(df_plot)} populations, tier ≥ {min_tier})"
+    ax.set_title(title, fontsize=15, pad=15)
 
-    if show_literature:
-        ax.legend(loc='upper left', fontsize=10, framealpha=0.8)
-
-    # Add size legend if varying sizes
-    if size_label and not isinstance(sizes, (int, float)):
-        # Create size legend
-        size_legend_values = [size_data.min(), size_data.median(), size_data.max()]
-        size_legend_sizes = [size_min, (size_min + size_max) / 2, size_max]
-        size_legend_labels = [f'{v:.0f}' if size_by == 'n_sources' else f'{v:.1f}'
-                              for v in size_legend_values]
-
-        # Add size legend as text
-        ax.text(0.02, 0.98, f'Marker size: {size_label}',
-                transform=ax.transAxes, fontsize=10,
-                verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    if show_literature or fit_data:
+        ax.legend(loc="upper left", fontsize=10, framealpha=0.9)
 
     plt.tight_layout()
 
-    # Save if requested
     if save_path is not None:
-        try:
-            from pathlib import Path
-            save_path = Path(save_path)
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-
-            dpi = 300 if save_path.suffix.lower() in ['.png', '.jpg', '.jpeg'] else 150
-            plt.savefig(save_path, dpi=dpi, bbox_inches='tight',
-                        facecolor='white', edgecolor='none')
-            print(f"💾 Figure saved to: {save_path}")
-
-        except Exception as e:
-            print(f"⚠️  Could not save figure: {e}")
+        from pathlib import Path as _P
+        save_path = _P(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        dpi = 300 if save_path.suffix.lower() in [".png", ".jpg"] else 150
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight",
+                    facecolor="white", edgecolor="none")
 
     return fig, df_plot
 
 
-def create_temperature_evolution_plot(wrapper,
-                                      split_by_type=True,
-                                      show_individual=True,
-                                      show_literature=True,
-                                      add_qt=False,
-                                      fit_data=True,
-                                      figsize=(12, 8),
-                                      save_path=None):
-    """
-    Create a comprehensive temperature evolution plot with multiple panels
 
-    Parameters:
-    -----------
+# ── IRX-β reference curves ───────────────────────────────────────────────
+
+def _meurer99_irx(beta):
+    """Meurer+99 IRX-β relation (starburst/MW-like)."""
+    return 10 ** (0.4 * (4.43 + 1.99 * np.asarray(beta))) - 1
+
+
+def _smc_irx(beta):
+    """SMC-like IRX-β relation (McLure+2018 parameterization, dA/dβ=0.91)."""
+    beta = np.asarray(beta)
+    beta_int = -2.30
+    BC_1600 = 1.51
+    A1600 = 0.91 * (beta - beta_int)
+    return (10 ** (0.4 * A1600) - 1) * BC_1600
+
+
+# ── IRX-β plot ───────────────────────────────────────────────────────────
+
+def create_lir_luv_beta_plot(
+    wrapper,
+    *,
+    color_by: str = "redshift",
+    average_luv: bool = False,
+    min_tier: str = "A",
+    show_errors: bool = True,
+    figsize: tuple = (10, 8),
+    save_path=None,
+):
+    """
+    Create L_IR/L_UV vs β_UV plot from SimstackWrapper results.
+
+    Parameters
+    ----------
     wrapper : SimstackWrapper
-        Wrapper object with results
-    split_by_type : bool
-        Whether to separate star-forming and quiescent galaxies
-    show_individual : bool
-        Whether to show individual population points
-    show_literature : bool
-        Whether to show literature comparison
-    add_qt : bool
-        Whether to include quiescent galaxies (default: False)
-    fit_data : bool
-        Whether to fit relations to the data
+        Must have stacking_results and processed_results.
+    color_by : str
+        'redshift' or 'l_uv'.
+    average_luv : bool
+        Average IRX over populations with the same β_UV and redshift
+        (useful when L_UV varies within bins).
+    min_tier : str
+        Minimum fit quality tier ('A', 'B', 'C').
+    show_errors : bool
+        Show error bars when averaging.
     figsize : tuple
-        Figure size
-    save_path : str or Path or None
-        Path to save figure
+        Figure size.
+    save_path : str or Path, optional
+
+    Returns
+    -------
+    fig : matplotlib Figure
     """
+    pr = getattr(wrapper, "processed_results", None)
+    if pr is None or not pr.sed_results:
+        print("No processed SED results found")
+        return None
 
-    # Get data using the main function
-    fig_temp, df_plot = create_trf_redshift_plot(wrapper, color_by='population_type',
-                                                 show_errors=True, show_literature=False,
-                                                 add_qt=add_qt, fit_data=False)
-    plt.close(fig_temp)  # Close the temporary figure
+    tier_rank = {"A": 0, "B": 1, "C": 2}
+    min_rank = tier_rank.get(min_tier.upper(), 2)
 
-    if df_plot is None:
-        print("❌ No data available for temperature evolution plot")
-        return None, None
-
-    # Create comprehensive plot
-    if split_by_type and 'pop_type_code' in df_plot.columns:
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, sharey=True)
-        axes = [ax1, ax2]
-
-        # Separate by population type
-        sf_data = df_plot[df_plot['pop_type_code'] == 0]  # Star-forming
-        q_data = df_plot[df_plot['pop_type_code'] == 1]  # Quiescent
-
-        datasets = [sf_data, q_data]
-        colors = ['#FF6B6B', '#4ECDC4']  # Red for SF, Teal for Q
-        labels = ['Star-forming', 'Quiescent']
-
-    else:
-        fig, ax1 = plt.subplots(1, 1, figsize=figsize)
-        axes = [ax1]
-        datasets = [df_plot]
-        colors = ['#45B7D1']
-        labels = ['All galaxies']
-
-    # Plot each dataset
-    for ax, data, color, label in zip(axes, datasets, colors, labels):
-        if len(data) == 0:
-            ax.text(0.5, 0.5, f'No {label.lower()} data',
-                    ha='center', va='center', transform=ax.transAxes)
+    # ── extract data ─────────────────────────────────────────────────
+    rows = []
+    for pop_id, sed in pr.sed_results.items():
+        if not sed.greybody_fit_success:
+            continue
+        tier = getattr(sed, "fit_quality_tier", None) or "C"
+        if tier_rank.get(tier, 2) > min_rank:
             continue
 
-        # Individual points
-        if show_individual:
-            sizes = 50 + 150 * (data['n_sources'] - data['n_sources'].min()) / (
-                        data['n_sources'].max() - data['n_sources'].min())
+        bins = _parse_bins(pop_id)
+        beta_bin = None
+        luv_val = None
+        z_bin = None
 
-            scatter = ax.scatter(data['redshift'], data['T_rest_frame'],
-                                 s=sizes, color=color, alpha=0.7,
-                                 edgecolors='black', linewidth=0.5,
-                                 label=f'{label} (N={len(data)})')
+        # ── bin_properties (preferred: actual medians) ────────────
+        props = sed.bin_properties
+        if isinstance(props, str):
+            import ast
+            try:
+                props = ast.literal_eval(props)
+            except (ValueError, SyntaxError):
+                props = {}
+        if not isinstance(props, dict):
+            props = {}
 
-            # Error bars
-            if 'T_error' in data.columns:
-                ax.errorbar(data['redshift'], data['T_rest_frame'],
-                            yerr=data['T_error'],
-                            fmt='none', color='gray', alpha=0.3,
-                            capsize=2, elinewidth=0.8)
+        luv_source = None
+        beta_source = None
+        for key, val in props.items():
+            kl = key.lower()
+            if ("l_uv" in kl or "luv" in kl) and luv_val is None:
+                luv_val = val
+                luv_source = "bin_properties"
+            elif "beta" in kl and beta_bin is None:
+                beta_bin = val
+                beta_source = "bin_properties"
 
-        # Bin and plot trends if enough data
-        if len(data) >= 4:
-            # Bin by redshift
-            z_bins = np.linspace(data['redshift'].min(), data['redshift'].max(), 4)
-            z_centers = []
-            T_means = []
-            T_errors = []
+        # ── bin centers (fallback) ────────────────────────────────
+        for dim, (lo, hi) in bins.items():
+            dl = dim.lower()
+            if "beta" in dl and beta_bin is None:
+                beta_bin = (lo + hi) / 2
+                beta_source = "bin_center"
+            elif ("l_uv" in dl or "luv" in dl) and luv_val is None:
+                luv_val = (lo + hi) / 2
+                luv_source = "bin_center"
+            elif ("redshift" in dl or dim == "z") and z_bin is None:
+                z_bin = (lo + hi) / 2
 
-            for i in range(len(z_bins) - 1):
-                mask = (data['redshift'] >= z_bins[i]) & (data['redshift'] < z_bins[i + 1])
-                if np.sum(mask) > 0:
-                    z_centers.append((z_bins[i] + z_bins[i + 1]) / 2)
-                    T_means.append(data.loc[mask, 'T_rest_frame'].mean())
-                    T_errors.append(data.loc[mask, 'T_rest_frame'].std() / np.sqrt(np.sum(mask)))
+        if beta_bin is None or luv_val is None:
+            continue
 
-            if len(z_centers) > 1:
-                ax.errorbar(z_centers, T_means, yerr=T_errors,
-                            fmt='s-', color=color, markersize=8, linewidth=2,
-                            capsize=4, label=f'{label} (binned trend)')
+        # L_IR from derived quantities
+        derived = pr.derived_quantities.get(pop_id)
+        l_ir = derived.total_ir_luminosity if derived else 0
+        if l_ir <= 0:
+            continue
 
-        # Literature comparison
-        if show_literature:
-            z_lit = np.linspace(0, 6, 100)
+        l_uv_linear = 10 ** luv_val
+        irx = l_ir / l_uv_linear
 
-            # Casey et al. 2018
-            T_casey = 25 * (1 + z_lit) ** 0.36
-            ax.plot(z_lit, T_casey, '--', color='gray', linewidth=1.5,
-                    alpha=0.8, label='Casey+18' if ax == axes[0] else '')
+        rows.append({
+            "beta_uv": beta_bin,
+            "l_uv": luv_val,
+            "redshift": z_bin if z_bin is not None else sed.median_redshift,
+            "irx": irx,
+            "tier": tier,
+            "_luv_source": luv_source,
+            "_beta_source": beta_source,
+        })
 
-            # Magnelli et al. 2014
-            T_magnelli = 32.9 + 4.6 * z_lit
-            ax.plot(z_lit, T_magnelli, ':', color='gray', linewidth=1.5,
-                    alpha=0.8, label='Magnelli+14' if ax == axes[0] else '')
+    if not rows:
+        # Diagnostic: what did we find?
+        sample_id = list(pr.sed_results.keys())[0] if pr.sed_results else "N/A"
+        sample_sed = list(pr.sed_results.values())[0] if pr.sed_results else None
+        sample_bins = _parse_bins(sample_id) if sample_id != "N/A" else {}
+        sample_props = (sample_sed.bin_properties
+                        if sample_sed and sample_sed.bin_properties else {})
+        print(f"No populations with both β_UV and L_UV data")
+        print(f"  Sample population ID: {sample_id}")
+        print(f"  Parsed binning dims: {list(sample_bins.keys())}")
+        print(f"  bin_properties keys: {list(sample_props.keys()) if isinstance(sample_props, dict) else type(sample_props).__name__}")
+        print(f"  Need: 'beta' in binning dims + 'l_uv' in bin_properties or binning")
+        return None
 
-            # Viero et al. 2022
-            T_viero = 25 * (1 + z_lit) ** 0.6
-            T_viero = 20.9 + (5.9 * z_lit) + 0.5 * z_lit ** 2
-            print(T_viero)
-            ax.plot(z_lit, T_viero, '-', color='purple', linewidth=1.5,
-                    alpha=0.8, label='Viero+22' if ax == axes[0] else '')
+    # Report data sources
+    n_luv_props = sum(1 for r in rows if r.get("_luv_source") == "bin_properties")
+    n_beta_props = sum(1 for r in rows if r.get("_beta_source") == "bin_properties")
+    n_total = len(rows)
+    print(f"  β_UV source: {n_beta_props}/{n_total} from bin_properties, "
+          f"{n_total - n_beta_props} from bin center")
+    print(f"  L_UV source: {n_luv_props}/{n_total} from bin_properties, "
+          f"{n_total - n_luv_props} from bin center")
 
-        # Formatting
-        ax.set_xlabel('Redshift', fontsize=14)
-        if ax == axes[0]:
-            ax.set_ylabel('Rest-frame Dust Temperature (K)', fontsize=14)
-        ax.set_title(f'{label}', fontsize=14)
-        ax.tick_params(axis='both', which='major', labelsize=12)
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=10)
+    df = pd.DataFrame(rows)
+    df = df.drop(columns=["_luv_source", "_beta_source"], errors="ignore")
+    print(f"IRX-β: {len(df)} populations (tier ≥ {min_tier})")
 
-        # Set limits
-        if len(data) > 0:
-            ax.set_xlim(0, max(6, data['redshift'].max() * 1.1))
-            ax.set_ylim(20, 90)
+    # ── optional L_UV averaging ──────────────────────────────────────
+    if average_luv:
+        grp = df.groupby(["beta_uv", "redshift"]).agg(
+            irx_mean=("irx", "mean"),
+            irx_std=("irx", "std"),
+            l_uv=("l_uv", "mean"),
+            n=("irx", "size"),
+        ).reset_index()
+        grp["irx_std"] = grp["irx_std"].fillna(0)
+        beta_vals = grp["beta_uv"].values
+        irx_vals = grp["irx_mean"].values
+        irx_errs = grp["irx_std"].values
+        color_vals = grp["redshift"].values if color_by == "redshift" else grp["l_uv"].values
+        print(f"Averaged to {len(grp)} points over L_UV")
+    else:
+        beta_vals = df["beta_uv"].values
+        irx_vals = df["irx"].values
+        irx_errs = None
+        color_vals = df["redshift"].values if color_by == "redshift" else df["l_uv"].values
+
+    # ── plot ──────────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=figsize)
+
+    color_label = "Redshift" if color_by == "redshift" else "log L_UV/L☉"
+    cmap_name = "plasma" if color_by == "redshift" else "viridis"
+
+    valid = np.isfinite(color_vals)
+    if np.any(valid):
+        sc = ax.scatter(
+            beta_vals, irx_vals, c=color_vals,
+            cmap=cmap_name, s=80, alpha=0.85,
+            edgecolors="k", linewidth=0.5, zorder=3,
+        )
+        cbar = plt.colorbar(sc, ax=ax, shrink=0.8)
+        cbar.set_label(color_label, fontsize=13)
+
+        if average_luv and show_errors and irx_errs is not None:
+            ax.errorbar(
+                beta_vals, irx_vals, yerr=irx_errs,
+                fmt="none", color="gray", alpha=0.4,
+                capsize=2, zorder=1,
+            )
+    else:
+        ax.scatter(beta_vals, irx_vals, s=80, alpha=0.85,
+                   edgecolors="k", linewidth=0.5, zorder=3)
+
+    # ── reference curves ─────────────────────────────────────────────
+    beta_model = np.linspace(-2.5, 1.5, 100)
+    ax.plot(beta_model, _meurer99_irx(beta_model), "k--", lw=2, alpha=0.7,
+            label="Meurer+99 (MW-like)")
+    ax.plot(beta_model, _smc_irx(beta_model), "-.", color="brown", lw=2,
+            alpha=0.7, label="SMC-like (McLure+18)")
+
+    ax.legend(loc="upper left", fontsize=11, framealpha=0.9)
+
+    ax.set_xlabel("β_UV", fontsize=14)
+    ax.set_ylabel("IRX  (L_IR / L_UV)", fontsize=14)
+    ax.set_yscale("log")
+    ax.set_xlim(-2.2, 1.2)
+    ax.set_ylim(10 ** (-1.2), 10 ** 3.5)
+    ax.grid(True, alpha=0.2)
+    ax.set_title(f"IRX–β  ({len(df)} populations, tier ≥ {min_tier})", fontsize=15)
 
     plt.tight_layout()
 
-    # Save if requested
     if save_path is not None:
-        try:
-            from pathlib import Path
-            save_path = Path(save_path)
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-
-            dpi = 300 if save_path.suffix.lower() in ['.png', '.jpg', '.jpeg'] else 150
-            plt.savefig(save_path, dpi=dpi, bbox_inches='tight',
-                        facecolor='white', edgecolor='none')
-            print(f"💾 Temperature evolution plot saved to: {save_path}")
-
-        except Exception as e:
-            print(f"⚠️  Could not save figure: {e}")
-
-    return fig, df_plot
-
-
-# Usage example:
-def plot_temperature_evolution_example(wrapper, add_qt=False):
-    """
-    Example usage of the temperature plotting functions
-    """
-    print("Creating T_rf vs redshift plots...")
-
-    # Basic plot colored by L_IR (star-forming only by default)
-    fig1, df1 = create_trf_redshift_plot(wrapper,
-                                         color_by='l_ir',
-                                         size_by='n_sources',
-                                         show_errors=True,
-                                         add_qt=add_qt,
-                                         fit_data=True,
-                                         save_path='temperature_vs_redshift_basic.png')
-
-    # Plot colored by population type (if including quiescent)
-    if add_qt:
-        fig2, df2 = create_trf_redshift_plot(wrapper,
-                                             color_by='population_type',
-                                             size_by='stellar_mass',
-                                             add_qt=True,
-                                             fit_data=True,
-                                             save_path='temperature_vs_redshift_by_type.png')
-    else:
-        fig2, df2 = create_trf_redshift_plot(wrapper,
-                                             color_by='stellar_mass',
-                                             size_by='n_sources',
-                                             add_qt=False,
-                                             fit_data=True,
-                                             save_path='temperature_vs_redshift_sf_only.png')
-
-    # Comprehensive evolution plot
-    fig3, df3 = create_temperature_evolution_plot(wrapper,
-                                                  split_by_type=add_qt,
-                                                  show_individual=True,
-                                                  show_literature=True,
-                                                  add_qt=add_qt,
-                                                  fit_data=True,
-                                                  save_path='temperature_evolution_comprehensive.png')
-
-    print("✅ Temperature evolution plots created!")
-
-    return fig1, fig2, fig3, df1
-
-
-class SimstackPlots:
-    """
-    Create plots and visualizations from stacking results
-
-    This class generates publication-quality plots from saved SimstackResults,
-    maintaining modularity by working with saved results rather than requiring
-    the full pipeline.
-    """
-
-    def __init__(self, results_object: Optional[SimstackResults] = None,
-                 results_file: Optional[Path] = None, style: str = 'default'):
-        """
-        Initialize plotting class
-
-        Args:
-            results_object: Processed SimstackResults object
-            results_file: Path to saved results file
-            style: Plotting style ('default', 'publication', 'presentation')
-        """
-        if not HAS_MATPLOTLIB:
-            raise PlotError("matplotlib is required for plotting")
-
-        # Load results
-        if results_object is not None:
-            self.results = results_object
-        elif results_file is not None:
-            self.results = SimstackResults.load_results(results_file)
-        else:
-            raise PlotError("Either results_object or results_file must be provided")
-
-        # Set up plotting style
-        self.style = style
-        self._setup_plotting_style()
-
-        logger.info(f"SimstackPlots initialized with {len(self.results.sed_results)} populations")
-
-    def _setup_plotting_style(self) -> None:
-        """Set up matplotlib plotting style"""
-        if self.style == 'publication':
-            # Publication-ready style
-            plt.style.use('seaborn-v0_8-whitegrid' if HAS_SEABORN else 'seaborn-whitegrid')
-            plt.rcParams.update({
-                'font.size': 12,
-                'axes.labelsize': 14,
-                'axes.titlesize': 16,
-                'xtick.labelsize': 12,
-                'ytick.labelsize': 12,
-                'legend.fontsize': 11,
-                'figure.titlesize': 18,
-                'lines.linewidth': 2,
-                'lines.markersize': 6,
-                'figure.figsize': [8, 6],
-                'savefig.dpi': 300,
-                'savefig.bbox': 'tight'
-            })
-        elif self.style == 'presentation':
-            # Presentation style (larger fonts)
-            plt.rcParams.update({
-                'font.size': 16,
-                'axes.labelsize': 18,
-                'axes.titlesize': 20,
-                'xtick.labelsize': 16,
-                'ytick.labelsize': 16,
-                'legend.fontsize': 14,
-                'figure.titlesize': 22,
-                'lines.linewidth': 3,
-                'lines.markersize': 8,
-                'figure.figsize': [10, 8]
-            })
-
-    def plot_stacked_seds(self, population_ids: Optional[List[str]] = None,
-                         normalize_by_sources: bool = False,
-                         show_errors: bool = True,
-                         save_path: Optional[Path] = None) -> plt.Figure:
-        """
-        Plot stacked SEDs for selected populations
-
-        Args:
-            population_ids: List of population IDs to plot (None for all)
-            normalize_by_sources: Whether to normalize by number of sources
-            show_errors: Whether to show error bars
-            save_path: Path to save plot
-
-        Returns:
-            Figure object
-        """
-        if population_ids is None:
-            population_ids = list(self.results.sed_results.keys())
-
-        fig, ax = plt.subplots(figsize=(10, 8))
-
-        # Define colors for different populations
-        colors = plt.cm.tab10(np.linspace(0, 1, len(population_ids)))
-
-        for i, pop_id in enumerate(population_ids):
-            if pop_id not in self.results.sed_results:
-                logger.warning(f"Population {pop_id} not found in results")
-                continue
-
-            sed = self.results.sed_results[pop_id]
-
-            # Get plotting data
-            wavelengths = sed.wavelengths
-            flux_densities = sed.flux_densities.copy()
-            flux_errors = sed.flux_errors.copy()
-
-            # Normalize by number of sources if requested
-            if normalize_by_sources and sed.n_sources > 0:
-                flux_densities /= sed.n_sources
-                flux_errors /= sed.n_sources
-
-            # Create label
-            label = f"{pop_id} (N={sed.n_sources})"
-            if len(label) > 40:
-                label = label[:37] + "..."
-
-            # Plot
-            if show_errors:
-                ax.errorbar(wavelengths, flux_densities, yerr=flux_errors,
-                           color=colors[i], marker='o', linestyle='-',
-                           label=label, capsize=3, capthick=1)
-            else:
-                ax.plot(wavelengths, flux_densities, color=colors[i],
-                       marker='o', linestyle='-', label=label)
-
-        # Formatting
-        ax.set_xlabel('Observed Wavelength [μm]')
-        ylabel = 'Flux Density [Jy'
-        if normalize_by_sources:
-            ylabel += '/source'
-        ylabel += ']'
-        ax.set_ylabel(ylabel)
-        ax.set_title('Stacked Spectral Energy Distributions')
-
-        ax.set_xscale('log')
-        ax.set_yscale('log')
-        ax.grid(True, alpha=0.3)
-        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"SED plot saved to {save_path}")
-
-        return fig
-
-    def plot_luminosity_functions(self, rest_wavelength: float = 100.0,
-                                 save_path: Optional[Path] = None) -> plt.Figure:
-        """
-        Plot rest-frame luminosity functions
-
-        Args:
-            rest_wavelength: Rest-frame wavelength to use (microns)
-            save_path: Path to save plot
-
-        Returns:
-            Figure object
-        """
-        fig, ax = plt.subplots(figsize=(10, 8))
-
-        # Get luminosities at specified wavelength
-        luminosities = []
-        redshifts = []
-        masses = []
-        pop_labels = []
-
-        for pop_id, sed in self.results.sed_results.items():
-            # Find closest wavelength
-            wave_idx = np.argmin(np.abs(sed.wavelengths - rest_wavelength))
-            closest_wave = sed.wavelengths[wave_idx]
-
-            if abs(closest_wave - rest_wavelength) < rest_wavelength * 0.5:  # Within 50%
-                lum = sed.rest_luminosities[wave_idx]
-                if lum > 0:
-                    luminosities.append(lum)
-                    redshifts.append(sed.median_redshift)
-                    masses.append(sed.median_mass)
-                    pop_labels.append(pop_id)
-
-        if not luminosities:
-            logger.warning(f"No valid luminosities found at {rest_wavelength}μm")
-            return fig
-
-        luminosities = np.array(luminosities)
-        redshifts = np.array(redshifts)
-        masses = np.array(masses)
-
-        # Create scatter plot colored by redshift
-        scatter = ax.scatter(masses, luminosities, c=redshifts,
-                           s=60, alpha=0.7, cmap='viridis')
-
-        # Formatting
-        ax.set_xlabel('log(M*/M☉)')
-        ax.set_ylabel(f'L_{rest_wavelength:.0f}μm [L☉]')
-        ax.set_title(f'Rest-frame {rest_wavelength:.0f}μm Luminosity vs Stellar Mass')
-        ax.set_yscale('log')
-        ax.grid(True, alpha=0.3)
-
-        # Colorbar
-        cbar = plt.colorbar(scatter, ax=ax)
-        cbar.set_label('Median Redshift')
-
-        # Add population labels for highest luminosities
-        if len(luminosities) <= 10:  # Only if not too crowded
-            for i, (mass, lum, label) in enumerate(zip(masses, luminosities, pop_labels)):
-                ax.annotate(label[:10], (mass, lum), xytext=(5, 5),
-                          textcoords='offset points', fontsize=8, alpha=0.7)
-
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Luminosity function plot saved to {save_path}")
-
-        return fig
-
-    def plot_sfr_vs_mass(self, save_path: Optional[Path] = None) -> plt.Figure:
-        """
-        Plot star formation rate vs stellar mass (main sequence)
-
-        Args:
-            save_path: Path to save plot
-
-        Returns:
-            Figure object
-        """
-        fig, ax = plt.subplots(figsize=(10, 8))
-
-        # Get data from results
-        summary_df = self.results.get_population_summary()
-
-        # Filter for valid SFR measurements
-        valid_mask = (summary_df['sfr_msun_yr'] > 0) & (summary_df['median_log_mass'] > 0)
-        plot_data = summary_df[valid_mask]
-
-        if len(plot_data) == 0:
-            logger.warning("No valid SFR/mass data found")
-            ax.text(0.5, 0.5, 'No valid data', transform=ax.transAxes,
-                   ha='center', va='center', fontsize=16)
-            return fig
-
-        # Create scatter plot
-        masses = plot_data['median_log_mass']
-        sfrs = plot_data['sfr_msun_yr']
-        n_sources = plot_data['n_sources']
-
-        # Size points by number of sources
-        sizes = 30 + 100 * (n_sources / n_sources.max())
-
-        scatter = ax.scatter(masses, sfrs, s=sizes, alpha=0.7,
-                           c=plot_data['median_redshift'], cmap='plasma')
-
-        # Plot main sequence relation (Whitaker et al. 2012)
-        mass_range = np.linspace(masses.min(), masses.max(), 100)
-        ms_sfr = 10**(0.7 * (mass_range - 10.5) - 0.13)  # Simplified relation
-        ax.plot(mass_range, ms_sfr, 'k--', alpha=0.5, linewidth=2,
-               label='Main Sequence (z~1)')
-
-        # Formatting
-        ax.set_xlabel('log(M*/M☉)')
-        ax.set_ylabel('SFR [M☉/yr]')
-        ax.set_title('Star Formation Rate vs Stellar Mass')
-        ax.set_yscale('log')
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-
-        # Colorbar
-        cbar = plt.colorbar(scatter, ax=ax)
-        cbar.set_label('Median Redshift')
-
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"SFR vs mass plot saved to {save_path}")
-
-        return fig
-
-    def plot_fit_quality(self, save_path: Optional[Path] = None) -> plt.Figure:
-        """
-        Plot fit quality metrics across bands
-
-        Args:
-            save_path: Path to save plot
-
-        Returns:
-            Figure object
-        """
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
-
-        # Extract fit quality data
-        map_names = list(self.results.band_results.keys())
-        wavelengths = [self.results.band_results[name]['wavelength_um'] for name in map_names]
-        chi2_values = [self.results.band_results[name]['reduced_chi_squared'] for name in map_names]
-        chi2_abs = [self.results.band_results[name]['chi_squared'] for name in map_names]
-
-        # Plot 1: Reduced chi-squared vs wavelength
-        ax1.scatter(wavelengths, chi2_values, s=80, alpha=0.7, color='steelblue')
-        ax1.axhline(y=1, color='red', linestyle='--', alpha=0.7, label='Perfect fit')
-        ax1.axhline(y=2, color='orange', linestyle='--', alpha=0.7, label='Acceptable fit')
-
-        ax1.set_xlabel('Wavelength [μm]')
-        ax1.set_ylabel('Reduced χ²')
-        ax1.set_title('Fit Quality by Wavelength')
-        ax1.set_xscale('log')
-        ax1.grid(True, alpha=0.3)
-        ax1.legend()
-
-        # Add band labels
-        for wave, chi2, name in zip(wavelengths, chi2_values, map_names):
-            ax1.annotate(name, (wave, chi2), xytext=(5, 5),
-                        textcoords='offset points', fontsize=9, alpha=0.8)
-
-        # Plot 2: Absolute chi-squared
-        ax2.bar(range(len(map_names)), chi2_abs, alpha=0.7, color='lightcoral')
-        ax2.set_xlabel('Band')
-        ax2.set_ylabel('χ²')
-        ax2.set_title('Absolute Chi-squared by Band')
-        ax2.set_xticks(range(len(map_names)))
-        ax2.set_xticklabels([f"{name}\n{wave:.0f}μm" for name, wave in zip(map_names, wavelengths)],
-                           rotation=45, ha='right')
-        ax2.grid(True, alpha=0.3, axis='y')
-
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Fit quality plot saved to {save_path}")
-
-        return fig
-
-    def plot_population_comparison(self, populations: List[str],
-                                 metric: str = 'flux_densities',
-                                 save_path: Optional[Path] = None) -> plt.Figure:
-        """
-        Compare specific populations across bands
-
-        Args:
-            populations: List of population IDs to compare
-            metric: Metric to compare ('flux_densities', 'rest_luminosities')
-            save_path: Path to save plot
-
-        Returns:
-            Figure object
-        """
-        fig, ax = plt.subplots(figsize=(12, 8))
-
-        colors = plt.cm.Set1(np.linspace(0, 1, len(populations)))
-
-        for i, pop_id in enumerate(populations):
-            if pop_id not in self.results.sed_results:
-                logger.warning(f"Population {pop_id} not found")
-                continue
-
-            sed = self.results.sed_results[pop_id]
-
-            if metric == 'flux_densities':
-                y_data = sed.flux_densities
-                y_errors = sed.flux_errors
-                ylabel = 'Flux Density [Jy]'
-            elif metric == 'rest_luminosities':
-                y_data = sed.rest_luminosities
-                y_errors = sed.rest_luminosity_errors
-                ylabel = 'Rest Luminosity [L☉]'
-            else:
-                raise PlotError(f"Unknown metric: {metric}")
-
-            # Create label
-            label = f"{pop_id} (z={sed.median_redshift:.2f}, N={sed.n_sources})"
-            if len(label) > 50:
-                label = label[:47] + "..."
-
-            ax.errorbar(sed.wavelengths, y_data, yerr=y_errors,
-                       color=colors[i], marker='o', linestyle='-',
-                       label=label, capsize=3, markersize=6)
-
-        ax.set_xlabel('Wavelength [μm]')
-        ax.set_ylabel(ylabel)
-        ax.set_title(f'Population Comparison: {metric.replace("_", " ").title()}')
-        ax.set_xscale('log')
-        ax.set_yscale('log')
-        ax.grid(True, alpha=0.3)
-        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Population comparison plot saved to {save_path}")
-
-        return fig
-
-    def plot_redshift_evolution(self, quantity: str = 'sfr',
-                               save_path: Optional[Path] = None) -> plt.Figure:
-        """
-        Plot evolution of quantities with redshift
-
-        Args:
-            quantity: Quantity to plot ('sfr', 'total_ir_luminosity', 'specific_sfr')
-            save_path: Path to save plot
-
-        Returns:
-            Figure object
-        """
-        fig, ax = plt.subplots(figsize=(10, 8))
-
-        # Get data
-        summary_df = self.results.get_population_summary()
-
-        # Map quantity names
-        quantity_map = {
-            'sfr': ('sfr_msun_yr', 'SFR [M☉/yr]'),
-            'total_ir_luminosity': ('total_ir_luminosity_lsun', 'L_IR [L☉]'),
-            'specific_sfr': ('specific_sfr_yr', 'sSFR [yr⁻¹]')
-        }
-
-        if quantity not in quantity_map:
-            raise PlotError(f"Unknown quantity: {quantity}")
-
-        col_name, ylabel = quantity_map[quantity]
-
-        # Filter valid data
-        valid_mask = (summary_df[col_name] > 0) & (summary_df['median_redshift'] > 0)
-        plot_data = summary_df[valid_mask]
-
-        if len(plot_data) == 0:
-            logger.warning(f"No valid data for {quantity}")
-            return fig
-
-        # Color code by stellar mass
-        masses = plot_data['median_log_mass']
-        redshifts = plot_data['median_redshift']
-        values = plot_data[col_name]
-        n_sources = plot_data['n_sources']
-
-        # Size by number of sources
-        sizes = 30 + 100 * (n_sources / n_sources.max())
-
-        scatter = ax.scatter(redshifts, values, c=masses, s=sizes,
-                           alpha=0.7, cmap='viridis')
-
-        ax.set_xlabel('Redshift')
-        ax.set_ylabel(ylabel)
-        ax.set_title(f'{ylabel.split("[")[0].strip()} Evolution with Redshift')
-        ax.set_yscale('log')
-        ax.grid(True, alpha=0.3)
-
-        # Colorbar
-        cbar = plt.colorbar(scatter, ax=ax)
-        cbar.set_label('log(M*/M☉)')
-
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Redshift evolution plot saved to {save_path}")
-
-        return fig
-
-    def create_summary_dashboard(self, save_path: Optional[Path] = None) -> plt.Figure:
-        """
-        Create comprehensive summary dashboard
-
-        Args:
-            save_path: Path to save plot
-
-        Returns:
-            Figure object
-        """
-        fig = plt.figure(figsize=(16, 12))
-        gs = gridspec.GridSpec(3, 3, figure=fig, hspace=0.3, wspace=0.3)
-
-        # Plot 1: SEDs (top left)
-        ax1 = fig.add_subplot(gs[0, 0])
-        self._plot_seds_subplot(ax1)
-
-        # Plot 2: SFR vs Mass (top middle)
-        ax2 = fig.add_subplot(gs[0, 1])
-        self._plot_sfr_mass_subplot(ax2)
-
-        # Plot 3: Fit quality (top right)
-        ax3 = fig.add_subplot(gs[0, 2])
-        self._plot_fit_quality_subplot(ax3)
-
-        # Plot 4: Redshift evolution (middle left)
-        ax4 = fig.add_subplot(gs[1, 0])
-        self._plot_redshift_evolution_subplot(ax4)
-
-        # Plot 5: Population source counts (middle middle)
-        ax5 = fig.add_subplot(gs[1, 1])
-        self._plot_source_counts_subplot(ax5)
-
-        # Plot 6: Luminosity distribution (middle right)
-        ax6 = fig.add_subplot(gs[1, 2])
-        self._plot_luminosity_distribution_subplot(ax6)
-
-        # Results summary table (bottom)
-        ax7 = fig.add_subplot(gs[2, :])
-        self._create_results_table(ax7)
-
-        # Main title
-        fig.suptitle('Simstack4 Results Dashboard', fontsize=20, fontweight='bold')
-
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Summary dashboard saved to {save_path}")
-
-        return fig
-
-    def _plot_seds_subplot(self, ax: plt.Axes) -> None:
-        """Helper method for SEDs subplot"""
-        # Plot a few representative SEDs
-        pop_ids = list(self.results.sed_results.keys())[:5]  # Limit to 5
-        colors = plt.cm.tab10(np.linspace(0, 1, len(pop_ids)))
-
-        for i, pop_id in enumerate(pop_ids):
-            sed = self.results.sed_results[pop_id]
-            label = f"{pop_id[:15]}..." if len(pop_id) > 15 else pop_id
-            ax.plot(sed.wavelengths, sed.flux_densities, 'o-',
-                   color=colors[i], label=label, markersize=4)
-
-        ax.set_xlabel('λ [μm]')
-        ax.set_ylabel('S [Jy]')
-        ax.set_title('Stacked SEDs')
-        ax.set_xscale('log')
-        ax.set_yscale('log')
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-
-    def _plot_sfr_mass_subplot(self, ax: plt.Axes) -> None:
-        """Helper method for SFR vs mass subplot"""
-        summary_df = self.results.get_population_summary()
-        valid_mask = (summary_df['sfr_msun_yr'] > 0) & (summary_df['median_log_mass'] > 0)
-
-        if np.sum(valid_mask) > 0:
-            plot_data = summary_df[valid_mask]
-            ax.scatter(plot_data['median_log_mass'], plot_data['sfr_msun_yr'],
-                      alpha=0.7, s=30)
-            ax.set_yscale('log')
-
-        ax.set_xlabel('log(M*/M☉)')
-        ax.set_ylabel('SFR [M☉/yr]')
-        ax.set_title('Main Sequence')
-        ax.grid(True, alpha=0.3)
-
-    def _plot_fit_quality_subplot(self, ax: plt.Axes) -> None:
-        """Helper method for fit quality subplot"""
-        map_names = list(self.results.band_results.keys())
-        chi2_values = [self.results.band_results[name]['reduced_chi_squared'] for name in map_names]
-        wavelengths = [self.results.band_results[name]['wavelength_um'] for name in map_names]
-
-        ax.scatter(wavelengths, chi2_values, s=60, alpha=0.7)
-        ax.axhline(y=1, color='red', linestyle='--', alpha=0.5)
-        ax.set_xlabel('λ [μm]')
-        ax.set_ylabel('χ²_red')
-        ax.set_title('Fit Quality')
-        ax.set_xscale('log')
-        ax.grid(True, alpha=0.3)
-
-    def _plot_redshift_evolution_subplot(self, ax: plt.Axes) -> None:
-        """Helper method for redshift evolution subplot"""
-        summary_df = self.results.get_population_summary()
-        valid_mask = (summary_df['sfr_msun_yr'] > 0) & (summary_df['median_redshift'] > 0)
-
-        if np.sum(valid_mask) > 0:
-            plot_data = summary_df[valid_mask]
-            ax.scatter(plot_data['median_redshift'], plot_data['sfr_msun_yr'],
-                      alpha=0.7, s=30)
-            ax.set_yscale('log')
-
-        ax.set_xlabel('Redshift')
-        ax.set_ylabel('SFR [M☉/yr]')
-        ax.set_title('SFR Evolution')
-        ax.grid(True, alpha=0.3)
-
-    def _plot_source_counts_subplot(self, ax: plt.Axes) -> None:
-        """Helper method for source counts subplot"""
-        summary_df = self.results.get_population_summary()
-
-        # Show top 10 populations by source count
-        top_pops = summary_df.nlargest(10, 'n_sources')
-        pop_labels = [pid[:10] + "..." if len(pid) > 10 else pid for pid in top_pops['population_id']]
-
-        bars = ax.bar(range(len(pop_labels)), top_pops['n_sources'], alpha=0.7)
-        ax.set_xlabel('Population')
-        ax.set_ylabel('N sources')
-        ax.set_title('Source Counts')
-        ax.set_xticks(range(len(pop_labels)))
-        ax.set_xticklabels(pop_labels, rotation=45, ha='right', fontsize=8)
-
-    def _plot_luminosity_distribution_subplot(self, ax: plt.Axes) -> None:
-        """Helper method for luminosity distribution subplot"""
-        summary_df = self.results.get_population_summary()
-        valid_lums = summary_df[summary_df['total_ir_luminosity_lsun'] > 0]['total_ir_luminosity_lsun']
-
-        if len(valid_lums) > 0:
-            ax.hist(np.log10(valid_lums), bins=15, alpha=0.7, edgecolor='black')
-
-        ax.set_xlabel('log(L_IR/L☉)')
-        ax.set_ylabel('N populations')
-        ax.set_title('L_IR Distribution')
-        ax.grid(True, alpha=0.3)
-
-    def _create_results_table(self, ax: plt.Axes) -> None:
-        """Helper method to create results summary table"""
-        ax.axis('off')
-
-        # Get summary statistics
-        summary_df = self.results.get_population_summary()
-
-        if len(summary_df) == 0:
-            ax.text(0.5, 0.5, 'No results to display', ha='center', va='center',
-                   transform=ax.transAxes, fontsize=14)
-            return
-
-        # Create summary statistics
-        stats_data = [
-            ['Total Populations', f"{len(summary_df)}"],
-            ['Total Sources', f"{summary_df['n_sources'].sum():,}"],
-            ['Redshift Range', f"{summary_df['median_redshift'].min():.2f} - {summary_df['median_redshift'].max():.2f}"],
-            ['Mass Range', f"{summary_df['median_log_mass'].min():.1f} - {summary_df['median_log_mass'].max():.1f}"],
-            ['Mean SFR', f"{summary_df['sfr_msun_yr'].mean():.2e} M☉/yr"],
-            ['Mean L_IR', f"{summary_df['total_ir_luminosity_lsun'].mean():.2e} L☉"]
-        ]
-
-        # Create table
-        table = ax.table(cellText=stats_data,
-                        colLabels=['Metric', 'Value'],
-                        cellLoc='left',
-                        loc='center',
-                        colWidths=[0.3, 0.3])
-
-        table.auto_set_font_size(False)
-        table.set_fontsize(12)
-        table.scale(1, 2)
-
-        # Style the table
-        for i in range(len(stats_data) + 1):
-            for j in range(2):
-                cell = table[(i, j)]
-                if i == 0:  # Header
-                    cell.set_facecolor('#40466e')
-                    cell.set_text_props(weight='bold', color='white')
-                else:
-                    cell.set_facecolor('#f1f1f2' if i % 2 == 0 else 'white')
-
-        ax.set_title('Summary Statistics', fontsize=14, fontweight='bold', pad=20)
-
-    def save_all_plots(self, output_dir: Path, populations: Optional[List[str]] = None) -> None:
-        """
-        Generate and save all standard plots
-
-        Args:
-            output_dir: Directory to save plots
-            populations: List of populations for comparison plots
-        """
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        logger.info(f"Generating all plots in {output_dir}")
-
-        # Standard plots
-        plots_to_generate = [
-            ('seds', lambda: self.plot_stacked_seds()),
-            ('sfr_vs_mass', lambda: self.plot_sfr_vs_mass()),
-            ('fit_quality', lambda: self.plot_fit_quality()),
-            ('redshift_evolution_sfr', lambda: self.plot_redshift_evolution('sfr')),
-            ('luminosity_functions', lambda: self.plot_luminosity_functions()),
-            ('dashboard', lambda: self.create_summary_dashboard())
-        ]
-
-        for plot_name, plot_func in plots_to_generate:
-            try:
-                fig = plot_func()
-                save_path = output_dir / f"{plot_name}.png"
-                fig.savefig(save_path, dpi=300, bbox_inches='tight')
-                plt.close(fig)
-                logger.info(f"Saved {plot_name} to {save_path}")
-            except Exception as e:
-                logger.error(f"Failed to generate {plot_name}: {e}")
-
-        # Population comparison if populations specified
-        if populations and len(populations) > 1:
-            try:
-                fig = self.plot_population_comparison(populations)
-                save_path = output_dir / "population_comparison.png"
-                fig.savefig(save_path, dpi=300, bbox_inches='tight')
-                plt.close(fig)
-                logger.info(f"Saved population comparison to {save_path}")
-            except Exception as e:
-                logger.error(f"Failed to generate population comparison: {e}")
-
-        logger.info("All plots generated successfully")
-
-
-def create_plots_from_results(results_path: Path, output_dir: Path,
-                            style: str = 'publication') -> SimstackPlots:
-    """
-    Convenience function to create plots from saved results
-
-    Args:
-        results_path: Path to saved results file
-        output_dir: Directory to save plots
-        style: Plotting style
-
-    Returns:
-        SimstackPlots object
-    """
-    plotter = SimstackPlots(results_file=results_path, style=style)
-    plotter.save_all_plots(output_dir)
-    return plotter
+        from pathlib import Path as _P
+        save_path = _P(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        dpi = 300 if save_path.suffix.lower() in [".png", ".jpg"] else 150
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight",
+                    facecolor="white", edgecolor="none")
+
+    return fig

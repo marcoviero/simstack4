@@ -349,23 +349,85 @@ def create_wijesekera_catalog(
     if sfr_col and sfr_col in df_sel.columns:
         output_cols[sfr_col] = "log_sfr" if sfr_is_log else "sfr"
 
-    if luv_col and luv_col in df_sel.columns:
-        output_cols[luv_col] = "log_l_uv"
-
     # Keep all original columns plus standardized names
     for old_name, new_name in output_cols.items():
         if old_name in df_sel.columns and old_name != new_name:
             df_sel[new_name] = df_sel[old_name]
 
-    # Compute log(L_UV) if not present (from L_UV or magnitude)
-    if "log_l_uv" not in df_sel.columns:
-        print("\n  NOTE: log_l_uv column not available.")
-        print("        You'll need to add UV luminosity from CIGALE output.")
+    # ------------------------------------------------------------------
+    # 7b. Compute β_UV and L_UV(1600Å) from E(B-V) and L_NUV
+    # ------------------------------------------------------------------
+    # β_UV from E(B-V) and attenuation law:
+    #   β = β_intrinsic + dβ/dE(B-V) × E(B-V)
+    #   where dβ/dE(B-V) comes from the slope of k(λ) between 1600-2300Å
+    #   Calzetti: 4.43, Arnouts: 4.20, Salim: 3.80
 
-    if "beta_uv" not in df_sel.columns:
-        print("\n  NOTE: beta_uv column not available.")
-        print("        You'll need to add UV slope from CIGALE SED fitting")
-        print("        (power-law fit to best-fit SED in 125-250nm rest-frame).")
+    has_ebv = ebv_minchi2 and ebv_minchi2 in df_sel.columns
+    has_law = law_minchi2 and law_minchi2 in df_sel.columns
+    has_luv = luv_col and luv_col in df_sel.columns
+
+    if has_ebv:
+        BETA_INTRINSIC = -2.3  # young SF population
+        K_LAMBDA = {0: 4.43, 1: 4.20, 2: 3.80}  # Calzetti, Arnouts, Salim
+
+        ebv = df_sel[ebv_minchi2].values.astype(float)
+        if has_law:
+            dust_law = df_sel[law_minchi2].values
+        else:
+            dust_law = np.zeros(len(df_sel))
+            print("  No dust law column; assuming Calzetti for all")
+
+        beta_uv = np.full_like(ebv, BETA_INTRINSIC)
+        for law_idx, k_val in K_LAMBDA.items():
+            mask = dust_law == law_idx
+            if np.any(mask):
+                beta_uv[mask] = BETA_INTRINSIC + k_val * ebv[mask]
+
+        # Sanitize
+        bad = ~np.isfinite(beta_uv) | ~np.isfinite(ebv) | (ebv < 0)
+        beta_uv[bad] = BETA_INTRINSIC
+
+        df_sel["beta_uv"] = beta_uv
+        valid = np.isfinite(beta_uv)
+        print(f"\n  β_UV computed from E(B-V): "
+              f"range [{beta_uv[valid].min():.2f}, {beta_uv[valid].max():.2f}], "
+              f"median {np.median(beta_uv[valid]):.2f}")
+    else:
+        print("\n  WARNING: E(B-V) column not found — cannot compute β_UV")
+        beta_uv = None
+
+    # L_UV(1600Å) from L_NUV(2300Å) corrected using β_UV:
+    #   f_λ ∝ λ^β  →  L(1600) = L(2300) × (1600/2300)^β
+    #   In log space: log L(1600) = log L(2300) + β × log10(1600/2300)
+    #
+    # This matters: using L_NUV as L_UV underestimates IRX by 44-130%.
+
+    if has_luv and beta_uv is not None:
+        LOG10_RATIO = np.log10(1600.0 / 2300.0)  # = -0.1576
+        l_nuv_vals = df_sel[luv_col].values.astype(float)
+        log_l_1600 = l_nuv_vals + beta_uv * LOG10_RATIO
+
+        # Fall back to uncorrected where β is invalid
+        bad_corr = ~np.isfinite(log_l_1600)
+        log_l_1600[bad_corr] = l_nuv_vals[bad_corr]
+
+        df_sel["log_l_uv"] = log_l_1600
+
+        correction = beta_uv[~bad_corr] * LOG10_RATIO
+        print(f"  L_UV(1600) from L_NUV + β correction: "
+              f"median correction = {np.median(correction):+.3f} dex "
+              f"(factor {10**np.median(correction):.2f}×)")
+        print(f"  WARNING: previous catalog used L_NUV as L_UV — "
+              f"IRX was underestimated by ~{(10**np.median(correction) - 1)*100:.0f}%")
+
+    elif has_luv:
+        # No β available — use L_NUV uncorrected (with warning)
+        df_sel["log_l_uv"] = df_sel[luv_col]
+        print(f"\n  WARNING: Using L_NUV as L_UV (no β correction)")
+        print(f"           IRX will be systematically underestimated")
+
+    else:
+        print("\n  WARNING: No UV luminosity column — L_UV not computed")
 
     # ------------------------------------------------------------------
     # 8. Summary statistics

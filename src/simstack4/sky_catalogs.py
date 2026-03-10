@@ -260,8 +260,11 @@ class SkyCatalogs:
             for formula_name, formula_params in self.config.classification.formulas.items():
                 formula_columns.add(f"calculated_{formula_name}")
                 # Validate the formula's INPUT columns exist in the raw catalog
+                # (skip columns that will be computed by another formula)
                 if formula_params.bins:
                     for input_label, input_col in formula_params.bins.items():
+                        if input_col in formula_columns:
+                            continue  # Will be computed by another formula
                         if input_col not in columns:
                             missing_cols.append(
                                 f"Formula input column '{input_col}' "

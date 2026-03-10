@@ -418,6 +418,85 @@ class PopulationManager:
 
         return beta_uv
 
+    def _calculate_l_uv_1600(
+        self, catalog_df: pd.DataFrame, formula_params
+    ) -> np.ndarray:
+        """
+        Compute log₁₀(L_UV) at 1600Å from L_NUV(2300Å) and β_UV.
+
+        The IRX-β relation (Meurer+99, etc.) is defined at 1600Å,
+        but LePhare/COSMOS2025 only provides L_NUV at ~2300Å.
+
+        For f_λ ∝ λ^β:
+            L(1600) / L(2300) = (1600 / 2300)^β
+
+        So: log₁₀ L(1600) = log₁₀ L(2300) + β × log₁₀(1600/2300)
+
+        The correction is β-dependent and large:
+            β = -2.0: L_1600 = 2.07 × L_NUV  (+0.32 dex)
+            β = -1.5: L_1600 = 1.72 × L_NUV  (+0.24 dex)
+            β = -1.0: L_1600 = 1.44 × L_NUV  (+0.16 dex)
+
+        Using L_NUV as L_UV underestimates IRX by 44-130%.
+
+        Parameters
+        ----------
+        formula_params.bins must contain:
+            "l_nuv" : column name for log₁₀(L_NUV / L_☉)
+            "beta_uv" : column name for β_UV (e.g. "calculated_beta_uv")
+        """
+        l_nuv_col = formula_params.bins.get("l_nuv")
+        beta_col = formula_params.bins.get("beta_uv")
+
+        if not l_nuv_col:
+            raise PopulationError(
+                "l_nuv column required for L_UV(1600) calculation"
+            )
+        if not beta_col:
+            raise PopulationError(
+                "beta_uv column required for L_UV(1600) calculation. "
+                "Define beta_uv_formula before l_uv_formula in your config."
+            )
+
+        if l_nuv_col not in catalog_df.columns:
+            available = [c for c in catalog_df.columns if "nuv" in c.lower() or "l_" in c.lower()]
+            raise PopulationError(
+                f"L_NUV column '{l_nuv_col}' not found. Available: {available}"
+            )
+        if beta_col not in catalog_df.columns:
+            raise PopulationError(
+                f"β_UV column '{beta_col}' not found. "
+                f"Make sure beta_uv_formula is defined before l_uv_formula."
+            )
+
+        l_nuv = catalog_df[l_nuv_col].values
+        beta_uv = catalog_df[beta_col].values
+
+        # log₁₀(1600/2300) = -0.1576
+        LOG10_RATIO = np.log10(1600.0 / 2300.0)
+
+        log_l_1600 = l_nuv + beta_uv * LOG10_RATIO
+
+        # Handle invalid inputs
+        invalid = ~np.isfinite(log_l_1600)
+        if np.any(invalid):
+            log_l_1600[invalid] = l_nuv[invalid]  # fall back to uncorrected
+            logger.warning(
+                f"L_UV(1600): {np.sum(invalid)} sources with invalid β_UV, "
+                f"using uncorrected L_NUV"
+            )
+
+        valid = np.isfinite(log_l_1600)
+        if np.any(valid):
+            correction = beta_uv[valid] * LOG10_RATIO
+            logger.info(
+                f"L_UV(1600): {np.sum(valid):,} sources, "
+                f"median correction = {np.median(correction):+.3f} dex "
+                f"(factor {10**np.median(correction):.2f}×)"
+            )
+
+        return log_l_1600
+
     def _create_populations(
         self, catalog_df: pd.DataFrame, split_values: np.ndarray
     ) -> None:
@@ -503,6 +582,8 @@ class PopulationManager:
 
         if formula_params.formula == "beta_uv":
             return self._calculate_beta_uv_values(catalog_df, formula_params)
+        elif formula_params.formula == "l_uv_1600":
+            return self._calculate_l_uv_1600(catalog_df, formula_params)
         elif formula_params.formula == "custom":
             return self._calculate_custom_formula(catalog_df, formula_params)
         else:
