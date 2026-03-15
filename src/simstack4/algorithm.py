@@ -1126,7 +1126,7 @@ class SimstackAlgorithm:
                 for col in property_columns:
                     if col in subset.columns:
                         vals = pd.to_numeric(subset[col], errors="coerce")
-                        median_val = vals.median()
+                        median_val = vals.mean() #median()
                         if pd.notna(median_val):
                             props[col] = float(median_val)
                     else:

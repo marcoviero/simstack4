@@ -427,17 +427,16 @@ class PopulationManager:
         The IRX-β relation (Meurer+99, etc.) is defined at 1600Å,
         but LePhare/COSMOS2025 only provides L_NUV at ~2300Å.
 
-        For f_λ ∝ λ^β:
-            L(1600) / L(2300) = (1600 / 2300)^β
+        For f_λ ∝ λ^β, and l_nuv = log₁₀(νL_ν / L_☉):
+            νL_ν = λL_λ ∝ λ^(β+1)
+            L(1600) / L(2300) = (1600 / 2300)^(β+1)
 
-        So: log₁₀ L(1600) = log₁₀ L(2300) + β × log₁₀(1600/2300)
+        So: log₁₀ L(1600) = log₁₀ L(2300) + (β+1) × log₁₀(1600/2300)
 
-        The correction is β-dependent and large:
-            β = -2.0: L_1600 = 2.07 × L_NUV  (+0.32 dex)
-            β = -1.5: L_1600 = 1.72 × L_NUV  (+0.24 dex)
-            β = -1.0: L_1600 = 1.44 × L_NUV  (+0.16 dex)
-
-        Using L_NUV as L_UV underestimates IRX by 44-130%.
+        The correction vanishes at β = -1 (flat νL_ν).
+        At β = -2.0: L_1600 = 1.44 × L_NUV  (+0.16 dex)
+        At β = -1.5: L_1600 = 1.20 × L_NUV  (+0.08 dex)
+        At β =  0.0: L_1600 = 0.70 × L_NUV  (-0.16 dex)
 
         Parameters
         ----------
@@ -473,9 +472,12 @@ class PopulationManager:
         beta_uv = catalog_df[beta_col].values
 
         # log₁₀(1600/2300) = -0.1576
+        # l_nuv is νL_ν (= λL_λ), and for f_λ ∝ λ^β:
+        #   λL_λ ∝ λ^(β+1)
+        # So: log(L_1600/L_2300) = (β+1) × log₁₀(1600/2300)
         LOG10_RATIO = np.log10(1600.0 / 2300.0)
 
-        log_l_1600 = l_nuv + beta_uv * LOG10_RATIO
+        log_l_1600 = l_nuv + (beta_uv + 1) * LOG10_RATIO
 
         # Handle invalid inputs
         invalid = ~np.isfinite(log_l_1600)
@@ -488,7 +490,7 @@ class PopulationManager:
 
         valid = np.isfinite(log_l_1600)
         if np.any(valid):
-            correction = beta_uv[valid] * LOG10_RATIO
+            correction = (beta_uv[valid] + 1) * LOG10_RATIO
             logger.info(
                 f"L_UV(1600): {np.sum(valid):,} sources, "
                 f"median correction = {np.median(correction):+.3f} dex "
