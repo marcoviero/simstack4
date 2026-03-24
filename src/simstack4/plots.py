@@ -38,7 +38,7 @@ logger = setup_logging()
 SED Grid Plot for Simstack4
 
 Plots stacked flux densities and fitted greybody models on a
-(column × row) grid of binning dimensions.  Handles both
+(column x row) grid of binning dimensions.  Handles both
 population-type splits (UVJ, NuVRJ → sfg / quiescent / …) and
 non-split runs automatically.
 
@@ -108,10 +108,10 @@ LAYOUT = {
     "col_header_pad": 4,
     "row_label_pad":  18,
     "suptitle_y":     1.01,
-    "lam_model_pad_lo": 0.3,   # model λ grid extends to λ_min × this
-    "lam_model_pad_hi": 1.5,   # model λ grid extends to λ_max × this
-    "xlim_pad_lo":      0.5,   # x-axis extends to λ_min × this
-    "xlim_pad_hi":      1.5,   # x-axis extends to λ_max × this
+    "lam_model_pad_lo": 0.3,   # model lam grid extends to lam_min x this
+    "lam_model_pad_hi": 1.5,   # model lam grid extends to lam_max x this
+    "xlim_pad_lo":      0.5,   # x-axis extends to lam_min x this
+    "xlim_pad_hi":      1.5,   # x-axis extends to lam_max x this
     "n_model_points":   120,
 }
 
@@ -192,7 +192,7 @@ def _extract_pop_type(pop_id: str) -> str:
     if len(segments) > 1:
         last = segments[-1]
         parts = last.split("_")
-        # A bin-range segment has ≥3 parts ending in two floats
+        # A bin-range segment has >=3 parts ending in two floats
         # e.g. "stellar_mass_8.5_10.0"  →  skip
         # A type-label segment does not, e.g. "split_0"
         if len(parts) >= 3:
@@ -235,7 +235,7 @@ def _dim_label(dim: str) -> str:
 def _solve_amplitude_at_T(greybody_fitter, wave_rest, fluxes, errors,
                            T_rest, beta):
     """
-    Analytically solve for log10(A) at fixed T and β.
+    Analytically solve for log10(A) at fixed T and beta.
 
     Returns (log10_A, success_bool).
     """
@@ -386,7 +386,7 @@ def plot_sed_grid(
         if row_dim is None:
             row_dim = [d for d in ranked if d != col_dim][0]
 
-    print(f"📐 Grid: {col_dim} (columns) × {row_dim} (rows)")
+    print(f"📐 Grid: {col_dim} (columns) x {row_dim} (rows)")
 
     # ── unique bins per axis ─────────────────────────────────────────────
     def _unique_bins(dim):
@@ -403,7 +403,7 @@ def plot_sed_grid(
     if not col_bins or not row_bins:
         raise ValueError(f"No bins found for {col_dim} or {row_dim}")
 
-    print(f"📊 Grid size: {n_cols} × {n_rows} = {n_cols * n_rows} panels")
+    print(f"📊 Grid size: {n_cols} x {n_rows} = {n_cols * n_rows} panels")
 
     # ── extra dimensions (anything beyond col & row → colour) ────────────
     extra_dims = sorted(all_dims - {col_dim, row_dim})
@@ -449,7 +449,7 @@ def plot_sed_grid(
         sharex=True, sharey=True, squeeze=False,
     )
 
-    # fine λ grid for model curves (observed frame)
+    # fine lam grid for model curves (observed frame)
     lam_obs_model = np.logspace(
         np.log10(wavelengths.min() * LAYOUT["lam_model_pad_lo"]),
         np.log10(wavelengths.max() * LAYOUT["lam_model_pad_hi"]),
@@ -697,7 +697,7 @@ def plot_sed_grid(
                 ax2.set_yticks([])
 
             if ri == n_rows - 1:
-                ax.set_xlabel("Observed λ (µm)", fontsize=FONT["axis_label"])
+                ax.set_xlabel("Observed lam (µm)", fontsize=FONT["axis_label"])
             if ci == 0:
                 ax.set_ylabel(flux_label, fontsize=FONT["axis_label"])
 
@@ -893,7 +893,7 @@ def _plot_sed_simple(
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_ylim(ylim)
-    ax.set_xlabel("Observed λ (µm)", fontsize=FONT["axis_label"])
+    ax.set_xlabel("Observed lam (µm)", fontsize=FONT["axis_label"])
     ax.set_ylabel(flux_label, fontsize=FONT["axis_label"])
     ax.tick_params(labelsize=FONT["tick"])
     ax.grid(True, alpha=STYLE["grid_alpha"] + 0.05)
@@ -1064,17 +1064,17 @@ def create_trf_redshift_plot(
         print("No data after filtering")
         return None, None
 
-    print(f"T-z plot: {len(df_plot)} populations (tier >= {min_tier})")
+    print(f"T-z plot: {len(df_plot)} populations (tier ≥ {min_tier})")
     print(f"  z: {df_plot['redshift'].min():.2f} - {df_plot['redshift'].max():.2f}")
     print(f"  T: {df_plot['T_rest_frame'].min():.0f} - {df_plot['T_rest_frame'].max():.0f} K")
 
     # ── color setup ──────────────────────────────────────────────────
     color_configs = {
-        "stellar_mass": ("stellar_mass", "log₁₀(M*/M☉)", "viridis"),
-        "l_ir":         ("l_ir",         "log₁₀(L_IR/L☉)", "plasma"),
-        "l_uv":         ("l_uv",         "log₁₀(L_UV/L☉)", "viridis"),
+        "stellar_mass": ("stellar_mass", "log10(M*/M_sun)", "viridis"),
+        "l_ir":         ("l_ir",         "log10(L_IR/L_sun)", "plasma"),
+        "l_uv":         ("l_uv",         "log10(L_UV/L_sun)", "viridis"),
         "beta_uv":      ("beta_uv",      "β_UV", "coolwarm"),
-        "chi2":         ("chi2_reduced",  "χ²_red", "coolwarm"),
+        "chi2":         ("chi2_reduced",  "chi^2_red", "coolwarm"),
     }
 
     if color_by in color_configs:
@@ -1180,7 +1180,7 @@ def create_trf_redshift_plot(
 
         T_viero = 20.9 + 5.9 * z_ext + 0.5 * z_ext**2
         ax.plot(z_ext, T_viero, "--", color="purple", linewidth=2,
-                label="Viero+22: T=20.9+5.9z+0.5z²", alpha=0.8)
+                label="Viero+22: T=20.9+5.9z+0.5z^2", alpha=0.8)
 
         ax.axhline(32, color="gray", ls=":", lw=1, alpha=0.5,
                    label="Drew & Casey 22: no evol. at fixed L_IR")
@@ -1224,11 +1224,11 @@ def create_trf_redshift_plot(
             z_fit = np.linspace(0, min(z_data.max() * 1.15, 11), 200)
             ax.plot(z_fit, quadratic(z_fit, *popt), "-", color="black",
                     linewidth=2.5, alpha=0.85,
-                    label=f"This work: T={a:.0f}+{b:.1f}z+{c_coeff:.2f}z² (R²={r2:.2f})")
+                    label=f"This work: T={a:.0f}+{b:.1f}z+{c_coeff:.2f}z^2 (R^2={r2:.2f})")
 
-            print(f"Quadratic fit: T = {a:.1f}±{a_err:.1f} + "
-                  f"{b:.1f}±{b_err:.1f}·z + {c_coeff:.2f}±{c_err:.2f}·z²  "
-                  f"(R²={r2:.3f})")
+            print(f"Quadratic fit: T = {a:.1f}+-{a_err:.1f} + "
+                  f"{b:.1f}+-{b_err:.1f}*z + {c_coeff:.2f}+-{c_err:.2f}*z^2  "
+                  f"(R^2={r2:.3f})")
 
         except Exception as e:
             print(f"Fit failed: {e}")
@@ -1263,15 +1263,15 @@ def create_trf_redshift_plot(
 
 
 
-# ── IRX-β reference curves ───────────────────────────────────────────────
+# ── IRX-beta reference curves ───────────────────────────────────────────────
 
 def _meurer99_irx(beta):
-    """Meurer+99 IRX-β relation (starburst/MW-like)."""
+    """Meurer+99 IRX-beta relation (starburst/MW-like)."""
     return 10 ** (0.4 * (4.43 + 1.99 * np.asarray(beta))) - 1
 
 
 def _smc_irx(beta):
-    """SMC-like IRX-β relation (McLure+2018 parameterization, dA/dβ=0.91)."""
+    """SMC-like IRX-beta relation (McLure+2018 parameterization, dA/dbeta=0.91)."""
     beta = np.asarray(beta)
     beta_int = -2.30
     BC_1600 = 1.51
@@ -1279,8 +1279,7 @@ def _smc_irx(beta):
     return (10 ** (0.4 * A1600) - 1) * BC_1600
 
 
-# ── IRX-β plot ───────────────────────────────────────────────────────────
-
+# ── IRX-beta plot ───────────────────────────────────────────────────────────
 
 def create_lir_luv_beta_plot(
     wrapper,
@@ -1295,39 +1294,39 @@ def create_lir_luv_beta_plot(
     save_path=None,
 ):
     """
-     Create L_IR/L_UV vs β_UV plot from SimstackWrapper results.
+    Create L_IR/L_UV vs beta_UV plot from SimstackWrapper results.
 
-     Parameters
-     ----------
-     wrapper : SimstackWrapper
-         Must have stacking_results and processed_results.
-     color_by : str
-         'redshift' or 'l_uv'.
-     average_over : str, list of str, or None
-         Dimension(s) to average over, collapsing them.
-         E.g. 'stellar_mass' averages over mass bins at fixed β and z.
-         'l_uv' averages over L_UV bins.
-         ['stellar_mass', 'l_uv'] averages over both.
-         None = no averaging (plot every population).
-     weight_by : str or None
-         Column to weight the average by.
-         'n_sources' (default) weights by population size.
-         'l_ir' weights by IR luminosity.
-         None = unweighted mean.
-     split_filter : list of int, optional
-         Which split classes to include.
-     min_tier : str
-         Minimum fit quality tier ('A', 'B', 'C').
-     show_errors : bool
-         Show error bars (std or weighted std) when averaging.
-     figsize : tuple
-         Figure size.
-     save_path : str or Path, optional
+    Parameters
+    ----------
+    wrapper : SimstackWrapper
+        Must have stacking_results and processed_results.
+    color_by : str
+        'redshift' or 'l_uv'.
+    average_over : str, list of str, or None
+        Dimension(s) to average over, collapsing them.
+        E.g. 'stellar_mass' averages over mass bins at fixed beta and z.
+        'l_uv' averages over L_UV bins.
+        ['stellar_mass', 'l_uv'] averages over both.
+        None = no averaging (plot every population).
+    weight_by : str or None
+        Column to weight the average by.
+        'n_sources' (default) weights by population size.
+        'l_ir' weights by IR luminosity.
+        None = unweighted mean.
+    split_filter : list of int, optional
+        Which split classes to include.
+    min_tier : str
+        Minimum fit quality tier ('A', 'B', 'C').
+    show_errors : bool
+        Show error bars (std or weighted std) when averaging.
+    figsize : tuple
+        Figure size.
+    save_path : str or Path, optional
 
-     Returns
-     -------
-     fig : matplotlib Figure
-     """
+    Returns
+    -------
+    fig : matplotlib Figure
+    """
     pr = getattr(wrapper, "processed_results", None)
     if pr is None or not pr.sed_results:
         print("No processed SED results found")
@@ -1435,7 +1434,7 @@ def create_lir_luv_beta_plot(
         sample_bins = _parse_bins(sample_id) if sample_id != "N/A" else {}
         sample_props = (sample_sed.bin_properties
                         if sample_sed and sample_sed.bin_properties else {})
-        print(f"No populations with both β_UV and L_UV data")
+        print(f"No populations with both beta_UV and L_UV data")
         print(f"  Sample population ID: {sample_id}")
         print(f"  Parsed binning dims: {list(sample_bins.keys())}")
         print(f"  bin_properties keys: {list(sample_props.keys()) if isinstance(sample_props, dict) else type(sample_props).__name__}")
@@ -1446,14 +1445,14 @@ def create_lir_luv_beta_plot(
     n_luv_props = sum(1 for r in rows if r.get("_luv_source") == "bin_properties")
     n_beta_props = sum(1 for r in rows if r.get("_beta_source") == "bin_properties")
     n_total = len(rows)
-    print(f"  β_UV source: {n_beta_props}/{n_total} from bin_properties, "
+    print(f"  beta_UV source: {n_beta_props}/{n_total} from bin_properties, "
           f"{n_total - n_beta_props} from bin center")
     print(f"  L_UV source: {n_luv_props}/{n_total} from bin_properties, "
           f"{n_total - n_luv_props} from bin center")
 
     df = pd.DataFrame(rows)
     df = df.drop(columns=["_luv_source", "_beta_source"], errors="ignore")
-    print(f"IRX-β: {len(df)} populations (tier ≥ {min_tier})")
+    print(f"IRX-beta: {len(df)} populations (tier ≥ {min_tier})")
 
     # ── optional averaging over dimensions ───────────────────────────
     if average_over is not None:
@@ -1519,13 +1518,34 @@ def create_lir_luv_beta_plot(
     beta_vals = df["beta_uv"].values
     irx_vals = df["irx"].values
     irx_errs = df["irx_std"].values if "irx_std" in df.columns else None
-    color_vals = df["redshift"].values if color_by == "redshift" else df.get("l_uv", df["redshift"]).values
+
+    # Flexible color_by: check DataFrame columns
+    _color_map = {
+        "redshift": ("redshift", "Redshift", "plasma"),
+        "l_uv": ("l_uv", "log L_UV/L☉", "viridis"),
+        "l_uv_phot": ("l_uv", "log L_UV/L_sun (phot)", "viridis"),
+        "log_l_uv_phot": ("l_uv", "log L_UV/L_sun (phot)", "viridis"),
+        "beta_uv": ("beta_uv", "β_UV", "coolwarm"),
+        "beta_uv_phot": ("beta_uv", "β_UV (phot)", "coolwarm"),
+        "stellar_mass": ("stellar_mass", "log M*/M☉", "viridis"),
+    }
+    # Also accept column names directly (e.g. "beta_uv_phot")
+    if color_by in _color_map:
+        _cc, color_label, cmap_name = _color_map[color_by]
+        color_vals = df[_cc].values if _cc in df.columns else df["redshift"].values
+    elif color_by in df.columns:
+        color_vals = df[color_by].values
+        color_label = color_by
+        cmap_name = "coolwarm" if "beta" in color_by else "viridis"
+    else:
+        print(f"  color_by='{color_by}' not found, falling back to redshift")
+        print(f"  Available: {[c for c in df.columns if not c.startswith('_')]}")
+        color_vals = df["redshift"].values
+        color_label = "Redshift"
+        cmap_name = "plasma"
 
     # ── plot ──────────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=figsize)
-
-    color_label = "Redshift" if color_by == "redshift" else "log L_UV/L☉"
-    cmap_name = "plasma" if color_by == "redshift" else "viridis"
 
     valid = np.isfinite(color_vals)
     if np.any(valid):
@@ -1562,7 +1582,7 @@ def create_lir_luv_beta_plot(
     ax.set_xlim(-2.2, 1.2)
     ax.set_ylim(10 ** (-1.2), 10 ** 3.5)
     ax.grid(True, alpha=0.2)
-    ax.set_title(f"IRX–β  ({len(df)} populations, tier ≥ {min_tier})", fontsize=15)
+    ax.set_title(f"IRX–beta  ({len(df)} populations, tier ≥ {min_tier})", fontsize=15)
 
     plt.tight_layout()
 
@@ -1586,13 +1606,13 @@ def _schreiber15_log_sfr(log_mass, z):
     Parameters
     ----------
     log_mass : float or array
-        log₁₀(M*/M☉)
+        log10(M* / Msun)
     z : float
         Redshift.
 
     Returns
     -------
-    log₁₀(SFR / M☉ yr⁻¹)
+    log10(SFR / Msun/yr)
     """
     m0, a0, a1, m1, a2 = 0.5, 1.5, 0.3, 0.36, 2.5
     r = np.log10(1 + z)
@@ -1602,12 +1622,12 @@ def _schreiber15_log_sfr(log_mass, z):
 
 
 def _sfr_to_lir(sfr):
-    """Kennicutt+1998 (Chabrier IMF): L_IR = SFR / 1e-10 L☉."""
+    """Kennicutt+1998 (Chabrier IMF): L_IR = SFR / 1e-10 Lsun."""
     return np.asarray(sfr) / 1.0e-10
 
 
 def _lir_to_sfr(lir):
-    """Inverse Kennicutt: SFR = 1e-10 × L_IR."""
+    """Inverse Kennicutt: SFR = 1e-10 * L_IR."""
     return 1.0e-10 * np.asarray(lir)
 
 
@@ -1760,7 +1780,7 @@ def create_lir_mass_plot(
         return None, None
 
     df = pd.DataFrame(rows)
-    print(f"L_IR-M* plot: {len(df)} populations (tier >= {min_tier})")
+    print(f"L_IR-M* plot: {len(df)} populations (tier ≥ {min_tier})")
 
     # ── y-axis quantity ──────────────────────────────────────────────
     if quantity == "sfr":
@@ -1775,7 +1795,7 @@ def create_lir_mass_plot(
     # ── color setup (discrete, matching other plots) ─────────────────
     color_col_map = {
         "redshift": ("redshift", "Redshift", "plasma"),
-        "l_uv": ("l_uv", "log₁₀(L_UV/L☉)", "viridis"),
+        "l_uv": ("l_uv", "log10(L_UV/L_sun)", "viridis"),
         "beta_uv": ("beta_uv", "β_UV", "coolwarm"),
     }
     col_name, color_label, cmap_name = color_col_map.get(
@@ -1859,7 +1879,7 @@ def create_lir_mass_plot(
         _edge_configs = {
             "beta_uv":      ("beta_uv",      "β_UV",            "coolwarm",
                              np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.5])),
-            "l_uv":         ("l_uv",         "log₁₀(L_UV/L☉)", "viridis", None),
+            "l_uv":         ("l_uv",         "log10(L_UV/L_sun)", "viridis", None),
             "redshift":     ("redshift",     "Redshift",         "plasma",
                              np.array([0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0])),
         }
@@ -1984,14 +2004,14 @@ def create_lir_mass_plot(
     # ── size legend ──────────────────────────────────────────────────
     if size_label and not isinstance(sizes, (int, float)):
         ax.text(
-            0.02, 0.02, f"Marker size ∝ {size_label}",
+            0.02, 0.02, f"Marker size ~ {size_label}",
             transform=ax.transAxes, fontsize=9, alpha=0.7,
             verticalalignment="bottom",
             bbox=dict(boxstyle="round", facecolor="white", alpha=0.7),
         )
 
     # ── formatting ───────────────────────────────────────────────────
-    ax.set_xlabel("log₁₀(M* / M☉)", fontsize=14)
+    ax.set_xlabel("log10(M* / M_sun)", fontsize=14)
     ax.set_ylabel(y_label, fontsize=14)
     ax.set_yscale("log")
     ax.tick_params(axis="both", which="major", labelsize=12)
@@ -2023,13 +2043,13 @@ def _tacconi20_log_mu_gas(log_mass, z, delta_ms=1.0):
     """
     Tacconi+2020 molecular gas fraction scaling relation.
 
-    log(μ_gas) = log(M_mol / M*) from PHIBSS2 (Tacconi+2020, ARA&A 58, 157).
+    log(mu_gas) = log(M_mol / M*) from PHIBSS2 (Tacconi+2020, ARA&A 58, 157).
     Eq 4 with best-fit coefficients from their Table 3 ("all methods").
 
     Parameters
     ----------
     log_mass : float or array
-        log₁₀(M* / M☉)
+        log10(M* / M_sun)
     z : float or array
         Redshift.
     delta_ms : float or array
@@ -2037,7 +2057,7 @@ def _tacconi20_log_mu_gas(log_mass, z, delta_ms=1.0):
 
     Returns
     -------
-    log₁₀(M_mol / M*)
+    log10(M_mol / M*)
     """
     log_mass = np.asarray(log_mass, dtype=float)
     z = np.asarray(z, dtype=float)
@@ -2065,18 +2085,18 @@ def _estimate_gas_mass(log_mass, z, sfr, log_sfr_ms=None):
     Parameters
     ----------
     log_mass : float
-        log₁₀(M* / M☉)
+        log10(M* / M_sun)
     z : float
         Redshift.
     sfr : float
-        Star formation rate (M☉/yr). Used to compute δMS.
+        Star formation rate (M_sun/yr). Used to compute δMS.
     log_sfr_ms : float, optional
-        log₁₀(SFR_MS) at this mass and z. If None, computed from Schreiber+2015.
+        log10(SFR_MS) at this mass and z. If None, computed from Schreiber+2015.
 
     Returns
     -------
     M_gas : float
-        Molecular gas mass in M☉.
+        Molecular gas mass in M_sun.
     """
     if log_sfr_ms is None:
         log_sfr_ms = _schreiber15_log_sfr(log_mass, z)
@@ -2085,7 +2105,7 @@ def _estimate_gas_mass(log_mass, z, sfr, log_sfr_ms=None):
     delta_ms = max(sfr / sfr_ms, 0.01) if sfr_ms > 0 else 1.0
 
     log_mu = _tacconi20_log_mu_gas(log_mass, z, delta_ms)
-    m_gas = 10 ** (log_mu + log_mass)  # μ = M_gas/M*, so M_gas = μ × M*
+    m_gas = 10 ** (log_mu + log_mass)  # mu = M_gas/M*, so M_gas = mu x M*
 
     return m_gas
 
@@ -2119,7 +2139,7 @@ def create_tdust_dtg_plot(
         Minimum fit quality tier.
     show_parente : bool
         Show Parente+2026 / Sommovigo+2022 radiative equilibrium model
-        curves at constant Σ_SFR (0.01, 0.1, 1, 10 M☉/yr/kpc²).
+        curves at constant Sigma_SFR (0.01, 0.1, 1, 10 M☉/yr/kpc²).
     figsize : tuple
     save_path : str or Path, optional
 
@@ -2183,14 +2203,26 @@ def create_tdust_dtg_plot(
         mass_val = None
         luv_val = None
         beta_val = None
+        _extra = {}
         for key, val in props.items():
             kl = key.lower()
-            if "mass" in kl and mass_val is None:
+            if "mass" in kl and "delta" not in kl and mass_val is None:
                 mass_val = val
             elif ("l_uv" in kl or "luv" in kl) and luv_val is None:
                 luv_val = val
             elif "beta" in kl and beta_val is None:
                 beta_val = val
+            # Extra columns for color_by
+            if "metal" in kl:
+                _extra["metallicity"] = val
+            elif "ebv" in kl:
+                _extra["ebv"] = val
+            elif "sigma" in kl and "sfr" in kl:
+                _extra["log_sigma_sfr"] = val
+            elif "ssfr" in kl:
+                _extra["log_ssfr"] = val
+            elif "delta" in kl:
+                _extra["log_delta_ms"] = val
 
         # Fallback to bin centers
         bins = _parse_bins(pop_id)
@@ -2232,6 +2264,7 @@ def create_tdust_dtg_plot(
             "beta_uv": beta_val if beta_val is not None else np.nan,
             "n_sources": sed.n_sources,
             "tier": tier,
+            **{k: v for k, v in _extra.items()},
         })
 
     if not rows:
@@ -2239,26 +2272,47 @@ def create_tdust_dtg_plot(
         return None, None
 
     df = pd.DataFrame(rows)
-    print(f"T_dust-DTG plot: {len(df)} populations (tier >= {min_tier})")
+    print(f"T_dust-DTG plot: {len(df)} populations (tier ≥ {min_tier})")
     print(f"  T_dust: {df['T_rest'].min():.0f} – {df['T_rest'].max():.0f} K")
     print(f"  log(DTG): {df['log_dtg'].min():.2f} – {df['log_dtg'].max():.2f}")
-    print(f"  M_dust: {df['m_dust'].min():.1e} – {df['m_dust'].max():.1e} M☉")
-    print(f"  M_gas (Tacconi): {df['m_gas'].min():.1e} – {df['m_gas'].max():.1e} M☉")
+    print(f"  M_dust: {df['m_dust'].min():.1e} – {df['m_dust'].max():.1e} M_sun")
+    print(f"  M_gas (Tacconi): {df['m_gas'].min():.1e} – {df['m_gas'].max():.1e} M_sun")
 
     # ── color setup ──────────────────────────────────────────────────
     color_configs = {
-        "redshift":     ("redshift",     "Redshift",          "plasma"),
-        "stellar_mass": ("stellar_mass", "log₁₀(M*/M☉)",     "viridis"),
-        "l_ir":         ("l_ir",         "log₁₀(L_IR/L☉)",   "plasma"),
+        "redshift":      ("redshift",      "Redshift",               "plasma"),
+        "stellar_mass":  ("stellar_mass",  "log10(M*/M_sun)",        "viridis"),
+        "l_ir":          ("l_ir",          "log10(L_IR/L_sun)",      "plasma"),
+        "metallicity":   ("metallicity",   "Metallicity (Z)",        "viridis"),
+        "ebv":           ("ebv",           "E(B-V)",                 "YlOrRd"),
+        "log_sigma_sfr": ("log_sigma_sfr", "log Sigma_SFR",         "inferno"),
+        "sigma_sfr":     ("log_sigma_sfr", "log Sigma_SFR",         "inferno"),
+        "log_ssfr":      ("log_ssfr",      "log sSFR (yr^-1)",      "RdYlBu_r"),
+        "ssfr":          ("log_ssfr",      "log sSFR (yr^-1)",      "RdYlBu_r"),
+        "log_delta_ms":  ("log_delta_ms",  "log delta_MS",          "RdBu_r"),
+        "delta_ms":      ("log_delta_ms",  "log delta_MS",          "RdBu_r"),
+        "beta_uv":       ("beta_uv",       "beta_UV",               "coolwarm"),
     }
 
     if color_by in color_configs:
         col_name, color_label, cmap_name = color_configs[color_by]
         if col_name == "l_ir":
             color_data = np.log10(df[col_name].replace(0, np.nan)).values
-        else:
+        elif col_name in df.columns:
             color_data = df[col_name].values.astype(float)
+        else:
+            print(f"  color_by='{color_by}' maps to '{col_name}' "
+                  f"which is not in data. Need it in bin_property_columns.")
+            print(f"  Available: {[c for c in df.columns if not c.startswith('_')]}")
+            color_data = df["redshift"].values.astype(float)
+            color_label = "Redshift"
+            cmap_name = "plasma"
+    elif color_by in df.columns:
+        color_data = df[color_by].values.astype(float)
+        color_label = color_by
+        cmap_name = "viridis"
     else:
+        print(f"  color_by='{color_by}' not found, falling back to redshift")
         color_data = df["redshift"].values.astype(float)
         color_label = "Redshift"
         cmap_name = "plasma"
@@ -2266,11 +2320,27 @@ def create_tdust_dtg_plot(
     valid_color = np.isfinite(color_data)
 
     # Discrete boundaries
-    if color_by == "redshift":
-        boundaries = np.array([0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0])
-    elif color_by == "stellar_mass":
-        boundaries = np.array([8.5, 9.5, 10.0, 10.3, 10.6, 11.0, 12.0])
+    _boundary_defaults = {
+        "redshift":      np.array([0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0]),
+        "stellar_mass":  np.array([8.5, 9.5, 10.0, 10.3, 10.6, 11.0, 12.0]),
+        "metallicity":   np.array([0.002, 0.005, 0.01, 0.02, 0.04]),
+        "ebv":           np.array([0.0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8]),
+        "log_sigma_sfr": np.array([-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0]),
+        "log_ssfr":      np.array([-11.0, -10.0, -9.5, -9.0, -8.5, -8.0]),
+        "log_delta_ms":  np.array([-1.0, -0.3, 0.0, 0.3, 0.6, 1.0]),
+        "beta_uv":       np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.5]),
+    }
+
+    if color_by in _boundary_defaults:
+        boundaries = _boundary_defaults[color_by]
+    elif color_by in ("sigma_sfr", "ssfr", "delta_ms"):
+        # Aliases
+        alias_map = {"sigma_sfr": "log_sigma_sfr", "ssfr": "log_ssfr", "delta_ms": "log_delta_ms"}
+        boundaries = _boundary_defaults.get(alias_map[color_by], None)
     else:
+        boundaries = None
+
+    if boundaries is None:
         boundaries = np.arange(
             np.floor(np.nanmin(color_data[valid_color])),
             np.ceil(np.nanmax(color_data[valid_color])) + 0.5, 0.5,
@@ -2322,11 +2392,11 @@ def create_tdust_dtg_plot(
         cbar.ax.axhline(b, color="white", linewidth=0.8)
 
     # ── Radiative equilibrium model (Parente+2026, Sommovigo+2022) ─────
-    # T_dust^(4+β) ∝ Σ_SFR^0.286 / DTG  (KS law + greybody equilibrium)
-    # Calibrated: T=25K at DTG=0.01, Σ_SFR=0.01 M☉/yr/kpc²
+    # T_dust^(4+beta) ~ Sigma_SFR^0.286 / DTG  (KS law + greybody equilibrium)
+    # Calibrated: T=25K at DTG=0.01, Sigma_SFR=0.01 M☉/yr/kpc²
     if show_parente:
         _beta_emis = 1.8
-        _exp = 1.0 / (4 + _beta_emis)  # ≈ 0.172
+        _exp = 1.0 / (4 + _beta_emis)  # ~ 0.172
         _C_cal = 25.0 / (0.01 ** 0.286 / 0.01) ** _exp  # calibration constant
 
         log_dtg_grid = np.linspace(
@@ -2336,7 +2406,7 @@ def create_tdust_dtg_plot(
         )
         dtg_grid = 10 ** log_dtg_grid
 
-        # Lines of constant Σ_SFR
+        # Lines of constant Sigma_SFR
         sigma_sfr_values = [0.1, 1.0, 10.0, 100.0, 1000.0]
         sigma_sfr_labels = [
             "Σ=0.1  (MS at z~0)",
@@ -2371,7 +2441,7 @@ def create_tdust_dtg_plot(
         )
 
     # ── formatting ───────────────────────────────────────────────────
-    ax.set_xlabel("log₁₀(DTG)  [M_dust / M_gas(Tacconi+20)]", fontsize=14)
+    ax.set_xlabel("log10(DTG)  [M_dust / M_gas(Tacconi+20)]", fontsize=14)
     ax.set_ylabel("Rest-frame Dust Temperature (K)", fontsize=14)
     ax.tick_params(axis="both", which="major", labelsize=12)
     ax.grid(True, alpha=0.2)
@@ -2642,7 +2712,7 @@ def create_sfr_comparison_plot(
     Compare stacked SFR (from L_IR) vs catalog SFR (from SED fitting).
 
     The stacked SFR comes from the greybody L_IR via Kennicutt+98:
-        SFR_stacked = 1e-10 × L_IR
+        SFR_stacked = 1e-10 x L_IR
 
     The catalog SFR is the median LePhare/CIGALE SFR within each
     population bin (from bin_property_columns).
@@ -2655,7 +2725,7 @@ def create_sfr_comparison_plot(
         Matches any key containing this string (case-insensitive).
         Default 'sfr' matches 'sfr_med', 'log_sfr', etc.
     catalog_sfr_is_log : bool
-        Whether the catalog SFR in bin_properties is log₁₀(SFR).
+        Whether the catalog SFR in bin_properties is log10(SFR).
     color_by : str
         'redshift', 'stellar_mass', 'beta_uv'.
     min_tier : str
@@ -2773,13 +2843,13 @@ def create_sfr_comparison_plot(
         return None, None
 
     df = pd.DataFrame(rows)
-    print(f"SFR comparison: {len(df)} populations (tier >= {min_tier})")
+    print(f"SFR comparison: {len(df)} populations (tier ≥ {min_tier})")
 
     # ── color setup ──────────────────────────────────────────────────
     color_configs = {
         "redshift":     ("redshift",     "Redshift",          "plasma",
                          np.array([0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0])),
-        "stellar_mass": ("stellar_mass", "log₁₀(M*/M☉)",     "viridis",
+        "stellar_mass": ("stellar_mass", "log10(M*/M_sun)",     "viridis",
                          np.array([8.5, 9.5, 10.0, 10.3, 10.6, 11.0, 12.0])),
         "beta_uv":      ("beta_uv",      "β_UV",             "coolwarm",
                          np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.5])),
@@ -2825,7 +2895,7 @@ def create_sfr_comparison_plot(
         max(df["sfr_catalog"].max(), df["sfr_stacked"].max()) * 3,
     ]
     ax.plot(lims, lims, "k--", lw=1.5, alpha=0.5, label="1:1")
-    ax.plot(lims, [l * 3 for l in lims], ":", color="gray", lw=1, alpha=0.4, label="3×")
+    ax.plot(lims, [l * 3 for l in lims], ":", color="gray", lw=1, alpha=0.4, label="3x")
     ax.plot(lims, [l / 3 for l in lims], ":", color="gray", lw=1, alpha=0.4)
 
     # Statistics
@@ -2853,8 +2923,8 @@ def create_sfr_comparison_plot(
     for b in boundaries[1:-1]:
         cbar.ax.axhline(b, color="white", linewidth=0.8)
 
-    ax.set_xlabel("SFR_catalog (LePhare)  [M☉/yr]", fontsize=14)
-    ax.set_ylabel("SFR_stacked (L_IR × 1e-10)  [M☉/yr]", fontsize=14)
+    ax.set_xlabel("SFR_catalog (LePhare)  [M_sun/yr]", fontsize=14)
+    ax.set_ylabel("SFR_stacked (L_IR x 1e-10)  [M_sun/yr]", fontsize=14)
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlim(lims)
