@@ -259,8 +259,9 @@ class CovarianceGreybodyFitter(Greybody):
 
         try:
             # Calculate model fluxes
+            #print('using PAH')
             model_fluxes = self.greybody_model(
-                wavelengths, amplitude, temperature, self.beta_fixed
+                wavelengths, amplitude, temperature, self.beta_fixed,
             )
 
             if not np.all(np.isfinite(model_fluxes)):

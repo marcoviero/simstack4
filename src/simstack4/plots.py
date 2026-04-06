@@ -239,7 +239,9 @@ def _solve_amplitude_at_T(greybody_fitter, wave_rest, fluxes, errors,
 
     Returns (log10_A, success_bool).
     """
-    template = greybody_fitter.greybody_model(wave_rest, 0.0, T_rest, beta)
+    template = greybody_fitter.greybody_model(
+        wave_rest, 0.0, T_rest, beta,
+    )
     w = 1.0 / errors**2
     denom = np.sum(template**2 * w)
     if denom <= 0:
@@ -248,6 +250,14 @@ def _solve_amplitude_at_T(greybody_fitter, wave_rest, fluxes, errors,
     if x_opt > 0:
         return np.log10(x_opt), True
     return -35.0, False
+
+
+def _set_pah_state(fitter, z, log_stellar_mass):
+    """Set PAH state on fitter for the current population."""
+    if hasattr(fitter, '_pah_z'):
+        fitter._pah_z = z
+    if hasattr(fitter, '_pah_log_stellar_mass'):
+        fitter._pah_log_stellar_mass = log_stellar_mass
 
 
 # ---------------------------------------------------------------------------
@@ -539,6 +549,7 @@ def plot_sed_grid(
                         beta = sed.emissivity_index or 1.8
                         try:
                             lam_rest = lam_obs_model / (1.0 + z)
+                            _set_pah_state(pr.greybody_fitter, z, sed.median_mass)
                             model_flux = (
                                 pr.greybody_fitter.greybody_model(
                                     lam_rest, sed.amplitude,
@@ -590,6 +601,7 @@ def plot_sed_grid(
 
                                 if ok:
                                     lam_rest = lam_obs_model / (1.0 + z)
+                                    _set_pah_state(pr.greybody_fitter, z, sed.median_mass)
                                     prior_flux = (
                                         pr.greybody_fitter.greybody_model(
                                             lam_rest, A_prior,
@@ -841,6 +853,7 @@ def _plot_sed_simple(
                 beta = sed.emissivity_index or 1.8
                 try:
                     lam_rest = lam_obs_model / (1.0 + z)
+                    _set_pah_state(pr.greybody_fitter, z, sed.median_mass)
                     mf = pr.greybody_fitter.greybody_model(
                         lam_rest, sed.amplitude,
                         sed.dust_temperature_rest_frame, beta,
@@ -878,6 +891,7 @@ def _plot_sed_simple(
                         )
                         if ok:
                             lam_rest = lam_obs_model / (1.0 + z)
+                            _set_pah_state(pr.greybody_fitter, z, sed.median_mass)
                             pf = pr.greybody_fitter.greybody_model(
                                 lam_rest, A_prior, T_prior, beta,
                             ) * flux_scale

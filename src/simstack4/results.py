@@ -8,6 +8,7 @@ Classes
 -------
 SimstackResults : Main results processor and orchestrator.
 """
+import pdb
 import pickle
 from pathlib import Path
 from typing import Any
@@ -98,6 +99,8 @@ class SimstackResults:
         beta_max: float = 2.5,
         snr_high: float = 5.0,
         snr_low: float = 2.0,
+        use_pah: bool = True,
+        wien_mode: str = "physical",
     ):
         """
         Initialize results processor
@@ -184,6 +187,9 @@ class SimstackResults:
         self.regression_degree = regression_degree
         self.regression_property_names = regression_property_names  # None = auto-detect
         self.regression_min_sources = regression_min_sources
+
+        self.use_pah = use_pah
+        #self.wien_mode = wien_mode
 
         # Process results
         self._process_results()
@@ -291,6 +297,12 @@ class SimstackResults:
         bootstrap_cov_fit = None
         if bootstrap_cov is not None:
             bootstrap_cov_fit = bootstrap_cov[np.ix_(fit_mask, fit_mask)]
+
+        # Set PAH state for this population (z and M* from catalog)
+        self.greybody_fitter._pah_z = z_median
+        self.greybody_fitter._pah_log_stellar_mass = pop_bin.median_stellar_mass
+        self.greybody_fitter.use_pah = self.use_pah  # ← uncomment when ready
+        #self.greybody_fitter.wien_mode = self.wien_mode
 
         # Fit greybody model
         if isinstance(self.greybody_fitter, CovarianceGreybodyFitter):

@@ -10,6 +10,7 @@ Greybody : Core greybody model and fitter.
 SEDResults : Dataclass for per-population SED fit results.
 DerivedQuantities : Dataclass for derived physical quantities.
 """
+import pdb
 from dataclasses import dataclass
 from typing import Any
 
@@ -157,6 +158,11 @@ class Greybody:
         self.mcmc_iterations = mcmc_iterations
         self.mcmc_burn_in = mcmc_burn_in
         self.temperature_prior = temperature_prior.lower() if isinstance(temperature_prior, str) else "flat"
+
+        # PAH model state (set per-population before fitting)
+        self.use_pah = False
+        self._pah_z = None
+        self._pah_log_stellar_mass = None
 
         # Configurable bounds
         self.T_rest_min = T_rest_min
@@ -985,15 +991,140 @@ class Greybody:
         finally:
             self._prior_override = None
 
+
+    def _pah_flux(self, wavelength_um, amplitude, z, log_stellar_mass, temperature=30.0):
+        """
+        PAH + warm dust emission for the Wien side of the SED.
+
+        Empirical model calibrated from COSMOS broadband stacking:
+            log10(L_PAH/L_IR) = a*log_M* + b*z + c*PAH_strength + d
+
+        Uses stellar mass (known from optical/NIR SED) instead of L_IR
+        to avoid circularity when used during greybody fitting.
+
+        Parameters
+        ----------
+        wavelength_um : array
+            Rest-frame wavelengths (microns).
+        amplitude : float
+            log10 greybody amplitude (same as in greybody_model).
+        z : float
+            Redshift.
+        log_stellar_mass : float
+            log10(M* / M_sun) — from catalog, no FIR dependence.
+        temperature : float
+            Dust temperature (K), used to scale PAH relative to greybody.
+
+        Returns
+        -------
+        flux : array
+            PAH + warm dust flux density (same units as greybody).
+        """
+        # ── Hardcoded from COSMOS stacking fit ────────────────────────
+        # log10(f24/fpeak) = a*logM* + b*z + c*PAH_strength + d
+        # Fit directly to the observable flux ratio — no conversion needed.
+        _pah_coeffs = np.array([0.017, -0.206, 0.066, -1.577])
+        # PAH feature template (center_um, relative_amplitude, fwhm_um)
+        _pah_features = [
+            (6.2, 0.1951, 0.19),  # C-C stretch
+            (7.7, 1.17, 0.70),  # C-C stretch (strongest)
+            (8.6, 1.045, 0.34),  # C-H in-plane bend
+            (11.3, 0.01, 0.24),  # C-H out-of-plane bend
+            (12.7, 0.7460, 0.45),  # C-H out-of-plane bend
+        ]
+        """
+          6.2 C-C         6.20um  0.19um     0.1262  0.21   13.2%
+          7.7 C-C         7.70um  0.70um     0.4577  0.75   47.8%
+          8.6 C-H         8.60um  0.34um     0.6089  1.00   63.6%
+          11.3 C-H       11.30um  0.24um     0.0000  0.00    0.0%
+          12.7 C-H       12.70um  0.45um     0.5187  0.85   54.1%
+        """
+        # PAH feature template (center_um, relative_amplitude, fwhm_um)
+        _pah_features = [
+            (6.2, 0.1262, 0.19),  # C-C stretch
+            (7.7, 0.4577, 0.70),  # C-C stretch (strongest)
+            (8.6, 0.6089, 0.34),  # C-H in-plane bend
+            (11.3, 0.000, 0.24),  # C-H out-of-plane bend
+            (12.7, 0.5187, 0.45),  # C-H out-of-plane bend
+        ]
+
+        _T_warm = 60.0  # warm dust temperature (K)
+        _warm_frac = 0.3  # fraction of mid-IR in warm continuum vs features
+        # ──────────────────────────────────────────────────────────────
+
+        A = 10 ** amplitude
+
+        # PAH template strength in MIPS 24um band (for empirical model)
+        try:
+            from scipy.special import erf
+            pah_strength = 0.0
+            for lam_c, rel_s, fwhm in _pah_features[:5]:
+                lam_obs = lam_c * (1 + z)
+                sigma_obs = fwhm * (1 + z) / 2.355
+                frac = 0.5 * (erf((30.0 - lam_obs) / (sigma_obs * 1.4142))
+                              - erf((20.5 - lam_obs) / (sigma_obs * 1.4142)))
+                pah_strength += rel_s * max(frac, 0)
+        except ImportError:
+            pah_strength = 0.5
+
+        # Predicted f_24 / f_FIR_peak (direct observable, no conversion)
+        a, b, c, d = _pah_coeffs
+        log_ratio = a * log_stellar_mass + b * z + c * pah_strength + d
+        peak_flux_ratio = 10 ** log_ratio
+
+        # PAH feature spectrum (rest frame)
+        pah_spec = np.zeros_like(wavelength_um, dtype=float)
+        for lam_c, rel_amp, fwhm in _pah_features:
+            sigma = fwhm / 2.355
+            pah_spec += rel_amp * np.exp(-0.5 * ((wavelength_um - lam_c) / sigma) ** 2)
+
+        # Warm dust continuum (T=60K modified blackbody, beta=1.5)
+        h, k_B, c_cgs = 6.626e-27, 1.381e-16, 2.998e10
+        nu = c_cgs / (wavelength_um * 1e-4)
+        x = h * nu / (k_B * _T_warm)
+        x = np.minimum(x, 500)
+        warm_bb = nu ** 1.5 * 2 * h * nu ** 3 / c_cgs ** 2 / (np.exp(x) - 1)
+        if warm_bb.max() > 0 and pah_spec.max() > 0:
+            warm_bb *= pah_spec.sum() / warm_bb.sum() * _warm_frac / (1 - _warm_frac)
+
+        # Combined template
+        template = pah_spec #+ warm_bb
+        if template.max() <= 0:
+            return np.zeros_like(wavelength_um)
+
+        # Scale: PAH peak = peak_flux_ratio × greybody peak
+        # peak_flux_ratio is directly f24/fpeak from the empirical fit.
+        nu_scale = self.c * 1e6 / wavelength_um
+        gb_flux = A * nu_scale ** 1.8 * self.black(nu_scale, temperature)[0] / 1000.0
+        gb_peak = np.max(gb_flux)
+        if gb_peak <= 0:
+            return np.zeros_like(wavelength_um)
+
+        template_peak = template.max()
+        if template_peak <= 0:
+            return np.zeros_like(wavelength_um)
+
+        scale = peak_flux_ratio * gb_peak / template_peak
+        flux = scale * template
+
+        # Diagnostic (enable with fitter._pah_debug = True)
+        if hasattr(self, '_pah_debug') and self._pah_debug:
+            print(f"  _pah_flux: z={z:.2f}, logM*={log_stellar_mass:.1f}, T={temperature:.0f}K")
+            print(f"    f24/fpeak (predicted) = {peak_flux_ratio:.4f}")
+            print(f"    GB peak = {gb_peak:.2e}, PAH peak = {flux.max():.2e}")
+            print(f"    PAH peak / GB peak = {flux.max() / gb_peak:.4f}")
+
+        return flux
+
     def greybody_model(
-        self, wavelength_um, amplitude, temperature, beta=1.8, alpha=2.0
+            self, wavelength_um, amplitude, temperature, beta=1.8, alpha=2.0,
     ):
         """
-        Modified blackbody (greybody) model with Wien-side power-law extension.
+        Modified blackbody (greybody) model with Wien-side extension.
 
-        At long wavelengths: ν^β × B_ν(T) (modified blackbody).
-        At short wavelengths (ν > ν_cut): ν^(-α) power law, matched
-        continuously at ν_cut = (3 + β + α) × k_B T / h.
+        At long wavelengths: nu^beta * B_nu(T) (modified blackbody).
+        At short wavelengths (nu > nu_cut): nu^(-alpha) power law.
+        If use_pah=True: adds PAH features on top (requires z, log_stellar_mass).
 
         Parameters
         ----------
@@ -1009,38 +1140,46 @@ class Greybody:
             Wien-side power-law slope.
         """
         nu_in = self.c * 1.0e6 / wavelength_um  # Hz
-        A = 10**amplitude
+        A = 10 ** amplitude
 
         # Transition frequency: Wien peak of modified blackbody
         nu_cut = (3.0 + beta + alpha) * self.k_B / self.h * temperature
 
-        # Power-law normalization: matched to greybody at ν_cut
-        # Constants use h in units of 1e-34 J·s, k_B in 1e-23 J/K, c in 1e8 m/s
-        # to avoid overflow in intermediate products.
+        # Modified blackbody (Rayleigh-Jeans side)
+        graybody = A * nu_in ** beta * self.black(nu_in, temperature)[0] / 1000.0
+
+        # Wien side
+        ind_cut = nu_in >= nu_cut
+
+        # Original power-law Wien extension
         base = (
-            2.0
-            * (6.626) ** (-2.0 - beta - alpha)
-            * (1.38) ** (3.0 + beta + alpha)
-            / (2.99792458) ** 2.0
+                2.0
+                * (6.626) ** (-2.0 - beta - alpha)
+                * (1.38) ** (3.0 + beta + alpha)
+                / (2.99792458) ** 2.0
         )
         expo = 34.0 * (2.0 + beta + alpha) - 23.0 * (3.0 + beta + alpha) - 16.0 + 26.0
-        K = base * 10.0**expo
+        K = base * 10.0 ** expo
         w_num = A * K * (temperature * (3.0 + beta + alpha)) ** (3.0 + beta + alpha)
         w_den = np.exp(3.0 + beta + alpha) - 1.0
         w_div = w_num / w_den
-
-        # Modified blackbody (Rayleigh-Jeans side)
-        graybody = A * nu_in**beta * self.black(nu_in, temperature)[0] / 1000.0
-
-        # Power law (Wien side)
         powerlaw = w_div * nu_in ** (-alpha)
 
-        # Apply transition
         flux_density = graybody.copy()
-        ind_cut = nu_in >= nu_cut
         flux_density[ind_cut] = powerlaw[ind_cut]
 
+        if (self.use_pah
+                and self._pah_z is not None
+                and self._pah_log_stellar_mass is not None):
+            pah_flux = self._pah_flux(
+                wavelength_um, amplitude,
+                self._pah_z, self._pah_log_stellar_mass, temperature,
+            )
+            flux_density = flux_density + pah_flux
+            #import pdb; pdb.set_trace()
+
         return flux_density
+
 
     def black(self, nu_in, T):
         """
