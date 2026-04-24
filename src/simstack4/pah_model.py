@@ -31,11 +31,11 @@ _trapz = getattr(np, "trapezoid", None) or getattr(np, "trapz")
 # PAH feature parameters (rest-frame)
 # (center_um, relative_strength, fwhm_um)
 PAH_FEATURES = [
-    (6.2,  0.40, 0.19),   # C-C stretch
-    (7.7,  1.00, 0.70),   # C-C stretch (strongest)
-    (8.6,  0.30, 0.34),   # C-H in-plane bend
-    (11.3, 0.60, 0.24),   # C-H out-of-plane bend
-    (12.7, 0.30, 0.45),   # C-H out-of-plane bend
+    (6.2,  0.1262, 0.19),   # C-C stretch
+    (7.7,  0.4577, 0.70),   # C-C stretch (strongest)
+    (8.6,  0.6089, 0.34),   # C-H in-plane bend
+    (11.3, 0.0000, 0.24),   # C-H out-of-plane bend (not detected)
+    (12.7, 0.5187, 0.45),   # C-H out-of-plane bend
 ]
 
 # Minor features (optional, for high-resolution work)
@@ -290,52 +290,32 @@ class PAHModel:
         """
         Fit PAH feature parameters to a reconstructed spectrum.
 
-        Uses the output of reconstruct_pah_spectrum: rest-frame wavelengths
-        and L_24/L_IR (or f_24/f_peak) values that trace the PAH complex.
-
         Each PAH feature is a Gaussian:
             G_i(λ) = A_i × exp(-0.5 × ((λ - λ_i) / σ_i)²)
-
-        Plus a smooth power-law continuum:
-            C(λ) = C_0 × (λ / 10μm)^γ
 
         Parameters
         ----------
         rest_wavelengths : array
             Rest-frame wavelengths (μm) from tomographic stacking.
         flux_values : array
-            Measured flux ratios (e.g., L_24/L_IR) at each wavelength.
+            Measured flux ratios (e.g., L_24/L_IR).
         flux_errors : array, optional
-            Uncertainties on flux_values. If None, uses uniform weights.
         weights : array, optional
-            Fitting weights (e.g., sqrt(n_sources)). Overrides flux_errors.
+            Fitting weights (e.g., sqrt(n_sources)).
         redshifts : array, optional
-            Redshift of each point. Required if detrend=True.
         log_l_ir_values : array, optional
-            log10(L_IR) of each point. Used for detrending if provided.
+            log10(L_IR) per point. Used for detrending.
         fix_centers : bool
-            Fix feature centers to lab wavelengths (recommended).
+            Fix feature centers to lab wavelengths.
         fix_widths : bool
-            Fix widths to literature values. If False, widths are free.
+            Fix intrinsic widths to literature values.
         detrend : bool
-            If True, remove the smooth z/L_IR trend before fitting
-            PAH features. This separates the PAH bumps from the
-            population-evolution signal. Requires redshifts.
+            Remove smooth z/L_IR trend before fitting features.
         verbose : bool
 
         Returns
         -------
-        result : dict with keys:
-            'amplitudes': fitted amplitude per feature
-            'widths': fitted FWHM per feature (μm)
-            'centers': feature centers (μm)
-            'continuum': (C_0, gamma) power-law continuum params
-            'model_spectrum': fitted model evaluated at input wavelengths
-            'residuals': data - model
-            'chi2_red': reduced chi-squared
-            'feature_names': list of feature names
-            'smooth_trend': the removed trend (if detrend=True)
-            'detrended_flux': flux after trend removal
+        result : dict
         """
         from scipy.optimize import least_squares
 
@@ -365,11 +345,11 @@ class PAHModel:
         # ── Detrending ───────────────────────────────────────────────
         smooth_trend = np.ones_like(flux)
         if detrend and z_arr is not None:
-            # Fit smooth trend: log(flux) = a*z + b*log(LIR) + c
-            # or just log(flux) = a*z + c if no LIR
             X_trend = [z_arr, np.ones_like(z_arr)]
             if log_l_ir_values is not None:
-                lir = np.asarray(log_l_ir_values, dtype=float)[valid[:len(log_l_ir_values)] if len(valid) > len(log_l_ir_values) else valid]
+                lir = np.asarray(log_l_ir_values, dtype=float)
+                if len(lir) > np.sum(valid):
+                    lir = lir[valid]
                 if len(lir) == len(z_arr) and np.isfinite(lir).all():
                     X_trend.insert(1, lir)
 
@@ -387,116 +367,80 @@ class PAHModel:
                     labels.append("const")
                     terms = " + ".join(f"{c:.3f}*{l}" for c, l in zip(c_trend, labels))
                     print(f"  Detrending: log(flux) = {terms}")
-                    print(f"  Trend range: {smooth_trend.min():.4f} to {smooth_trend.max():.4f}")
             except Exception:
                 if verbose:
                     print("  Detrending failed, using raw flux")
-                smooth_trend = np.ones_like(flux)
 
-        # Detrended flux: normalized so mean ~ 1
         flux_dt = flux / smooth_trend
         if verbose and detrend:
             print(f"  Detrended flux range: {flux_dt.min():.3f} to {flux_dt.max():.3f}")
-            print(f"  Mean: {flux_dt.mean():.3f}")
 
         n_feat = len(self.features)
         feature_names = []
         _all_names = ["6.2 C-C", "7.7 C-C", "8.6 C-H", "11.3 C-H", "12.7 C-H",
                        "3.3 C-H", "5.25", "5.7", "16.4 C-H", "17.0 C-C"]
-        for i, (lam_c, _, _) in enumerate(self.features):
+        for i in range(n_feat):
             feature_names.append(_all_names[i] if i < len(_all_names) else f"F{i}")
 
-        # ── Build parameter vector ───────────────────────────────────
-        p0 = []
-        bounds_lo = []
-        bounds_hi = []
-
-        # Feature amplitudes (linear scale on detrended flux)
+        # ── Parameter vector ─────────────────────────────────────────
+        p0, bounds_lo, bounds_hi = [], [], []
         med_dt = np.median(flux_dt)
+
         for lam_c, rel_strength, fwhm in self.features:
-            # Initial guess: bump height ~ 20% of median × relative strength
-            p0.append(med_dt * 0.2 * rel_strength)
-            bounds_lo.append(0)         # amplitudes must be positive
+            p0.append(med_dt * 0.2 * max(rel_strength, 0.01))
+            bounds_lo.append(0)
             bounds_hi.append(med_dt * 5)
 
-        # Feature widths (if free)
         if not fix_widths:
             for lam_c, rel_strength, fwhm in self.features:
                 sigma = fwhm / 2.355
                 p0.append(sigma)
-                bounds_lo.append(0.05)
+                bounds_lo.append(max(min_s, 0.05))
                 bounds_hi.append(1.5)
 
-        # Continuum: C_0 (flat baseline in detrended space)
         p0.append(med_dt * 0.8)
         bounds_lo.append(0)
         bounds_hi.append(med_dt * 5)
-
         p0 = np.array(p0)
 
         def _model(params):
             idx = 0
-            amps = params[idx:idx + n_feat]
-            idx += n_feat
-
+            amps = params[idx:idx + n_feat]; idx += n_feat
             if fix_widths:
-                sigmas = np.array([fw / 2.355 for _, _, fw in self.features])
+                sigmas_int = np.array([fw / 2.355 for _, _, fw in self.features])
             else:
-                sigmas = params[idx:idx + n_feat]
-                idx += n_feat
-
-            if fix_centers:
-                centers = np.array([lc for lc, _, _ in self.features])
-            else:
-                centers = params[idx:idx + n_feat]
-                idx += n_feat
-
+                sigmas_int = params[idx:idx + n_feat]; idx += n_feat
+            centers = np.array([lc for lc, _, _ in self.features])
             C0 = params[idx]
 
             model = np.full_like(lam, C0)
-            for A, sigma, center in zip(amps, sigmas, centers):
+            for A, sigma, center in zip(amps, sigmas_int, centers):
                 model += A * np.exp(-0.5 * ((lam - center) / sigma) ** 2)
-
             return model
 
         def _residuals(params):
-            model = _model(params)
-            return w * (flux_dt - model)
+            return w * (flux_dt - _model(params))
 
-        result = least_squares(
-            _residuals, p0,
-            bounds=(bounds_lo, bounds_hi),
-            method="trf",
-            max_nfev=10000,
-        )
+        result = least_squares(_residuals, p0, bounds=(bounds_lo, bounds_hi),
+                               method="trf", max_nfev=10000)
 
         # ── Extract results ──────────────────────────────────────────
         idx = 0
-        amplitudes = result.x[idx:idx + n_feat]
-        idx += n_feat
-
+        amplitudes = result.x[idx:idx + n_feat]; idx += n_feat
         if fix_widths:
             widths_sigma = np.array([fw / 2.355 for _, _, fw in self.features])
         else:
-            widths_sigma = result.x[idx:idx + n_feat]
-            idx += n_feat
-
-        if fix_centers:
-            centers = np.array([lc for lc, _, _ in self.features])
-        else:
-            centers = result.x[idx:idx + n_feat]
-            idx += n_feat
-
+            widths_sigma = result.x[idx:idx + n_feat]; idx += n_feat
+        centers = np.array([lc for lc, _, _ in self.features])
         C0 = result.x[idx]
         widths_fwhm = widths_sigma * 2.355
 
         model_dt = _model(result.x)
-        model_spectrum = model_dt * smooth_trend  # back to original units
+        model_spectrum = model_dt * smooth_trend
         residuals = flux - model_spectrum
         n_params = len(result.x)
         chi2_red = np.sum(_residuals(result.x)**2) / max(len(lam) - n_params, 1)
 
-        # Update self.features with fitted values
         amp_max = amplitudes.max() if amplitudes.max() > 0 else 1
         self.features = [
             (c, float(a / amp_max), fw)
@@ -506,47 +450,36 @@ class PAHModel:
         self._fitted_continuum_level = C0
 
         fit_result = {
-            "amplitudes": amplitudes,
-            "widths_fwhm": widths_fwhm,
-            "centers": centers,
-            "continuum_level": C0,
-            "model_spectrum": model_spectrum,
-            "model_detrended": model_dt,
-            "residuals": residuals,
-            "chi2_red": chi2_red,
+            "amplitudes": amplitudes, "widths_fwhm": widths_fwhm,
+            "centers": centers, "continuum_level": C0,
+            "model_spectrum": model_spectrum, "model_detrended": model_dt,
+            "residuals": residuals, "chi2_red": chi2_red,
             "feature_names": feature_names[:n_feat],
-            "wavelengths": lam,
-            "data": flux,
-            "detrended_flux": flux_dt,
-            "smooth_trend": smooth_trend,
-            "success": result.success,
+            "wavelengths": lam, "data": flux,
+            "detrended_flux": flux_dt, "smooth_trend": smooth_trend,
         }
 
         if verbose:
             print(f"\nPAH spectrum fit ({'fixed' if fix_centers else 'free'} centers, "
                   f"{'fixed' if fix_widths else 'free'} widths, "
                   f"{'detrended' if detrend else 'raw'}):")
-            print(f"  chi2_red = {chi2_red:.3f}  "
-                  f"(N_data={len(lam)}, N_params={n_params})")
-            print(f"  Baseline level: {C0:.4f}")
+            print(f"  chi2_red = {chi2_red:.3f}  (N={len(lam)}, params={n_params})")
+            print(f"  Baseline: {C0:.4f}")
             print(f"\n  {'Feature':<12} {'Center':>7} {'FWHM':>6} "
-                  f"{'Amplitude':>10} {'Rel':>5} {'Bump %':>7}")
+                  f"{'Amp':>10} {'Rel':>5} {'Bump%':>6}")
             print(f"  {'-'*52}")
             for i in range(n_feat):
-                name = feature_names[i]
                 rel = amplitudes[i] / amp_max
-                bump_pct = amplitudes[i] / C0 * 100 if C0 > 0 else 0
-                print(f"  {name:<12} {centers[i]:7.2f}um "
-                      f"{widths_fwhm[i]:5.2f}um "
-                      f"{amplitudes[i]:10.4f} {rel:5.2f} {bump_pct:6.1f}%")
+                bump = amplitudes[i] / C0 * 100 if C0 > 0 else 0
+                print(f"  {feature_names[i]:<12} {centers[i]:7.2f}μm "
+                      f"{widths_fwhm[i]:5.2f}  "
+                      f"{amplitudes[i]:10.4f} {rel:5.2f} {bump:5.1f}%")
 
         return fit_result
 
     def plot_fit(self, fit_result, ax=None, show_components=True):
         """
-        Plot the fitted PAH spectrum with components.
-
-        Shows two panels: raw data + model (left), detrended + fit (right).
+        Plot a single PAH fit: raw + model (left), detrended + features (right).
         """
         import matplotlib.pyplot as plt
 
@@ -565,7 +498,6 @@ class PAHModel:
         data = fit_result["data"]
         model = fit_result["model_spectrum"]
 
-        # Panel 1: Raw data + full model
         ax = axes[0]
         ax.scatter(lam, data, c="k", s=15, zorder=5, alpha=0.5, label="Data")
         ax.plot(lam, model, "r-", lw=2, label="PAH + trend", zorder=4)
@@ -578,47 +510,829 @@ class PAHModel:
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.2)
 
-        # Panel 2: Detrended data + PAH features
         if has_detrend and len(axes) > 1:
             ax = axes[1]
             flux_dt = fit_result["detrended_flux"]
             model_dt = fit_result["model_detrended"]
 
-            ax.scatter(lam, flux_dt, c="k", s=15, zorder=5, alpha=0.5,
-                       label="Detrended data")
+            ax.scatter(lam, flux_dt, c="k", s=15, zorder=5, alpha=0.5, label="Detrended")
             ax.plot(lam, model_dt, "r-", lw=2, label="PAH model", zorder=4)
 
-            # Baseline
             C0 = fit_result["continuum_level"]
-            ax.axhline(C0, color="gray", ls="--", lw=1, alpha=0.5,
-                       label=f"Baseline = {C0:.3f}")
+            ax.axhline(C0, color="gray", ls="--", lw=1, alpha=0.5, label=f"Baseline={C0:.3f}")
 
             if show_components:
-                colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-                          "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+                colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
                 for i, (A, fwhm, center) in enumerate(
                     zip(fit_result["amplitudes"], fit_result["widths_fwhm"],
                         fit_result["centers"])):
                     sigma = fwhm / 2.355
                     feat = C0 + A * np.exp(-0.5 * ((lam - center) / sigma) ** 2)
                     name = fit_result["feature_names"][i] if i < len(fit_result["feature_names"]) else ""
-                    bump_pct = A / C0 * 100 if C0 > 0 else 0
+                    bump = A / C0 * 100 if C0 > 0 else 0
                     ax.plot(lam, feat, "-", color=colors[i % len(colors)],
-                            lw=1.5, alpha=0.7,
-                            label=f"{center:.1f}$\\mu$m ({bump_pct:.0f}%)")
+                            lw=1.5, alpha=0.7, label=f"{center:.1f}μm ({bump:.0f}%)")
 
-            # Mark feature centers
             for lam_c, _, _ in self.features:
                 ax.axvline(lam_c, color="gray", ls=":", alpha=0.2)
 
             ax.set_xlabel("Rest-frame wavelength ($\\mu$m)")
             ax.set_ylabel("Flux / smooth trend")
-            ax.set_title(f"PAH features (detrended, "
-                         f"$\\chi^2_{{red}}$ = {fit_result['chi2_red']:.2f})")
+            ax.set_title(f"PAH features ($\\chi^2_r$={fit_result['chi2_red']:.2f})")
             ax.legend(fontsize=7, ncol=2, loc="upper right")
             ax.grid(True, alpha=0.2)
 
         plt.tight_layout()
+        return fig
+
+    def fit_forward_model(
+        self,
+        z_values,
+        flux_values,
+        flux_errors=None,
+        weights=None,
+        log_l_ir_values=None,
+        fix_widths=True,
+        feature_groups=None,
+        verbose=True,
+    ):
+        """
+        Recover intrinsic PAH amplitudes via forward-modeling through
+        the real MIPS 24um bandpass.
+
+        JOINTLY fits the smooth z-trend AND PAH amplitudes:
+            flux(z) = 10^(a*z + b*logLIR + c) × [1 + Σ A_j × BP(z, feature_j)]
+
+        This avoids the detrend-then-fit problem where sequential detrending
+        absorbs PAH signal.
+
+        Parameters
+        ----------
+        z_values : array
+            Redshift of each measurement.
+        flux_values : array
+            Measured flux ratios (e.g., L_24/L_IR).
+        flux_errors : array, optional
+        weights : array, optional
+            sqrt(n_sources) recommended.
+        log_l_ir_values : array, optional
+            If provided, trend includes logLIR term.
+        fix_widths : bool
+            Fix feature widths to literature values.
+        feature_groups : list of lists, optional
+            Group correlated features to reduce free parameters.
+            Each group shares one free amplitude; features within a
+            group maintain their relative ratios from self.features.
+
+            Default (None): each feature is independent (5 free amps).
+
+            Recommended groupings:
+              [[0], [1,2], [4]]         — 3 params: 6.2, 7.7+8.6, 12.7
+                                          (drops 11.3, links the blend)
+              [[0], [1,2], [3], [4]]    — 4 params: keeps 11.3
+              [[0,1,2,3,4]]             — 1 param: one overall PAH scale
+
+            Feature indices: 0=6.2, 1=7.7, 2=8.6, 3=11.3, 4=12.7
+        verbose : bool
+
+        Returns
+        -------
+        result : dict
+        """
+        from scipy.optimize import least_squares
+
+        # ── MIPS 24um bandpass (from IRSA calibration) ───────────
+        bp_lam = np.array([
+            18.005, 19.134, 19.716, 19.944, 20.177, 20.415, 20.577, 20.742,
+            20.909, 20.993, 21.079, 21.252, 21.427, 21.606, 21.787, 21.879,
+            21.972, 22.160, 22.351, 22.545, 22.743, 22.944, 23.149, 23.358,
+            23.570, 23.786, 24.006, 24.231, 24.459, 24.692, 24.930, 25.172,
+            25.419, 25.670, 25.927, 26.189, 26.456, 26.729, 27.007, 27.292,
+            27.582, 27.878, 28.181, 28.491, 28.808, 29.131, 29.462, 29.801,
+            30.148, 30.865, 31.618, 32.207,
+        ])
+        bp_resp = np.array([
+            0.000237, 0.000644, 0.004662, 0.012914, 0.024468, 0.076447,
+            0.177656, 0.377777, 0.735924, 0.813463, 0.857335, 0.907091,
+            0.957009, 0.984957, 0.997749, 1.000000, 0.998522, 0.970058,
+            0.926258, 0.880798, 0.856114, 0.856779, 0.834520, 0.795473,
+            0.752764, 0.777653, 0.839877, 0.911819, 0.924876, 0.897806,
+            0.859096, 0.803216, 0.736609, 0.649479, 0.558191, 0.486209,
+            0.428693, 0.381986, 0.326682, 0.261178, 0.195445, 0.148445,
+            0.117945, 0.097827, 0.080512, 0.060997, 0.042525, 0.029764,
+            0.021807, 0.011002, 0.003471, 0.000727,
+        ])
+        bp_lam_f = np.linspace(18, 33, 500)
+        bp_resp_f = np.interp(bp_lam_f, bp_lam, bp_resp, left=0, right=0)
+        bp_norm = _trapz(bp_resp_f, bp_lam_f)
+
+        z = np.asarray(z_values, dtype=float)
+        flux = np.asarray(flux_values, dtype=float)
+        valid = np.isfinite(z) & np.isfinite(flux) & (flux > 0)
+        z = z[valid]
+        flux = flux[valid]
+
+        if flux_errors is not None:
+            ferr = np.asarray(flux_errors, dtype=float)[valid]
+            ferr = np.maximum(ferr, np.median(flux) * 1e-4)  # floor
+            w = 1.0 / ferr
+        elif weights is not None:
+            w = np.asarray(weights, dtype=float)[valid]
+        else:
+            # Estimate errors from scatter: MAD of flux in narrow z-windows
+            w = np.ones_like(flux)
+            if verbose:
+                print("  WARNING: no flux_errors or weights — fit may be poorly constrained")
+
+        has_lir = False
+        lir = None
+        if log_l_ir_values is not None:
+            lir = np.asarray(log_l_ir_values, dtype=float)
+            if len(lir) > np.sum(valid):
+                lir = lir[valid]
+            if len(lir) == len(z) and np.isfinite(lir).all():
+                has_lir = True
+            else:
+                lir = None
+
+        n_feat = len(self.features)
+        feature_names = ["6.2 C-C", "7.7 C-C", "8.6 C-H", "11.3 C-H", "12.7 C-H",
+                         "3.3 C-H", "5.25", "5.7", "16.4", "17.0"][:n_feat]
+
+        # ── Feature groups ───────────────────────────────────────
+        # Each group gets one free amplitude; features within a group
+        # maintain their relative ratios from self.features.
+        if feature_groups is None:
+            # Default: each feature independent
+            groups = [[i] for i in range(n_feat)]
+        else:
+            groups = feature_groups
+
+        n_groups = len(groups)
+
+        # Reference amplitudes for scaling within groups
+        ref_amps = np.array([max(rs, 1e-6) for _, rs, _ in self.features])
+        # For each group, the "lead" feature is the strongest one
+        group_ref = []
+        for g in groups:
+            lead = g[np.argmax(ref_amps[g])]
+            group_ref.append(ref_amps[lead])
+
+        # Map: group amplitude → individual feature amplitudes
+        # feature_j amplitude = group_scale × (ref_amp_j / ref_amp_lead)
+        group_of_feat = np.full(n_feat, -1, dtype=int)
+        feat_scale_in_group = np.zeros(n_feat)
+        for gi, g in enumerate(groups):
+            lead_amp = ref_amps[g[np.argmax(ref_amps[g])]]
+            for j in g:
+                group_of_feat[j] = gi
+                feat_scale_in_group[j] = ref_amps[j] / lead_amp
+
+        # Features not in any group get amplitude = 0
+        active_feats = [j for j in range(n_feat) if group_of_feat[j] >= 0]
+
+        if verbose and feature_groups is not None:
+            dropped = [j for j in range(n_feat) if group_of_feat[j] < 0]
+            print(f"  Feature groups ({n_groups} free amplitudes):")
+            for gi, g in enumerate(groups):
+                names = [feature_names[j] for j in g]
+                scales = [f"{feat_scale_in_group[j]:.2f}" for j in g]
+                print(f"    Group {gi}: {names} (relative: {scales})")
+            if dropped:
+                print(f"    Dropped: {[feature_names[j] for j in dropped]}")
+
+        # ── Precompute bandpass-integrated PAH template per feature per z ─
+        widths_sigma_default = np.array([fw / 2.355 for _, _, fw in self.features])
+
+        def _compute_templates(widths_sigma):
+            templates = np.zeros((n_feat, len(z)))
+            for i, zi in enumerate(z):
+                rest_lam = bp_lam_f / (1 + zi)
+                for j, (lc, _, _) in enumerate(self.features):
+                    sigma = widths_sigma[j]
+                    feat_spec = np.exp(-0.5 * ((rest_lam - lc) / sigma)**2)
+                    templates[j, i] = _trapz(feat_spec * bp_resp_f, bp_lam_f) / bp_norm
+            return templates
+
+        # ── Joint model ──────────────────────────────────────────
+        # flux(z_i) = 10^(trend) × [1 + Σ_group A_g × Σ_j∈g scale_j × template_j(z_i)]
+
+        # Trend design matrix: z, z², (logLIR,) const
+        def _trend_X(z_arr, lir_arr=None):
+            cols = [z_arr, z_arr**2, np.ones_like(z_arr)]
+            if lir_arr is not None:
+                cols.insert(2, lir_arr)  # z, z², logLIR, const
+            return np.column_stack(cols)
+
+        # Initial trend estimate
+        X_init = _trend_X(z, lir if has_lir else None)
+        try:
+            c_init, _, _, _ = np.linalg.lstsq(X_init, np.log10(flux), rcond=None)
+        except Exception:
+            c_init = np.zeros(X_init.shape[1])
+            c_init[-1] = np.log10(np.median(flux))
+
+        # Build parameter vector: [group_amplitudes, (widths,) trend_coeffs]
+        p0, bounds_lo, bounds_hi = [], [], []
+
+        for gi, g in enumerate(groups):
+            # Initial guess from reference amplitude of lead feature
+            p0.append(0.1)
+            bounds_lo.append(0)
+            bounds_hi.append(5.0)
+
+        if not fix_widths:
+            for lc, rel_s, fwhm in self.features:
+                p0.append(fwhm / 2.355)
+                bounds_lo.append(0.05)
+                bounds_hi.append(1.5)
+
+        n_trend = len(c_init)
+        for c in c_init:
+            p0.append(float(c))
+            bounds_lo.append(-10)
+            bounds_hi.append(10)
+
+        p0 = np.array(p0)
+
+        def _unpack(params):
+            idx = 0
+            group_amps = params[idx:idx + n_groups]; idx += n_groups
+            if fix_widths:
+                sigmas = widths_sigma_default.copy()
+            else:
+                sigmas = params[idx:idx + n_feat]; idx += n_feat
+            trend_coeffs = params[idx:idx + n_trend]
+            return group_amps, sigmas, trend_coeffs
+
+        def _expand_amps(group_amps):
+            """Expand group amplitudes to per-feature amplitudes."""
+            amps = np.zeros(n_feat)
+            for gi, g in enumerate(groups):
+                for j in g:
+                    amps[j] = group_amps[gi] * feat_scale_in_group[j]
+            return amps
+
+        # Template cache
+        _cache = [None, None]
+
+        def _get_templates(sigmas):
+            key = tuple(np.round(sigmas, 5))
+            if _cache[0] != key:
+                _cache[1] = _compute_templates(sigmas)
+                _cache[0] = key
+            return _cache[1]
+
+        def _model(params):
+            group_amps, sigmas, trend_coeffs = _unpack(params)
+            amps = _expand_amps(group_amps)
+            templates = _get_templates(sigmas)
+
+            X = _trend_X(z, lir if has_lir else None)
+            smooth = 10 ** (X @ trend_coeffs)
+
+            pah_mod = np.ones_like(z)
+            for j in range(n_feat):
+                pah_mod += amps[j] * templates[j]
+
+            return smooth * pah_mod
+
+        def _residuals(params):
+            return w * (flux - _model(params))
+
+        result = least_squares(_residuals, p0, bounds=(bounds_lo, bounds_hi),
+                               method="trf", max_nfev=20000)
+
+        # ── Extract results ──────────────────────────────────────
+        group_amps, widths_sigma, trend_coeffs = _unpack(result.x)
+        amplitudes = _expand_amps(group_amps)
+        widths_fwhm = widths_sigma * 2.355
+        centers = np.array([lc for lc, _, _ in self.features])
+
+        X_trend = _trend_X(z, lir if has_lir else None)
+        smooth_trend = 10 ** (X_trend @ trend_coeffs)
+
+        templates = _get_templates(widths_sigma)
+        pah_modulation = np.ones_like(z)
+        for j in range(n_feat):
+            pah_modulation += amplitudes[j] * templates[j]
+
+        model_full = smooth_trend * pah_modulation
+        model_dt = pah_modulation
+        flux_dt = flux / smooth_trend
+
+        n_params = len(result.x)
+        chi2_red = np.sum(_residuals(result.x)**2) / max(len(z) - n_params, 1)
+
+        amp_max = amplitudes.max() if amplitudes.max() > 0 else 1
+        self.features = [
+            (c, float(a / amp_max), fw)
+            for c, a, fw in zip(centers, amplitudes, widths_fwhm)
+        ]
+
+        fit_result = {
+            "amplitudes": amplitudes, "widths_fwhm": widths_fwhm,
+            "centers": centers, "trend_coeffs": trend_coeffs,
+            "group_amplitudes": group_amps, "feature_groups": groups,
+            "model_flux_vs_z": model_full, "model_detrended": model_dt,
+            "z_values": z, "data": flux,
+            "detrended_flux": flux_dt, "smooth_trend": smooth_trend,
+            "chi2_red": chi2_red, "feature_names": feature_names,
+            "success": result.success,
+            "wavelengths": 24.0 / (1 + z),
+            "model_spectrum": model_full, "continuum_level": 1.0,
+        }
+
+        if verbose:
+            grp_label = f", {n_groups} PAH groups" if feature_groups else ""
+            print(f"\nPAH forward-model fit (joint trend + PAH{grp_label}):")
+            print(f"  chi2_red = {chi2_red:.3f}  (N={len(z)}, params={n_params})")
+            trend_labels = ["z", "z²", "logLIR", "const"] if has_lir else ["z", "z²", "const"]
+            trend_str = " + ".join(f"{c:.3f}*{l}" for c, l in zip(trend_coeffs, trend_labels))
+            print(f"  Trend: log10(baseline) = {trend_str}")
+            print(f"\n  {'Feature':<12} {'Center':>7} {'FWHM':>6} "
+                  f"{'Amplitude':>10} {'Rel':>5} {'Group':>6}")
+            print(f"  {'-'*52}")
+            for i in range(n_feat):
+                rel = amplitudes[i] / amp_max if amp_max > 0 else 0
+                gi = group_of_feat[i]
+                grp_str = f"G{gi}" if gi >= 0 else "  --"
+                print(f"  {feature_names[i]:<12} {centers[i]:7.2f}um "
+                      f"{widths_fwhm[i]:5.2f}  {amplitudes[i]:10.4f} {rel:5.2f} {grp_str:>6}")
+
+        return fit_result
+
+    def plot_forward_fit(self, fit_result, save_path=None):
+        """
+        Plot forward-model PAH fit results.
+
+        Three panels:
+          1. Flux vs redshift (measurement space) + model
+          2. Flux vs rest wavelength + recovered intrinsic PAH spectrum
+          3. MIPS 24um bandpass with PAH features at key redshifts
+
+        Parameters
+        ----------
+        fit_result : dict
+            Output from fit_forward_model.
+        save_path : str or Path, optional
+
+        Returns
+        -------
+        fig
+        """
+        import matplotlib.pyplot as plt
+        from pathlib import Path as _Path
+
+        z = fit_result["z_values"]
+        flux = fit_result["data"]
+        flux_dt = fit_result["detrended_flux"]
+        model_dt = fit_result["model_detrended"]
+        model_full = fit_result["model_flux_vs_z"]
+        trend = fit_result["smooth_trend"]
+        amps = fit_result["amplitudes"]
+        names = fit_result["feature_names"]
+        rest_lam = 24.0 / (1 + z)
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
+
+        # ── Panel 1: Flux vs redshift ────────────────────────────
+        ax = axes[0]
+        ax.scatter(z, flux, c="k", s=15, alpha=0.5, zorder=3, label="Data")
+        ax.plot(z, model_full, "r-", lw=2, label="Forward model", zorder=4)
+        ax.plot(z, trend, "b--", lw=1.5, alpha=0.5, label="Smooth z-trend")
+
+        # Mark which PAH feature is in the band at each z
+        feat_z = {0.9: "12.7", 1.8: "8.6", 2.1: "7.7", 2.9: "6.2"}
+        for z_f, name in feat_z.items():
+            if z.min() < z_f < z.max():
+                ax.axvline(z_f, color="gray", ls=":", alpha=0.3)
+                ax.text(z_f, ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else flux.max() * 1.05,
+                        f"{name}μm", fontsize=7, ha="center", va="bottom",
+                        color="red", alpha=0.7)
+
+        ax.set_xlabel("Redshift")
+        ax.set_ylabel("L$_{24}$/L$_{IR}$ (or flux ratio)")
+        ax.set_title("Flux vs redshift\n(features enter/exit the bandpass)")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.2)
+
+        # ── Panel 2: Detrended flux vs rest wavelength ───────────
+        ax = axes[1]
+        ax.scatter(rest_lam, flux_dt, c="k", s=15, alpha=0.5, zorder=3,
+                   label="Detrended data")
+        ax.plot(rest_lam, model_dt, "r-", lw=2, label="Forward model (detrended)",
+                zorder=4)
+
+        # Overlay the recovered INTRINSIC PAH spectrum
+        lam_fine = np.linspace(5, 16, 500)
+        spec_intrinsic = np.ones_like(lam_fine)
+        colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+        for j, (lc, _, fwhm) in enumerate(self.features):
+            sigma = fwhm / 2.355
+            if j < len(amps) and amps[j] > 0.001:
+                feat = amps[j] * np.exp(-0.5 * ((lam_fine - lc) / sigma)**2)
+                ax.plot(lam_fine, 1.0 + feat, "-", color=colors[j % len(colors)],
+                        lw=1.5, alpha=0.6,
+                        label=f"{lc:.1f}μm A={amps[j]:.3f}")
+                spec_intrinsic += feat
+
+        ax.plot(lam_fine, spec_intrinsic, "k--", lw=1, alpha=0.3,
+                label="Intrinsic PAH (recovered)")
+        ax.axhline(1, color="gray", ls="--", lw=0.8, alpha=0.3)
+
+        for lc, _, _ in self.features:
+            ax.axvline(lc, color="gray", ls=":", alpha=0.2)
+
+        ax.set_xlabel("Rest-frame wavelength (μm)")
+        ax.set_ylabel("Flux / smooth trend")
+        ax.set_title(f"Recovered intrinsic PAH spectrum\n"
+                     f"($\\chi^2_r$ = {fit_result['chi2_red']:.2f})")
+        ax.legend(fontsize=7, loc="upper right")
+        ax.set_xlim(5, 16)
+        ax.grid(True, alpha=0.2)
+
+        # ── Panel 3: MIPS bandpass + PAH features at key z ───────
+        ax = axes[2]
+
+        # Embedded bandpass (same as in fit_forward_model)
+        bp_lam = np.array([
+            18.005, 19.134, 19.716, 19.944, 20.177, 20.415, 20.577, 20.742,
+            20.909, 20.993, 21.079, 21.252, 21.427, 21.606, 21.787, 21.879,
+            21.972, 22.160, 22.351, 22.545, 22.743, 22.944, 23.149, 23.358,
+            23.570, 23.786, 24.006, 24.231, 24.459, 24.692, 24.930, 25.172,
+            25.419, 25.670, 25.927, 26.189, 26.456, 26.729, 27.007, 27.292,
+            27.582, 27.878, 28.181, 28.491, 28.808, 29.131, 29.462, 29.801,
+            30.148, 30.865, 31.618, 32.207,
+        ])
+        bp_resp = np.array([
+            0.000237, 0.000644, 0.004662, 0.012914, 0.024468, 0.076447,
+            0.177656, 0.377777, 0.735924, 0.813463, 0.857335, 0.907091,
+            0.957009, 0.984957, 0.997749, 1.000000, 0.998522, 0.970058,
+            0.926258, 0.880798, 0.856114, 0.856779, 0.834520, 0.795473,
+            0.752764, 0.777653, 0.839877, 0.911819, 0.924876, 0.897806,
+            0.859096, 0.803216, 0.736609, 0.649479, 0.558191, 0.486209,
+            0.428693, 0.381986, 0.326682, 0.261178, 0.195445, 0.148445,
+            0.117945, 0.097827, 0.080512, 0.060997, 0.042525, 0.029764,
+            0.021807, 0.011002, 0.003471, 0.000727,
+        ])
+
+        ax.fill_between(bp_lam, bp_resp, alpha=0.15, color="k")
+        ax.plot(bp_lam, bp_resp, "k-", lw=2, label="MIPS 24μm response")
+
+        # Show the recovered PAH spectrum shifted to observed frame at key z
+        for z_show, color in [(0.9, "C0"), (1.8, "C1"), (2.1, "C2"), (2.9, "C3")]:
+            obs_lam = lam_fine * (1 + z_show)
+            # Scale PAH to show on bandpass plot
+            pah_scaled = (spec_intrinsic - 1.0) * 0.3  # scale for visibility
+            in_band = (obs_lam > 18) & (obs_lam < 33)
+            if in_band.any():
+                ax.plot(obs_lam[in_band], pah_scaled[in_band],
+                        "-", color=color, lw=1.5, alpha=0.7,
+                        label=f"PAH at z={z_show}")
+
+        ax.set_xlabel("Observed wavelength (μm)")
+        ax.set_ylabel("Response / PAH signal")
+        ax.set_title("MIPS bandpass + PAH features\n(showing which features are in-band)")
+        ax.legend(fontsize=7, loc="upper right")
+        ax.set_xlim(17, 33)
+        ax.grid(True, alpha=0.2)
+
+        fig.suptitle(
+            f"PAH forward-model fit  |  {len(z)} spectral points  |  "
+            f"$\\chi^2_r$ = {fit_result['chi2_red']:.2f}",
+            fontsize=13, y=1.01,
+        )
+        plt.tight_layout()
+
+        if save_path:
+            save_path = _Path(save_path)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(save_path, dpi=200, bbox_inches="tight")
+            print(f"Saved: {save_path}")
+
+        return fig
+
+    def fit_forward_per_bin(
+        self,
+        df,
+        *,
+        group_by="stellar_mass",
+        flux_col="f24_to_fpeak",
+        fix_widths=True,
+        feature_groups=None,
+        verbose=True,
+    ):
+        """
+        Run fit_forward_model separately per bin of a grouping variable.
+
+        Recovers intrinsic PAH feature amplitudes per (e.g.) stellar mass
+        bin, showing how PAH emission evolves with physical properties.
+
+        Parameters
+        ----------
+        df : DataFrame
+            Output from combine_pah_spectra or measure_pah_excess.
+            Must contain 'z', flux_col, 'n_sources', and group_by column.
+        group_by : str
+            Column to split on (e.g., 'stellar_mass').
+        flux_col : str
+            Column with flux values ('f24_to_fpeak' or 'l_24_to_l_ir').
+        fix_widths : bool
+        feature_groups : list of lists, optional
+            Passed to fit_forward_model. Recommended: [[0], [1,2], [4]]
+        verbose : bool
+
+        Returns
+        -------
+        results : dict
+            {bin_label: fit_result, '_evolution': DataFrame, '_group_by': str}
+        """
+        import pandas as pd
+
+        if group_by not in df.columns:
+            print(f"'{group_by}' not in df. Available: {list(df.columns)}")
+            return None
+
+        # ── Detect bin edges ─────────────────────────────────────
+        # Strategy 1: Extract from population IDs (most reliable)
+        bin_edges = None
+        if "pop_id" in df.columns:
+            edge_set = set()
+            for pop_id in df["pop_id"].dropna().unique():
+                # Population IDs contain bin ranges like "metallicity_0.005_0.01"
+                parts = str(pop_id).split("__")
+                for part in parts:
+                    if group_by.lower().replace("_", "") in part.lower().replace("_", ""):
+                        # Try to extract numbers from this part
+                        nums = []
+                        for token in part.replace(group_by, "").replace("_", " ").split():
+                            try:
+                                nums.append(float(token))
+                            except ValueError:
+                                pass
+                        if len(nums) == 2:
+                            edge_set.add((min(nums), max(nums)))
+            if edge_set:
+                bin_edges = sorted(edge_set)
+
+        # Strategy 2: Cluster unique values (fallback)
+        if not bin_edges:
+            vals = df[group_by].dropna().values
+            unique = np.sort(np.unique(np.round(vals, 6)))
+
+            if len(unique) < 2:
+                print(f"Only {len(unique)} unique {group_by} values")
+                return None
+
+            # Use relative spacing: gap > 20% of range between adjacent values
+            spacings = np.diff(unique)
+            if len(spacings) > 1:
+                median_spacing = np.median(spacings)
+                # Group values that are much closer than the typical spacing
+                centers = [unique[0]]
+                for j in range(1, len(unique)):
+                    if unique[j] - centers[-1] > median_spacing * 0.5:
+                        centers.append(unique[j])
+            else:
+                centers = list(unique)
+
+            edges = [centers[0] - spacings[0] * 0.5 if len(spacings) > 0 else centers[0] - 0.01]
+            for i in range(len(centers) - 1):
+                edges.append((centers[i] + centers[i + 1]) / 2)
+            edges.append(centers[-1] + (spacings[-1] * 0.5 if len(spacings) > 0 else 0.01))
+            bin_edges = [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
+
+        # Smart label formatting based on value scale
+        def _fmt(val):
+            if abs(val) == 0:
+                return "0"
+            mag = np.floor(np.log10(abs(val))) if val != 0 else 0
+            if mag >= 1:
+                return f"{val:.1f}"
+            elif mag >= 0:
+                return f"{val:.2f}"
+            elif mag >= -1:
+                return f"{val:.3f}"
+            else:
+                return f"{val:.4f}"
+
+        if verbose:
+            print(f"\nForward-model PAH fit per {group_by}: {len(bin_edges)} bins")
+
+        results = {}
+        evo_rows = []
+
+        for lo, hi in bin_edges:
+            mask = (df[group_by] >= lo) & (df[group_by] < hi)
+            sub = df.loc[mask]
+            n_pts = len(sub)
+            label = f"{_fmt(lo)}-{_fmt(hi)}"
+
+            if n_pts < 8:
+                if verbose:
+                    print(f"\n  {group_by}={label}: {n_pts} pts (skip, need ≥8)")
+                continue
+
+            if verbose:
+                print(f"\n  {group_by}={label}: {n_pts} pts, "
+                      f"z = {sub['z'].min():.2f}-{sub['z'].max():.2f}")
+
+            # Fresh PAHModel per bin
+            pah_bin = PAHModel(
+                coeffs=self.coeffs,
+                include_minor=len(self.features) > 5,
+            )
+
+            try:
+                lir_vals = sub["log_l_ir"].values if "log_l_ir" in sub.columns else None
+
+                # Auto-detect flux errors
+                err_col = flux_col + "_err"
+                flux_err = sub[err_col].values if err_col in sub.columns else None
+
+                r = pah_bin.fit_forward_model(
+                    sub["z"].values,
+                    sub[flux_col].values,
+                    flux_errors=flux_err,
+                    log_l_ir_values=lir_vals,
+                    fix_widths=fix_widths,
+                    feature_groups=feature_groups,
+                    verbose=verbose,
+                )
+                r["bin_lo"] = lo
+                r["bin_hi"] = hi
+                r["bin_label"] = label
+                r["bin_center"] = (lo + hi) / 2
+                r["n_points"] = n_pts
+                results[label] = r
+
+                # Evolution row
+                row = {
+                    "bin_lo": lo, "bin_hi": hi,
+                    "bin_center": (lo + hi) / 2,
+                    "n_points": n_pts,
+                    "chi2_red": r["chi2_red"],
+                }
+                for i, name in enumerate(r["feature_names"]):
+                    row[f"A_{name}"] = r["amplitudes"][i]
+                evo_rows.append(row)
+
+            except Exception as e:
+                if verbose:
+                    print(f"    Failed: {e}")
+
+        if not results:
+            print("No successful fits")
+            return None
+
+        df_evo = pd.DataFrame(evo_rows)
+        bin_labels = [k for k in results if not k.startswith("_")]
+        results["_bin_labels"] = bin_labels
+        results["_evolution"] = df_evo
+        results["_group_by"] = group_by
+
+        if verbose and len(df_evo) > 0:
+            a_cols = [c for c in df_evo.columns if c.startswith("A_")]
+            print(f"\n{'='*65}")
+            print(f"Intrinsic PAH amplitudes vs {group_by}")
+            print(f"{'='*65}")
+            print(f"  {'bin':>12} {'N':>4} {'χ²r':>5}", end="")
+            for c in a_cols:
+                print(f" {c.replace('A_',''):>8}", end="")
+            print()
+            for _, row in df_evo.iterrows():
+                print(f"  {_fmt(row['bin_lo'])}-{_fmt(row['bin_hi'])} "
+                      f" {row['n_points']:4.0f} {row['chi2_red']:5.2f}", end="")
+                for c in a_cols:
+                    print(f" {row[c]:8.4f}", end="")
+                print()
+
+        return results
+
+    def plot_pah_vs_property(self, per_bin_results, save_path=None):
+        """
+        Science plot: recovered intrinsic PAH spectra per bin.
+
+        Three panels:
+          1. Flux vs z per bin (measurement space, shows the data)
+          2. Recovered intrinsic PAH spectra overlaid (the result)
+          3. Feature amplitudes vs bin center (the science)
+
+        Parameters
+        ----------
+        per_bin_results : dict
+            Output from fit_forward_per_bin.
+        save_path : str or Path, optional
+
+        Returns
+        -------
+        fig
+        """
+        import matplotlib.pyplot as plt
+        import matplotlib.cm as cm
+        from pathlib import Path as _Path
+
+        group_by = per_bin_results.get("_group_by", "bin")
+        df_evo = per_bin_results.get("_evolution")
+        bin_labels = [k for k in per_bin_results
+                      if not k.startswith("_") and isinstance(per_bin_results[k], dict)]
+
+        if not bin_labels:
+            print("No bins to plot")
+            return None
+
+        n_bins = len(bin_labels)
+        colors = cm.viridis(np.linspace(0.15, 0.85, max(n_bins, 2)))
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
+
+        # ── Panel 1: Flux vs z per bin ───────────────────────────
+        ax = axes[0]
+        for i, label in enumerate(bin_labels):
+            r = per_bin_results[label]
+            z = r["z_values"]
+            ax.scatter(z, r["detrended_flux"], c=[colors[i]], s=12,
+                       alpha=0.4, zorder=2)
+            ax.plot(z, r["model_detrended"], "-", color=colors[i], lw=2,
+                    alpha=0.8, zorder=3,
+                    label=f"{group_by}={label}")
+        ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
+        ax.set_xlabel("Redshift")
+        ax.set_ylabel("Flux / smooth trend")
+        ax.set_title("Detrended flux vs z per bin\n(bumps = PAH features)")
+        ax.legend(fontsize=7, loc="upper right")
+        ax.grid(True, alpha=0.2)
+
+        # ── Panel 2: Recovered intrinsic PAH spectra overlaid ────
+        ax = axes[1]
+        lam_fine = np.linspace(5, 16, 500)
+
+        for i, label in enumerate(bin_labels):
+            r = per_bin_results[label]
+            amps = r["amplitudes"]
+
+            # Build the recovered intrinsic spectrum
+            spec = np.ones_like(lam_fine)
+            features = [(c, a, fw) for c, a, fw in
+                        zip(r["centers"], amps, r["widths_fwhm"])]
+            for lc, amp, fwhm in features:
+                sigma = fwhm / 2.355
+                spec += amp * np.exp(-0.5 * ((lam_fine - lc) / sigma)**2)
+
+            ax.plot(lam_fine, spec, "-", color=colors[i], lw=2.5,
+                    alpha=0.8, label=f"{group_by}={label}")
+
+        ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
+        for lc, _, _ in self.features:
+            ax.axvline(lc, color="gray", ls=":", alpha=0.2)
+            ax.text(lc, ax.get_ylim()[1] if ax.get_ylim()[1] > 1 else 1.6,
+                    f"{lc}", fontsize=7, ha="center", va="bottom", color="gray")
+
+        ax.set_xlabel("Rest-frame wavelength (μm)")
+        ax.set_ylabel("1 + PAH emission")
+        ax.set_title("Recovered intrinsic PAH spectra\n(deconvolved from MIPS bandpass)")
+        ax.legend(fontsize=8)
+        ax.set_xlim(5, 15)
+        ax.grid(True, alpha=0.2)
+
+        # ── Panel 3: Amplitude evolution ─────────────────────────
+        ax = axes[2]
+        if df_evo is not None and len(df_evo) > 1:
+            a_cols = [c for c in df_evo.columns if c.startswith("A_")]
+            feat_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+
+            x = df_evo["bin_center"].values
+            for j, ac in enumerate(a_cols):
+                name = ac.replace("A_", "")
+                y = df_evo[ac].values
+                if np.max(y) < 0.001:
+                    continue  # skip undetected features
+                ax.plot(x, y, "o-", color=feat_colors[j % len(feat_colors)],
+                        ms=9, mfc="white", mew=2.5, lw=2.5, label=name)
+
+            ax.set_xlabel(group_by.replace("_", " ").title())
+            ax.set_ylabel("Intrinsic PAH amplitude")
+            ax.set_title("PAH feature strength\nvs " + group_by.replace("_", " "))
+            ax.legend(fontsize=8)
+            ax.grid(True, alpha=0.2)
+        else:
+            ax.text(0.5, 0.5, "Need ≥2 bins",
+                    ha="center", va="center", transform=ax.transAxes)
+
+        fig.suptitle(
+            f"PAH emission vs {group_by}  |  {n_bins} bins  |  "
+            f"Forward model with real MIPS bandpass",
+            fontsize=13, y=1.01,
+        )
+        plt.tight_layout()
+
+        if save_path:
+            save_path = _Path(save_path)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(save_path, dpi=200, bbox_inches="tight")
+            print(f"Saved: {save_path}")
+
         return fig
 
     def __repr__(self):
