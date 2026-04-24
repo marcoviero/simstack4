@@ -1335,6 +1335,467 @@ class PAHModel:
 
         return fig
 
+    def fit_forward_model_multibin(
+        self,
+        df,
+        group_col="stellar_mass",
+        flux_col="f24_to_fpeak",
+        feature_groups=None,
+        fix_widths=True,
+        bin_edges=None,
+        verbose=True,
+    ):
+        """
+        Jointly fit all stellar-mass (or other property) bins simultaneously.
+
+        The PAH feature template SHAPE is shared across bins; only the
+        overall PAH amplitude α_m varies per bin. This breaks the baseline-PAH
+        degeneracy that plagues independent per-bin fitting.
+
+        Model per bin m:
+            flux_m(z) = baseline_m(z) × (1 + α_m × Σ_g r_g × T_g(z))
+        where:
+            baseline_m(z) = 10^(a_m·z + b_m·z² + c_m)  — per-bin, independent
+            α_m           — per-bin overall PAH amplitude, ≥ 0
+            r_g           — shared relative feature-group ratio (r_0 ≡ 1)
+            T_g(z)        — bandpass-integrated template for feature group g
+
+        Parameters
+        ----------
+        df : DataFrame
+            Output from combine_pah_spectra. Must have 'z', flux_col, group_col,
+            and optionally flux_col + '_err'.
+        group_col : str
+            Column to split on (e.g., 'stellar_mass').
+        flux_col : str
+            Flux column ('f24_to_fpeak' or 'l_24_to_l_ir').
+        feature_groups : list of lists, optional
+            Same semantics as fit_forward_model.
+            Recommended: [[0], [1, 2], [4]]  (6.2, 7.7+8.6, 12.7)
+        fix_widths : bool
+            Fix feature widths to literature values (recommended).
+        verbose : bool
+
+        Returns
+        -------
+        result : dict
+            'bin_labels', 'bin_centers',
+            'alpha_per_bin', 'alpha_err_per_bin',
+            'group_ratios', 'ratio_errors',
+            'baseline_coeffs', 'baseline_err',
+            'model_per_bin', 'chi2_red', 'success',
+            'n_data', 'n_params', 'feature_groups', 'feature_names'.
+        """
+        from scipy.optimize import least_squares
+
+        # ── MIPS 24um bandpass ─────────────────────────────────────
+        bp_lam = np.array([
+            18.005, 19.134, 19.716, 19.944, 20.177, 20.415, 20.577, 20.742,
+            20.909, 20.993, 21.079, 21.252, 21.427, 21.606, 21.787, 21.879,
+            21.972, 22.160, 22.351, 22.545, 22.743, 22.944, 23.149, 23.358,
+            23.570, 23.786, 24.006, 24.231, 24.459, 24.692, 24.930, 25.172,
+            25.419, 25.670, 25.927, 26.189, 26.456, 26.729, 27.007, 27.292,
+            27.582, 27.878, 28.181, 28.491, 28.808, 29.131, 29.462, 29.801,
+            30.148, 30.865, 31.618, 32.207,
+        ])
+        bp_resp = np.array([
+            0.000237, 0.000644, 0.004662, 0.012914, 0.024468, 0.076447,
+            0.177656, 0.377777, 0.735924, 0.813463, 0.857335, 0.907091,
+            0.957009, 0.984957, 0.997749, 1.000000, 0.998522, 0.970058,
+            0.926258, 0.880798, 0.856114, 0.856779, 0.834520, 0.795473,
+            0.752764, 0.777653, 0.839877, 0.911819, 0.924876, 0.897806,
+            0.859096, 0.803216, 0.736609, 0.649479, 0.558191, 0.486209,
+            0.428693, 0.381986, 0.326682, 0.261178, 0.195445, 0.148445,
+            0.117945, 0.097827, 0.080512, 0.060997, 0.042525, 0.029764,
+            0.021807, 0.011002, 0.003471, 0.000727,
+        ])
+        bp_lam_f = np.linspace(18, 33, 500)
+        bp_resp_f = np.interp(bp_lam_f, bp_lam, bp_resp, left=0, right=0)
+        bp_norm = _trapz(bp_resp_f, bp_lam_f)
+
+        # ── Feature groups ─────────────────────────────────────────
+        n_feat = len(self.features)
+        feature_names = [
+            "6.2 C-C", "7.7 C-C", "8.6 C-H", "11.3 C-H", "12.7 C-H",
+            "3.3 C-H", "5.25", "5.7", "16.4", "17.0",
+        ][:n_feat]
+
+        if feature_groups is None:
+            groups = [[i] for i in range(n_feat)]
+        else:
+            groups = feature_groups
+        n_groups = len(groups)
+
+        ref_amps = np.array([max(rs, 1e-6) for _, rs, _ in self.features])
+        widths_sigma = np.array([fw / 2.355 for _, _, fw in self.features])
+
+        # Within-group scaling relative to lead feature
+        feat_scale = np.zeros(n_feat)
+        for g in groups:
+            lead_amp = ref_amps[g[np.argmax(ref_amps[g])]]
+            for j in g:
+                feat_scale[j] = ref_amps[j] / lead_amp
+
+        # ── Precompute group templates over a dense z grid ─────────
+        def _compute_group_templates(z_arr):
+            T = np.zeros((n_groups, len(z_arr)))
+            for i, zi in enumerate(z_arr):
+                rest_lam = bp_lam_f / (1 + zi)
+                for gi, g in enumerate(groups):
+                    for j in g:
+                        lc = self.features[j][0]
+                        sigma = widths_sigma[j]
+                        feat_spec = np.exp(-0.5 * ((rest_lam - lc) / sigma) ** 2)
+                        T[gi, i] += feat_scale[j] * _trapz(feat_spec * bp_resp_f, bp_lam_f) / bp_norm
+            return T
+
+        # ── Split df into per-bin datasets ─────────────────────────
+        if group_col not in df.columns:
+            print(f"'{group_col}' not in df. Available: {list(df.columns)}")
+            return None
+
+        if bin_edges is None:
+            # Strategy 1: extract bin edges from pop_id (most reliable)
+            if "pop_id" in df.columns:
+                edge_set = set()
+                for pop_id in df["pop_id"].dropna().unique():
+                    parts = str(pop_id).split("__")
+                    for part in parts:
+                        if group_col.lower().replace("_", "") in part.lower().replace("_", ""):
+                            nums = []
+                            for token in part.replace(group_col, "").replace("_", " ").split():
+                                try:
+                                    nums.append(float(token))
+                                except ValueError:
+                                    pass
+                            if len(nums) == 2:
+                                edge_set.add((min(nums), max(nums)))
+                if edge_set:
+                    bin_edges = sorted(edge_set)
+
+            # Strategy 2: cluster unique values (fallback)
+            if not bin_edges:
+                vals = df[group_col].dropna().values
+                unique = np.sort(np.unique(np.round(vals, 6)))
+                if len(unique) < 2:
+                    print(f"Only {len(unique)} unique {group_col} values — cannot detect bins")
+                    return None
+                spacings = np.diff(unique)
+                med_sp = np.median(spacings)
+                centers_v = [unique[0]]
+                for j in range(1, len(unique)):
+                    if unique[j] - centers_v[-1] > med_sp * 0.5:
+                        centers_v.append(unique[j])
+                sp = spacings if len(spacings) > 0 else [0.01]
+                edges = [centers_v[0] - sp[0] * 0.5]
+                for i in range(len(centers_v) - 1):
+                    edges.append((centers_v[i] + centers_v[i + 1]) / 2)
+                edges.append(centers_v[-1] + sp[-1] * 0.5)
+                bin_edges = [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
+
+        err_col = flux_col + "_err"
+        bins_data = []
+        for lo, hi in bin_edges:
+            mask = (df[group_col] >= lo) & (df[group_col] < hi)
+            sub = df.loc[mask]
+            valid = np.isfinite(sub["z"]) & np.isfinite(sub[flux_col]) & (sub[flux_col] > 0)
+            sub = sub.loc[valid]
+            if len(sub) < 8:
+                continue
+            z_m = sub["z"].values
+            flux_m = sub[flux_col].values
+            if err_col in sub.columns:
+                ferr = np.maximum(sub[err_col].values, np.median(flux_m) * 1e-4)
+                w_m = 1.0 / ferr
+            else:
+                w_m = np.ones_like(flux_m)
+            label = f"{lo:.2f}-{hi:.2f}"
+            bins_data.append((label, z_m, flux_m, w_m, (lo + hi) / 2))
+
+        M = len(bins_data)
+        if M < 2:
+            print(f"Need ≥2 bins with ≥8 points each, got {M}")
+            return None
+
+        if verbose:
+            print(f"\nMulti-bin PAH forward model: {M} bins, {n_groups} feature groups")
+            for i, (lbl, z_m, flux_m, _, ctr) in enumerate(bins_data):
+                print(f"  Bin {i}: {lbl}, {len(z_m)} pts, "
+                      f"z={z_m.min():.2f}-{z_m.max():.2f}, center={ctr:.2f}")
+
+        # Precompute templates at the union of all z-values
+        z_union = np.sort(np.unique(np.concatenate([b[1] for b in bins_data])))
+        if verbose:
+            print(f"  Precomputing templates at {len(z_union)} z values... ", end="", flush=True)
+        T_grid = _compute_group_templates(z_union)
+        if verbose:
+            print("done")
+
+        def _T_for(z_m):
+            return np.array([np.interp(z_m, z_union, T_grid[gi]) for gi in range(n_groups)])
+
+        # ── Parameter layout ───────────────────────────────────────
+        # [α_0..α_{M-1}, r_1..r_{G-1}, a_0,b_0,c_0, a_1,b_1,c_1, ...]
+        n_alpha = M
+        n_ratios = n_groups - 1   # r_0 fixed to 1
+        n_base = M * 3
+        n_params = n_alpha + n_ratios + n_base
+
+        def _unpack(p):
+            alpha = p[:M]
+            ratios = np.concatenate([[1.0], p[M:M + n_ratios]])
+            baseline = p[M + n_ratios:].reshape(M, 3)
+            return alpha, ratios, baseline
+
+        def _pred(alpha_m, ratios, bcoeffs, z_m, T_m):
+            bl = 10 ** (bcoeffs[0] * z_m + bcoeffs[1] * z_m ** 2 + bcoeffs[2])
+            pah = np.ones(len(z_m))
+            for gi in range(n_groups):
+                pah += alpha_m * ratios[gi] * T_m[gi]
+            return bl * pah
+
+        def _residuals(p):
+            alpha, ratios, baseline = _unpack(p)
+            parts = []
+            for m, (_, z_m, flux_m, w_m, _) in enumerate(bins_data):
+                T_m = _T_for(z_m)
+                parts.append(w_m * (flux_m - _pred(alpha[m], ratios, baseline[m], z_m, T_m)))
+            return np.concatenate(parts)
+
+        # ── Initialization ─────────────────────────────────────────
+        # Per-bin baseline from log-linear fit (α = 0)
+        p0_base = []
+        for _, z_m, flux_m, _, _ in bins_data:
+            X = np.column_stack([z_m, z_m ** 2, np.ones_like(z_m)])
+            try:
+                c0, _, _, _ = np.linalg.lstsq(X, np.log10(flux_m), rcond=None)
+            except Exception:
+                c0 = np.array([0.0, 0.0, np.log10(max(np.median(flux_m), 1e-10))])
+            p0_base.extend(c0.tolist())
+
+        # Per-bin α from projection of residuals onto composite template
+        p0_alpha = []
+        for m, (_, z_m, flux_m, _, _) in enumerate(bins_data):
+            bc = np.array(p0_base[m * 3: (m + 1) * 3])
+            bl_est = 10 ** (bc[0] * z_m + bc[1] * z_m ** 2 + bc[2])
+            excess = flux_m / bl_est - 1.0
+            T_m = _T_for(z_m)
+            T_comp = np.sum(T_m, axis=0)   # sum all groups equally for init
+            denom = float(np.dot(T_comp, T_comp))
+            alpha_est = float(np.dot(excess, T_comp)) / denom if denom > 0 else 0.1
+            p0_alpha.append(max(alpha_est, 0.01))
+
+        p0_ratios = np.ones(n_ratios) * 0.5
+        p0 = np.array(p0_alpha + list(p0_ratios) + p0_base)
+
+        bounds_lo = np.concatenate([
+            np.zeros(M),
+            np.zeros(n_ratios),
+            np.full(n_base, -10.0),
+        ])
+        bounds_hi = np.concatenate([
+            np.full(M, 5.0),
+            np.full(n_ratios, 5.0),
+            np.full(n_base, 10.0),
+        ])
+
+        # ── Optimize ───────────────────────────────────────────────
+        opt = least_squares(
+            _residuals, p0,
+            bounds=(bounds_lo, bounds_hi),
+            method="trf", max_nfev=30000,
+            x_scale="jac",
+        )
+
+        # ── Formal uncertainties from Jacobian ─────────────────────
+        try:
+            JtJ = opt.jac.T @ opt.jac
+            pcov = np.linalg.inv(JtJ)
+            perr = np.sqrt(np.maximum(np.diag(pcov), 0.0))
+        except np.linalg.LinAlgError:
+            perr = np.full(n_params, np.nan)
+
+        alpha_opt, ratios_opt, baseline_opt = _unpack(opt.x)
+        alpha_err = perr[:M]
+        ratio_err = perr[M:M + n_ratios]
+
+        n_data = sum(len(b[1]) for b in bins_data)
+        chi2_red = float(np.sum(opt.fun ** 2) / max(n_data - n_params, 1))
+
+        # ── Build per-bin output ────────────────────────────────────
+        model_per_bin = {}
+        for m, (label, z_m, flux_m, w_m, ctr) in enumerate(bins_data):
+            T_m = _T_for(z_m)
+            bl_m = 10 ** (baseline_opt[m, 0] * z_m + baseline_opt[m, 1] * z_m ** 2 + baseline_opt[m, 2])
+            mdl_m = _pred(alpha_opt[m], ratios_opt, baseline_opt[m], z_m, T_m)
+            ferr_m = np.where(w_m > 0, 1.0 / w_m, np.median(flux_m) * 0.03)
+            model_per_bin[label] = {
+                "z": z_m,
+                "flux": flux_m,
+                "flux_err": ferr_m,
+                "model": mdl_m,
+                "baseline": bl_m,
+                "detrended_data": flux_m / bl_m,
+                "detrended_model": mdl_m / bl_m,
+                "detrended_err": ferr_m / bl_m,
+                "bin_center": ctr,
+            }
+
+        if verbose:
+            print(f"\n  chi2_red = {chi2_red:.3f}  (N={n_data}, params={n_params})")
+            print(f"  Shared group ratios (group 0 fixed to 1.0):")
+            for gi in range(n_groups):
+                names = [feature_names[j] for j in groups[gi]]
+                ri = ratios_opt[gi]
+                ei = ratio_err[gi - 1] if gi > 0 else 0.0
+                print(f"    Group {gi} {names}: r = {ri:.3f} ± {ei:.3f}")
+            print(f"  Per-bin PAH amplitudes:")
+            for m, (label, _, _, _, ctr) in enumerate(bins_data):
+                print(f"    {label}: α = {alpha_opt[m]:.4f} ± {alpha_err[m]:.4f}")
+
+        return {
+            "bin_labels": [b[0] for b in bins_data],
+            "bin_centers": np.array([b[4] for b in bins_data]),
+            "alpha_per_bin": alpha_opt,
+            "alpha_err_per_bin": alpha_err,
+            "group_ratios": ratios_opt,
+            "ratio_errors": np.concatenate([[0.0], ratio_err]),
+            "baseline_coeffs": baseline_opt,
+            "baseline_err": perr[M + n_ratios:].reshape(M, 3),
+            "model_per_bin": model_per_bin,
+            "chi2_red": chi2_red,
+            "success": opt.success,
+            "n_data": n_data,
+            "n_params": n_params,
+            "feature_groups": groups,
+            "feature_names": feature_names,
+            "feat_scale": feat_scale,
+            "_group_col": group_col,
+            "_z_union": z_union,
+            "_T_grid": T_grid,
+        }
+
+    def plot_multibin_forward_fit(self, result, save_path=None):
+        """
+        Plot multi-bin forward model results.
+
+        Four panels:
+          1. Flux vs z — all bins with model and baseline
+          2. Detrended flux vs z — PAH modulation (shared template)
+          3. Recovered intrinsic PAH spectra per bin (shared shape, different α)
+          4. Per-bin α vs bin center — the science result
+
+        Parameters
+        ----------
+        result : dict
+            Output from fit_forward_model_multibin.
+        save_path : str or Path, optional
+        """
+        import matplotlib.pyplot as plt
+        from pathlib import Path as _Path
+
+        bin_labels = result["bin_labels"]
+        bin_centers = result["bin_centers"]
+        alpha = result["alpha_per_bin"]
+        alpha_err = result["alpha_err_per_bin"]
+        ratios = result["group_ratios"]
+        groups = result["feature_groups"]
+        feat_scale = result["feat_scale"]
+        feature_names = result["feature_names"]
+        model_per_bin = result["model_per_bin"]
+        group_col = result.get("_group_col", "bin")
+        chi2_red = result["chi2_red"]
+        M = len(bin_labels)
+
+        colors = plt.cm.plasma(np.linspace(0.2, 0.85, M))
+        fig, axes = plt.subplots(1, 4, figsize=(22, 5.5))
+
+        # ── Panel 1: Flux vs z ──────────────────────────────────────
+        ax = axes[0]
+        for m, label in enumerate(bin_labels):
+            d = model_per_bin[label]
+            idx = np.argsort(d["z"])
+            ax.scatter(d["z"], d["flux"], c=[colors[m]], s=12, alpha=0.4, zorder=3)
+            ax.plot(d["z"][idx], d["model"][idx], "-", color=colors[m],
+                    lw=2, label=label, zorder=4)
+            ax.plot(d["z"][idx], d["baseline"][idx], "--", color=colors[m],
+                    lw=1, alpha=0.35)
+        ax.set_xlabel("Redshift")
+        ax.set_ylabel(r"$f_{24}/f_{\rm peak}$")
+        ax.set_title("Flux vs z\n(model — baseline)")
+        ax.legend(fontsize=7, title=group_col.replace("_", " "))
+        ax.grid(True, alpha=0.2)
+
+        # ── Panel 2: Detrended PAH modulation ──────────────────────
+        ax = axes[1]
+        for m, label in enumerate(bin_labels):
+            d = model_per_bin[label]
+            idx = np.argsort(d["z"])
+            ax.scatter(d["z"], d["detrended_data"], c=[colors[m]],
+                       s=12, alpha=0.4, zorder=3)
+            ax.plot(d["z"][idx], d["detrended_model"][idx], "-",
+                    color=colors[m], lw=2, label=label, zorder=4)
+        ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
+        ax.set_xlabel("Redshift")
+        ax.set_ylabel("Flux / baseline")
+        ax.set_title("PAH modulation\n(shared template, per-bin α)")
+        ax.legend(fontsize=7)
+        ax.grid(True, alpha=0.2)
+
+        # ── Panel 3: Intrinsic PAH spectra ──────────────────────────
+        ax = axes[2]
+        lam_fine = np.linspace(5, 16, 500)
+        for m, label in enumerate(bin_labels):
+            spec = np.ones_like(lam_fine)
+            for gi, g in enumerate(groups):
+                r_gi = ratios[gi]
+                for j in g:
+                    lc, _, fwhm = self.features[j]
+                    sigma = fwhm / 2.355
+                    spec += alpha[m] * r_gi * feat_scale[j] * np.exp(
+                        -0.5 * ((lam_fine - lc) / sigma) ** 2
+                    )
+            ax.plot(lam_fine, spec, "-", color=colors[m], lw=2.5,
+                    alpha=0.9, label=label)
+        ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
+        for lc, _, _ in self.features:
+            ax.axvline(lc, color="gray", ls=":", alpha=0.2)
+            ax.text(lc, ax.get_ylim()[1] if ax.get_ylim()[1] > 1 else 1.2,
+                    f"{lc}", fontsize=6, ha="center", va="bottom", color="gray")
+        ax.set_xlabel("Rest-frame wavelength (μm)")
+        ax.set_ylabel("1 + PAH emission")
+        ax.set_title("Recovered intrinsic PAH spectra\n(jointly constrained)")
+        ax.legend(fontsize=7)
+        ax.set_xlim(5, 15)
+        ax.grid(True, alpha=0.2)
+
+        # ── Panel 4: α vs bin center ────────────────────────────────
+        ax = axes[3]
+        ax.errorbar(
+            bin_centers, alpha, yerr=alpha_err,
+            fmt="o-", color="navy", ms=9, mfc="white", mew=2.5,
+            lw=2, capsize=4, elinewidth=1.5,
+        )
+        ax.axhline(0, color="k", ls="--", lw=0.8, alpha=0.3)
+        ax.set_xlabel(group_col.replace("_", " ").title())
+        ax.set_ylabel("PAH amplitude α")
+        ax.set_title("PAH strength vs property\n(jointly constrained)")
+        ax.grid(True, alpha=0.2)
+
+        fig.suptitle(
+            f"Multi-bin PAH forward model  |  {M} bins  |  χ²_r = {chi2_red:.2f}",
+            fontsize=13, y=1.01,
+        )
+        plt.tight_layout()
+
+        if save_path:
+            save_path = _Path(save_path)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(save_path, dpi=200, bbox_inches="tight")
+            print(f"Saved: {save_path}")
+
+        return fig
+
     def __repr__(self):
         a, b, c, d = self.coeffs
         return (f"PAHModel(log(L_PAH/L_IR) = {a:.3f}*logLIR {b:+.3f}*z "
