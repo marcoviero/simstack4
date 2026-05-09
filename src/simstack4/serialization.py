@@ -216,7 +216,7 @@ def reconstruct_config_from_json(embedded_config: dict) -> SimstackConfig:
         SplitParams,
         SplitType,
     )
-    from .exceptions.simstack_exceptions import SimstackError
+    from .exceptions import SimstackError
 
     try:
         catalog_data = embedded_config.get("catalog", {})

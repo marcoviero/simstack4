@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .config import SplitType
-from .exceptions.simstack_exceptions import PopulationError
+from .exceptions import PopulationError
 from .utils import setup_logging
 
 logger = setup_logging()

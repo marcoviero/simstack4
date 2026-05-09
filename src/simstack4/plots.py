@@ -32,7 +32,7 @@ except ImportError:
 
 from .results import SimstackResults, SEDResults
 from .utils import setup_logging
-from .exceptions.simstack_exceptions import PlotError
+from .exceptions import PlotError
 
 logger = setup_logging()
 

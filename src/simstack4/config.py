@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from .exceptions.simstack_exceptions import ConfigError
+from .exceptions import ConfigError
 
 
 class SplitType(Enum):

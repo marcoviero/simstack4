@@ -17,7 +17,7 @@ import numpy as np
 from .algorithm import run_stacking
 from .config import SimstackConfig, load_config
 from .cosmology import CosmologyCalculator
-from .exceptions.simstack_exceptions import SimstackError
+from .exceptions import SimstackError
 from .populations import PopulationManager
 from .results import SimstackResults, create_results_processor
 from .serialization import (

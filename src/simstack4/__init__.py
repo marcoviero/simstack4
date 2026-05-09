@@ -11,7 +11,7 @@ from .wrapper import SimstackWrapper
 from .results import SimstackResults
 from .utils import setup_logging, validate_environment
 
-from .exceptions.simstack_exceptions import (
+from .exceptions import (
     SimstackError,
     ConfigError,
     CatalogError,

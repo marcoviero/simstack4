@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 import warnings
 
-from .exceptions.simstack_exceptions import ValidationError
+from .exceptions import ValidationError
 
 
 def setup_logging(

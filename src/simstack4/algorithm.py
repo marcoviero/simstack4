@@ -15,7 +15,7 @@ import pandas as pd
 from scipy import linalg
 
 from .config import SimstackConfig
-from .exceptions.simstack_exceptions import (
+from .exceptions import (
     AlgorithmError,
     ValidationError,
 )

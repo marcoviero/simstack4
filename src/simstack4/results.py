@@ -28,7 +28,7 @@ except ImportError:
 from .algorithm import StackingResults
 from .config import SimstackConfig
 from .cosmology import CosmologyCalculator
-from .exceptions.simstack_exceptions import ResultsError
+from .exceptions import ResultsError
 from .greybody import Greybody, GreybodyFitter, SEDResults, DerivedQuantities
 from .sed_fitting import CovarianceGreybodyFitter, RegressionGreybodyFitter
 from .populations import PopulationManager

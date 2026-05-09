@@ -22,7 +22,7 @@ from astropy.stats import sigma_clipped_stats
 from astropy.wcs import WCS
 
 from .config import MapConfig
-from .exceptions.simstack_exceptions import MapError
+from .exceptions import MapError
 from .utils import setup_logging
 
 logger = setup_logging()

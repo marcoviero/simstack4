@@ -11,7 +11,7 @@ from . import __version__
 from .config import load_config
 from .wrapper import SimstackWrapper
 from .utils import setup_logging, validate_environment, print_system_info
-from .exceptions.simstack_exceptions import SimstackError
+from .exceptions import SimstackError
 
 
 def create_parser() -> argparse.ArgumentParser:

@@ -32,7 +32,7 @@ from astropy.io import fits
 from astropy.table import Table
 
 from .config import CatalogConfig, SplitType
-from .exceptions.simstack_exceptions import CatalogError, ValidationError
+from .exceptions import CatalogError, ValidationError
 from .populations import PopulationManager
 from .utils import setup_logging
 

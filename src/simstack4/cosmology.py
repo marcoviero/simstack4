@@ -15,7 +15,7 @@ from astropy import units as u
 from astropy import constants as const
 
 from .config import Cosmology
-from .exceptions.simstack_exceptions import CosmologyError
+from .exceptions import CosmologyError
 from .utils import setup_logging
 
 logger = setup_logging()
