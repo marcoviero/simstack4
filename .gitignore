@@ -171,3 +171,6 @@ catalogs/
 
 # Config files with sensitive paths
 config/local_*.ini
+
+# Notebooks (kept local, not published to GitHub)
+notebooks/
