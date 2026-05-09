@@ -12,7 +12,9 @@ import warnings
 from .exceptions.simstack_exceptions import ValidationError
 
 
-def setup_logging(level: str = "INFO", log_file: Optional[str] = None) -> logging.Logger:
+def setup_logging(
+    level: str = "INFO", log_file: Optional[str] = None
+) -> logging.Logger:
     """
     Set up logging for Simstack4
 
@@ -32,7 +34,7 @@ def setup_logging(level: str = "INFO", log_file: Optional[str] = None) -> loggin
 
     # Create formatter
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
 
     # Console handler
@@ -71,7 +73,7 @@ def validate_environment() -> Dict[str, Any]:
                 "value": value,
                 "exists": path.exists(),
                 "is_dir": path.is_dir() if path.exists() else False,
-                "writable": os.access(path, os.W_OK) if path.exists() else False
+                "writable": os.access(path, os.W_OK) if path.exists() else False,
             }
         else:
             missing_vars.append(var)
@@ -93,15 +95,17 @@ def memory_usage_gb() -> float:
     """Get current memory usage in GB"""
     try:
         import psutil
+
         process = psutil.Process(os.getpid())
-        return process.memory_info().rss / 1024 ** 3
+        return process.memory_info().rss / 1024**3
     except ImportError:
         warnings.warn("psutil not available, cannot check memory usage")
         return 0.0
 
 
-def estimate_memory_requirements(n_sources: int, n_populations: int,
-                                 n_maps: int, map_size_mb: float = 100) -> Dict[str, float]:
+def estimate_memory_requirements(
+    n_sources: int, n_populations: int, n_maps: int, map_size_mb: float = 100
+) -> Dict[str, float]:
     """
     Estimate memory requirements for stacking
 
@@ -131,7 +135,7 @@ def estimate_memory_requirements(n_sources: int, n_populations: int,
         "layers_gb": layers_gb,
         "base_total_gb": base_memory,
         "with_bootstrap_gb": with_bootstrap,
-        "recommended_ram_gb": with_bootstrap * 1.5  # 50% buffer
+        "recommended_ram_gb": with_bootstrap * 1.5,  # 50% buffer
     }
 
 
@@ -148,8 +152,9 @@ def check_disk_space(path: str, required_gb: float) -> bool:
     """
     try:
         import shutil
+
         free_bytes = shutil.disk_usage(path).free
-        free_gb = free_bytes / 1024 ** 3
+        free_gb = free_bytes / 1024**3
         return free_gb >= required_gb
     except Exception:
         warnings.warn(f"Could not check disk space for {path}")
@@ -170,7 +175,7 @@ def format_time(seconds: float) -> str:
 
 def format_memory(bytes_val: int) -> str:
     """Format memory size in human-readable format"""
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
         if bytes_val < 1024:
             return f"{bytes_val:.1f}{unit}"
         bytes_val /= 1024
@@ -212,12 +217,13 @@ def validate_catalog_file(catalog_path: Path) -> Dict[str, Any]:
         raise ValidationError(f"Catalog file not found: {catalog_path}")
 
     # Try to determine file format and basic properties
-    file_size_mb = catalog_path.stat().st_size / 1024 ** 2
+    file_size_mb = catalog_path.stat().st_size / 1024**2
 
     try:
         # Try reading first few lines to determine format
-        if catalog_path.suffix.lower() == '.csv':
+        if catalog_path.suffix.lower() == ".csv":
             import pandas as pd
+
             # Read just the header and first row
             sample_df = pd.read_csv(catalog_path, nrows=1)
             n_columns = len(sample_df.columns)
@@ -236,7 +242,7 @@ def validate_catalog_file(catalog_path: Path) -> Dict[str, Any]:
         "exists": True,
         "size_mb": file_size_mb,
         "n_columns": n_columns,
-        "column_names": column_names
+        "column_names": column_names,
     }
 
 
@@ -253,6 +259,7 @@ def print_system_info() -> None:
 
     try:
         import psutil
+
         memory = psutil.virtual_memory()
         print(f"Total RAM: {format_memory(memory.total)}")
         print(f"Available RAM: {format_memory(memory.available)}")
@@ -270,7 +277,7 @@ def print_system_info() -> None:
     for package in packages:
         try:
             module = __import__(package)
-            version = getattr(module, '__version__', 'unknown')
+            version = getattr(module, "__version__", "unknown")
             print(f"{package}: {version}")
         except ImportError:
             print(f"{package}: NOT INSTALLED")

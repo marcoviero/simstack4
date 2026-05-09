@@ -4,6 +4,7 @@ Sky maps handling for Simstack4
 This module handles loading, processing, and manipulating astronomical maps.
 Supports FITS files with proper WCS handling, PSF convolution, and coordinate transformations.
 """
+
 import os
 import pdb
 from dataclasses import dataclass
@@ -41,7 +42,9 @@ class MapData:
     color_correction: float
     map_name: str
     units: str = "Jy/beam"
-    valid_pixel_mask: np.ndarray | None = None  # True where observed (non-NaN, non-zero)
+    valid_pixel_mask: np.ndarray | None = (
+        None  # True where observed (non-NaN, non-zero)
+    )
     psf_file: str | None = None  # Optional path to measured PSF FITS file
 
     @property
@@ -410,9 +413,7 @@ class SkyMaps:
 
         return kernel
 
-    def _load_psf_from_file(
-        self, psf_path: str, normalize: bool = True
-    ) -> np.ndarray:
+    def _load_psf_from_file(self, psf_path: str, normalize: bool = True) -> np.ndarray:
         """
         Load a measured PSF from a FITS file.
 

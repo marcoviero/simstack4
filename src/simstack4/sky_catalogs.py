@@ -257,7 +257,10 @@ class SkyCatalogs:
         # Identify formula-derived columns (computed later in classify_catalog)
         formula_columns = set()
         if self.config.classification.formulas:
-            for formula_name, formula_params in self.config.classification.formulas.items():
+            for (
+                formula_name,
+                formula_params,
+            ) in self.config.classification.formulas.items():
                 formula_columns.add(f"calculated_{formula_name}")
                 # Validate the formula's INPUT columns exist in the raw catalog
                 # (skip columns that will be computed by another formula)
@@ -352,9 +355,9 @@ class SkyCatalogs:
 
         if self.population_manager:
             info["n_populations"] = len(self.population_manager)
-            info[
-                "population_summary"
-            ] = self.population_manager.get_population_summary()
+            info["population_summary"] = (
+                self.population_manager.get_population_summary()
+            )
 
         return info
 

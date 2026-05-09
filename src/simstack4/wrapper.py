@@ -284,7 +284,9 @@ class SimstackWrapper:
         if isinstance(bootstrap_data, dict):
             # Check if it's the map-based structure like yours
             map_names = list(bootstrap_data.keys())
-            if map_names and all(isinstance(bootstrap_data[key], list) for key in map_names):
+            if map_names and all(
+                isinstance(bootstrap_data[key], list) for key in map_names
+            ):
                 # This looks like: {'mips_24': [...], 'pacs_green': [...], ...}
                 logger.info(
                     f"Found map-based bootstrap structure with {len(map_names)} bands"
@@ -527,9 +529,7 @@ class SimstackWrapper:
                                         for v in series
                                     ]
                             except Exception as e:
-                                logger.warning(
-                                    f"Could not serialize column {col}: {e}"
-                                )
+                                logger.warning(f"Could not serialize column {col}: {e}")
                                 catalog_sample[col] = None
 
                         metadata["catalog_sample"] = catalog_sample
@@ -607,12 +607,16 @@ class SimstackWrapper:
                     coords = population.coordinates
                     if hasattr(coords, "ra") and hasattr(coords, "dec"):
                         pop_details["coordinates"] = {
-                            "ra": coords.ra.degree.tolist()
-                            if hasattr(coords.ra, "degree")
-                            else coords.ra.tolist(),
-                            "dec": coords.dec.degree.tolist()
-                            if hasattr(coords.dec, "degree")
-                            else coords.dec.tolist(),
+                            "ra": (
+                                coords.ra.degree.tolist()
+                                if hasattr(coords.ra, "degree")
+                                else coords.ra.tolist()
+                            ),
+                            "dec": (
+                                coords.dec.degree.tolist()
+                                if hasattr(coords.dec, "degree")
+                                else coords.dec.tolist()
+                            ),
                         }
                         required_columns.update(["ra", "dec"])
 
@@ -677,9 +681,9 @@ class SimstackWrapper:
                 "timestamp": datetime.now().isoformat(),
                 "version": "simstack4_json_self_contained_v2",
                 "config_path": self.config_path,
-                "n_populations": len(self.population_manager)
-                if self.population_manager
-                else 0,
+                "n_populations": (
+                    len(self.population_manager) if self.population_manager else 0
+                ),
                 "n_maps": len(self.sky_maps) if self.sky_maps else 0,
                 "catalog_embedded": catalog_metadata is not None
                 and len(catalog_metadata) > 0,
@@ -1338,12 +1342,16 @@ class SimstackWrapper:
                             map_config, "color_correction", 1.0
                         ),
                         "beam": {
-                            "fwhm": getattr(map_config.beam, "fwhm", 0)
-                            if hasattr(map_config, "beam")
-                            else 0,
-                            "area_sr": getattr(map_config.beam, "area_sr", 1.0)
-                            if hasattr(map_config, "beam")
-                            else 1.0,
+                            "fwhm": (
+                                getattr(map_config.beam, "fwhm", 0)
+                                if hasattr(map_config, "beam")
+                                else 0
+                            ),
+                            "area_sr": (
+                                getattr(map_config.beam, "area_sr", 1.0)
+                                if hasattr(map_config, "beam")
+                                else 1.0
+                            ),
                         },
                     }
                 config_dict["maps"] = maps_dict
@@ -1368,12 +1376,16 @@ class SimstackWrapper:
                 "serialization_error": str(e),
                 "config_type": str(type(config).__name__),
                 "fallback_data": {
-                    "cosmology": getattr(config, "cosmology", "Planck18")
-                    if hasattr(config, "cosmology")
-                    else "Planck18",
-                    "catalog_file": getattr(config.catalog, "file", "")
-                    if hasattr(config, "catalog")
-                    else "",
+                    "cosmology": (
+                        getattr(config, "cosmology", "Planck18")
+                        if hasattr(config, "cosmology")
+                        else "Planck18"
+                    ),
+                    "catalog_file": (
+                        getattr(config.catalog, "file", "")
+                        if hasattr(config, "catalog")
+                        else ""
+                    ),
                     "n_maps": len(config.maps) if hasattr(config, "maps") else 0,
                 },
             }
@@ -1395,6 +1407,8 @@ class SimstackWrapper:
                 ErrorConfig,
                 MapConfig,
                 OutputConfig,
+                SplitParams,
+                SplitType,
                 SimstackConfig,
             )
 
@@ -1427,10 +1441,33 @@ class SimstackWrapper:
                     binning_config[bin_name] = bin_config
 
             # Classification config
+            # JSON may store any of: "labels" (value), "LABELS" (name),
+            # or "SplitType.LABELS" (str repr from EnhancedJSONEncoder fallback).
+            _split_type_str = classification_data.get("split_type")
+            _split_type = None
+            if _split_type_str:
+                _split_map = (
+                    {st.value: st for st in SplitType}  # "labels"
+                    | {st.name: st for st in SplitType}  # "LABELS"
+                    | {str(st): st for st in SplitType}  # "SplitType.LABELS"
+                )
+                _split_type = _split_map.get(_split_type_str)
+                if _split_type is None:
+                    raise ValueError(
+                        f"Cannot parse split_type from JSON: {_split_type_str!r}"
+                    )
+            _sp_dict = classification_data.get("split_params")
+            _split_params = None
+            if isinstance(_sp_dict, dict):
+                _split_params = SplitParams(
+                    id=_sp_dict.get("id", "population_split"),
+                    formula=_sp_dict.get("formula"),
+                    bins=_sp_dict.get("bins", {}),
+                )
             classification_config = ClassificationConfig(
-                split_type=classification_data.get("split_type"),
+                split_type=_split_type,
                 binning=binning_config,
-                split_params=classification_data.get("split_params"),
+                split_params=_split_params,
                 formulas=classification_data.get("formulas"),
             )
 
