@@ -32,7 +32,7 @@ Stacey+2010 (ApJ 724, 957): [CII] at high-z
 Run
 ---
     from simstack4.plots import _parse_bins
-    from analyze_cii_excess import analyze_line_excess
+    from simstack4.analyze_cii_excess import analyze_line_excess
     fig, df = analyze_line_excess(wrapper)
 """
 import numpy as np
@@ -605,7 +605,7 @@ if __name__ == "__main__":
     print("Import and call analyze_line_excess(wrapper) or analyze_all_lines(wrapper)")
     print()
     print("Example:")
-    print("  from analyze_cii_excess import analyze_line_excess, analyze_all_lines")
+    print("  from simstack4.analyze_cii_excess import analyze_line_excess, analyze_all_lines")
     print()
     print("  # Single line analysis with plots")
     print("  fig, df = analyze_line_excess(wrapper)")

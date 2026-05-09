@@ -21,7 +21,7 @@ greybody to a two-component (cool + warm) SED.
 
 Usage
 -----
-    from analyze_warm_dust import measure_warm_dust
+    from simstack4.analyze_warm_dust import measure_warm_dust
 
     fig, df = measure_warm_dust(wrapper)
 """
@@ -623,7 +623,7 @@ def fit_warm_dust_model(df, verbose=True):
 
 if __name__ == "__main__":
     print("Usage:")
-    print("  from analyze_warm_dust import measure_warm_dust, fit_warm_dust_model")
+    print("  from simstack4.analyze_warm_dust import measure_warm_dust, fit_warm_dust_model")
     print()
     print("  # Step 1: Measure PACS excess")
     print("  fig, df = measure_warm_dust(wrapper)")

@@ -42,7 +42,7 @@ Zanella+2018 (MNRAS 481, 1976): [CII] deficit at z~2
 
 Usage
 -----
-    from analyze_cii_lines import measure_line_intensity, measure_all_lines
+    from simstack4.analyze_cii_lines import measure_line_intensity, measure_all_lines
 
     # [CII] measurement + 6-panel science plot
     fig, df = measure_line_intensity(wrapper)
@@ -1678,7 +1678,7 @@ def measure_all_lines(wrapper, min_tier="B", split_filter=None):
 
 if __name__ == "__main__":
     print("Usage:")
-    print("  from analyze_cii_lines import measure_line_intensity, measure_all_lines")
+    print("  from simstack4.analyze_cii_lines import measure_line_intensity, measure_all_lines")
     print()
     print("  # [CII] measurement with science plots")
     print("  fig, df = measure_line_intensity(wrapper)")

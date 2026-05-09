@@ -32,7 +32,7 @@ M* bins: [9.0, 9.5, 10.0, 10.5, 11.0, 12.0]
 
 Usage
 -----
-    from analyze_pah import measure_pah_excess, pah_optimized_zbins
+    from simstack4.analyze_pah import measure_pah_excess, pah_optimized_zbins
 
     fig, df = measure_pah_excess(wrapper)
     fig, df = measure_pah_excess(wrapper, split_filter=[0])
@@ -1498,7 +1498,7 @@ def apply_pah_correction(wrapper, model, target_wavelength=24.0):
 
 if __name__ == "__main__":
     print("Usage:")
-    print("  from analyze_pah import (measure_pah_excess, fit_pah_model,")
+    print("  from simstack4.analyze_pah import (measure_pah_excess, fit_pah_model,")
     print("                           apply_pah_correction, pah_optimized_zbins)")
     print()
     print("  # Step 1: Measure PAH excess")
