@@ -115,9 +115,9 @@ def run_stacking_pipeline(config_path: Path, output_dir: Path):
                 "success": True,
                 "execution_time": execution_time,
                 "stacking_file": stacking_file,
-                "n_populations": len(wrapper.population_manager)
-                if wrapper.population_manager
-                else 0,
+                "n_populations": (
+                    len(wrapper.population_manager) if wrapper.population_manager else 0
+                ),
             }
 
         else:

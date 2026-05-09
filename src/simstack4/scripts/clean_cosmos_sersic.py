@@ -40,25 +40,23 @@ from astropy.table import Table
 # =========================================================================
 MASS_COMPLETENESS = {
     # (z_low, z_high): log_mass_limit
-    (0.01, 0.5): 9.00,  # Extrapolated from McLeod+2021
-    (0.5, 1.0): 9.25,  # Extrapolated from McLeod+2021
-    (1.0, 1.5): 9.25,  # Extrapolated from McLeod+2021
-    (1.5, 2.0): 9.50,  # Extrapolated from McLeod+2021
-    (2.0, 2.5): 9.50,  # Table A.1
-    (2.5, 3.0): 9.75,  # Table A.1
-    (3.0, 3.5): 9.75,  # Table A.1
-    (3.5, 4.0): 10.00,  # Table A.1
-    (4.0, 4.5): 10.00,  # Table A.1
-    (4.5, 5.0): 10.25,  # Table A.1
-    (5.0, 5.5): 10.25,  # Table A.1
-    (5.5, 6.0): 10.3,  # Table A.1
-    (6.0, 6.5): 10.3,  # Table A.1
-    (6.5, 7.0): 10.4,  # Table A.1
-    (7.0, 7.5): 10.4,  # Table A.1
-    (7.5, 8.0): 10.5,  # Table A.1
-    (8.0, 8.5): 10.5,  # Table A.1
-    (8.5, 9.0): 10.5,  # Table A.1
-    (9.0, 10.0): 10.5,  # Table A.1
+    # z < 0.5: very deep, nearly complete
+    (0.01, 0.5): 8.50,  # Conservative for COSMOS depth
+    # Wijesekera+2026 Table A.1 + extrapolations
+    (0.5, 1.0): 9.25,
+    (1.0, 1.5): 9.25,
+    (1.5, 2.0): 9.50,
+    (2.0, 2.5): 9.50,
+    (2.5, 3.0): 9.75,
+    (3.0, 3.5): 9.75,
+    (3.5, 4.0): 10.00,
+    (4.0, 4.5): 10.25,
+    (4.5, 5.0): 10.25,
+    # High-z: extrapolated, JWST-era estimates
+    (5.0, 6.0): 10.50,
+    (6.0, 7.0): 10.75,
+    (7.0, 8.0): 11.00,
+    (8.0, 10.0): 11.25,
 }
 
 
@@ -139,7 +137,7 @@ def apply_mass_completeness(df, z_col, mass_col):
 
     for (z_lo, z_hi), mass_lim in MASS_COMPLETENESS.items():
         in_bin = (df[z_col] > z_lo) & (df[z_col] <= z_hi)
-        above_limit = df[mass_col] >= (mass_lim - 0.5*0)
+        above_limit = df[mass_col] >= mass_lim
         mask |= in_bin & above_limit
 
     return mask
@@ -447,9 +445,184 @@ def compute_photometric_beta_luv(
     return beta_out, log_luv_out
 
 
+# ── Sersic reliability flag ──────────────────────────────────────────────
+
+
+def flag_sersic_reliable(
+    df,
+    z_col="redshift",
+    radius_col="radius_sersic",
+    chi2_col="fmf_chi2",
+    snr_col="snr_f444w",
+    z_max=4.0,
+    min_radius_arcsec=0.05,
+    max_chi2=5.0,
+    min_snr=10.0,
+):
+    """
+    Flag sources with reliable Sersic profile measurements.
+
+    COSMOS2025 fits Sersic profiles in F444W (4.4 um) using SE++.
+    Reliability depends on:
+      - Redshift: at z < 3, F444W samples rest-frame > 1 um (stellar mass
+        morphology, robust). At z ~ 4, rest-frame ~ 0.9 um (OK). At z > 5,
+        rest-frame UV where galaxies are clumpy (unreliable).
+      - Resolution: NIRCam F444W PSF FWHM ~ 0.15". Sources need
+        r_e > PSF/2 ~ 0.075" to be resolved. We use 0.05" as minimum
+        to be conservative.
+      - Fit quality: SE++ chi^2 should be reasonable.
+      - Detection SNR: need sufficient F444W SNR for profile fitting.
+
+    Parameters
+    ----------
+    df : DataFrame
+    z_col : str
+        Redshift column.
+    radius_col : str
+        Sersic effective radius column (in degrees, as in COSMOS2025).
+    chi2_col : str
+        SE++ model chi^2 column.
+    snr_col : str
+        F444W SNR column.
+    z_max : float
+        Maximum redshift for reliable Sersic (default 4.0).
+    min_radius_arcsec : float
+        Minimum r_e in arcsec (0.05" ~ 0.4 kpc at z=2).
+    max_chi2 : float
+        Maximum acceptable reduced chi^2.
+    min_snr : float
+        Minimum F444W detection SNR.
+
+    Returns
+    -------
+    reliable : boolean array
+    """
+    n = len(df)
+    reliable = np.ones(n, dtype=bool)
+
+    # Redshift cut
+    if z_col in df.columns:
+        reliable &= df[z_col].values < z_max
+
+    # Radius cut (column is in degrees, convert to arcsec)
+    if radius_col in df.columns:
+        r_arcsec = df[radius_col].values * 3600.0
+        reliable &= (r_arcsec > min_radius_arcsec) & np.isfinite(r_arcsec)
+    else:
+        print(f"  WARNING: Sersic radius column '{radius_col}' not found")
+
+    # Chi2 cut
+    if chi2_col in df.columns:
+        chi2 = df[chi2_col].values
+        reliable &= (chi2 < max_chi2) & (chi2 > 0) & np.isfinite(chi2)
+
+    # SNR cut
+    if snr_col in df.columns:
+        snr = df[snr_col].values
+        reliable &= (snr > min_snr) & np.isfinite(snr)
+
+    return reliable
+
+
+def compute_sigma_sfr(df, sfr_col, radius_col, z_col, sfr_is_log=True):
+    """
+    Compute SFR surface density: Sigma_SFR = SFR / (2 pi r_e^2).
+
+    Uses the Sersic effective radius from SE++ (in degrees) converted
+    to physical kpc using angular diameter distance.
+
+    Parameters
+    ----------
+    df : DataFrame
+    sfr_col : str
+        SFR column (log or linear).
+    radius_col : str
+        Sersic effective radius in degrees.
+    z_col : str
+        Redshift column.
+    sfr_is_log : bool
+        Whether SFR is log10(SFR).
+
+    Returns
+    -------
+    log_sigma_sfr : array
+        log10(Sigma_SFR / [Msun/yr/kpc^2]). NaN where unavailable.
+    """
+    from astropy.cosmology import Planck18
+    import warnings
+
+    n = len(df)
+    log_sigma = np.full(n, np.nan)
+
+    if sfr_col not in df.columns or radius_col not in df.columns:
+        print(
+            f"  WARNING: Missing columns for Sigma_SFR "
+            f"(need {sfr_col} and {radius_col})"
+        )
+        return log_sigma
+
+    if sfr_is_log:
+        sfr = 10 ** df[sfr_col].values.astype(float)
+    else:
+        sfr = df[sfr_col].values.astype(float)
+
+    r_deg = df[radius_col].values.astype(float)
+    z = df[z_col].values.astype(float)
+
+    # Convert radius from degrees to physical kpc
+    # Angular diameter distance, then r_kpc = r_rad * d_A
+    # r_rad = r_deg * pi/180
+    valid = (
+        np.isfinite(sfr)
+        & (sfr > 0)
+        & np.isfinite(r_deg)
+        & (r_deg > 0)
+        & np.isfinite(z)
+        & (z > 0.01)
+    )
+
+    # Precompute kpc_per_arcsec at z bin midpoints for speed
+    z_bins = np.arange(0.01, 10.0, 0.05)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        kpc_per_arcsec = {
+            round(zb, 3): Planck18.kpc_proper_per_arcmin(zb).value / 60.0
+            for zb in z_bins
+        }
+
+    for i in np.where(valid)[0]:
+        zi = z[i]
+        zbin = round(round(zi / 0.05) * 0.05, 3)
+        kpc_as = kpc_per_arcsec.get(zbin)
+        if kpc_as is None:
+            kpc_as = Planck18.kpc_proper_per_arcmin(zi).value / 60.0
+
+        r_arcsec = r_deg[i] * 3600.0
+        r_kpc = r_arcsec * kpc_as
+
+        if r_kpc > 0:
+            area_kpc2 = 2 * np.pi * r_kpc**2  # within r_e
+            sigma = sfr[i] / area_kpc2
+            if sigma > 0:
+                log_sigma[i] = np.log10(sigma)
+
+    n_valid = np.isfinite(log_sigma).sum()
+    if n_valid > 0:
+        vals = log_sigma[np.isfinite(log_sigma)]
+        print(
+            f"  Sigma_SFR: {n_valid:,} sources, "
+            f"median = {np.median(vals):.2f}, "
+            f"range [{vals.min():.2f}, {vals.max():.2f}] "
+            f"log(Msun/yr/kpc^2)"
+        )
+
+    return log_sigma
+
+
 def create_wijesekera_catalog(
     photometry_path,
     lephare_path,
+    cigale_path,
     output_path,
     # ---- Column name mappings (adjust to your catalog) ----
     z_col="zfinal",
@@ -459,19 +632,28 @@ def create_wijesekera_catalog(
     ra_col="ra",
     dec_col="dec",
     # Rest-frame absolute magnitudes from SED fitting
-    # Set to None if not available (NUVrJ cut will be skipped)
-    nuv_col="mabs_nuv",  # e.g. "MNUV" or "restframe_NUV"
-    r_col="mabs_r",  # e.g. "Mr" or "restframe_r"
-    j_col_rf="mabs_j",  # e.g. "MJ" or "restframe_J"
-    # UV properties from SED fitting (CIGALE)
-    luv_col="l_nuv",  # e.g. "L_UV" or "LUV_1600"
+    nuv_col="mabs_nuv",
+    r_col="mabs_r",
+    j_col_rf="mabs_j",
+    # UV properties
+    luv_col="l_nuv",
     ebv_minchi2="ebv_minchi2",
     law_minchi2="law_minchi2",
     star_flag_col="flag_star",
+    # Morphology
+    radius_col="radius_sersic",  # Sersic r_e in degrees (SE++)
+    sersic_chi2_col="fmf_chi2",  # SE++ model chi^2
+    # CIGALE columns (extension 4)
+    metallicity_col="metallicity",  # gas-phase metallicity from CIGALE
+    cigale_mass_col="mass",  # stellar mass from CIGALE (linear)
     # Quality
     chi2_col="chi2_best",
     chi2_max=100.0,
+    # Population class options
     exclude_classes=None,
+    flag_quiescent=True,
+    flag_starburst=True,
+    flag_mass_complete=True,
 ):
     """
     Build a stacking-ready catalog matching Wijesekera+2026 selection.
@@ -487,16 +669,24 @@ def create_wijesekera_catalog(
     *_col : str or None
         Column name mappings — adjust to match your actual catalog columns.
     exclude_classes : list of int, optional
-        Population classes to exclude from the output catalog.
+        Population classes to exclude from output.
         0=complete_sfg, 1=incomplete_sfg, 2=all_qt, 3=all_sb.
-        E.g. [2] to exclude quiescent (negligible IR, saves layers).
-        WARNING: excluding populations that have correlated IR emission
-        will bias the stacking.  Quiescent galaxies are safe to exclude
-        because their IR contribution is negligible.
+    flag_quiescent : bool
+        Compute NUVrJ star-forming/quiescent flag. Default True.
+    flag_starburst : bool
+        Compute starburst flag (SFR/SFR_MS > 3). Default True.
+    flag_mass_complete : bool
+        Compute mass-completeness flag. Default True.
+
+    Output columns include
+    ----------------------
+    Standard: ra, dec, redshift, log_stellar_mass, log_sfr
+    UV: beta_uv (template), log_l_uv (template), beta_uv_phot, log_l_uv_phot
+    Dust: ebv_minchi2, E(B-V) from LePhare
+    Metallicity: metallicity (from CIGALE, mass fraction)
+    Derived: log_ssfr, log_sigma_sfr, sersic_reliable
+    Flags: star_forming, mass_complete, starburst, population_class
     """
-    print("=" * 70)
-    print("Wijesekera+2026 Catalog Builder")
-    print("=" * 70)
 
     # ------------------------------------------------------------------
     # 1. Load catalogs
@@ -523,6 +713,13 @@ def create_wijesekera_catalog(
         [phot_df.reset_index(drop=True), lephare_df.reset_index(drop=True)],
         axis=1,
     )
+
+    print(f"Loading Cigale: {cigale_path}")
+    if cigale_path and cigale_path.exists():
+        with fits.open(cigale_path) as hdul:
+            cigale_df = Table(hdul[1].data).to_pandas()
+        df = pd.concat([df, cigale_df], axis=1)
+
     # Remove duplicate columns
     df = df.loc[:, ~df.columns.duplicated()]
     n_initial = len(df)
@@ -572,7 +769,7 @@ def create_wijesekera_catalog(
     print(f"  Valid coords:         {mask.sum():>8,} / {n_initial:,}")
 
     # Valid redshift: 0.5 < z <= 5.0
-    z_mask = (df[z_col] > 0.01) & (df[z_col] <= 9.0) & np.isfinite(df[z_col])
+    z_mask = (df[z_col] > 0.5) & (df[z_col] <= 5.0) & np.isfinite(df[z_col])
     mask &= z_mask
     print(f"  0.5 < z <= 5.0:      {mask.sum():>8,} / {n_initial:,}")
 
@@ -655,28 +852,26 @@ def create_wijesekera_catalog(
     # ------------------------------------------------------------------
     # 6b. Combined population class for simstack splitting
     # ------------------------------------------------------------------
-    # Encode the 3 binary flags into a single integer label:
+    # Encode the binary flags into a single integer label:
     #   0 = complete_sfg   (SF, mass-complete, not starburst)
     #   1 = incomplete_sfg  (SF, mass-incomplete, not starburst)
     #   2 = all_qt          (quiescent, any mass completeness)
     #   3 = all_sb          (starburst, any SF/QT status)
     #
     # Priority: starburst > quiescent > mass-completeness
-    # (a starburst quiescent galaxy goes into all_sb)
+    # Each flag is only applied if the corresponding option is enabled.
 
-    has_sf = "star_forming" in df.columns
-    has_mc = "mass_complete" in df.columns
-    has_sb = "starburst" in df.columns
+    has_sf = flag_quiescent and "star_forming" in df.columns
+    has_mc = flag_mass_complete and "mass_complete" in df.columns
+    has_sb = flag_starburst and "starburst" in df.columns
 
-    pop_class = np.zeros(len(df), dtype=int)  # default: complete_sfg
+    pop_class = np.zeros(len(df), dtype=int)  # default: all are class 0
 
     if has_mc:
         pop_class[df["mass_complete"] == 0] = 1  # incomplete_sfg
     if has_sf:
         pop_class[df["star_forming"] == 0] = 2  # all_qt
     if has_sb and has_mc and has_sf:
-        # Only flag starbursts among mass-complete SF galaxies,
-        # where both the SFR and the MS calibration are reliable.
         sb_reliable = (
             (df["starburst"] == 1)
             & (df["mass_complete"] == 1)
@@ -684,13 +879,18 @@ def create_wijesekera_catalog(
         )
         pop_class[sb_reliable] = 3  # all_sb
     elif has_sb:
-        pop_class[df["starburst"] == 1] = 3  # fallback if flags missing
+        pop_class[df["starburst"] == 1] = 3
 
     df["population_class"] = pop_class
 
     _pop_labels = {0: "complete_sfg", 1: "incomplete_sfg", 2: "all_qt", 3: "all_sb"}
-    print(f"\n  Population classes:")
-    for code, label in _pop_labels.items():
+    active_classes = sorted(set(pop_class[mask]))
+    print(
+        f"\n  Population classes "
+        f"(mc={flag_mass_complete}, qt={flag_quiescent}, sb={flag_starburst}):"
+    )
+    for code in active_classes:
+        label = _pop_labels.get(code, f"class_{code}")
         n = (pop_class[mask] == code).sum()
         print(f"    {code} ({label:>16}): {n:>8,}")
 
@@ -853,6 +1053,100 @@ def create_wijesekera_catalog(
             )
 
     # ------------------------------------------------------------------
+    # 7d. Derived quantities: sSFR, Sigma_SFR, Sersic flag
+    # ------------------------------------------------------------------
+
+    # sSFR = SFR / M*  (in log: log_ssfr = log_sfr - log_mass)
+    if sfr_col and sfr_col in df_sel.columns:
+        if sfr_is_log:
+            df_sel["log_ssfr"] = (
+                df_sel[sfr_col].values - df_sel["log_stellar_mass"].values
+            )
+        else:
+            df_sel["log_ssfr"] = (
+                np.log10(np.maximum(df_sel[sfr_col].values, 1e-20))
+                - df_sel["log_stellar_mass"].values
+            )
+        valid_ssfr = np.isfinite(df_sel["log_ssfr"])
+        print(
+            f"\n  sSFR: {valid_ssfr.sum():,} valid, "
+            f"median = {df_sel.loc[valid_ssfr, 'log_ssfr'].median():.2f} "
+            f"log(yr^-1)"
+        )
+
+    # Delta_MS = SFR / SFR_MS (offset from Schreiber+2015 main sequence)
+    if sfr_col and sfr_col in df_sel.columns:
+        log_sfr_ms = np.array(
+            [
+                schreiber_main_sequence_sfr(m, z)
+                for m, z in zip(
+                    df_sel["log_stellar_mass"].values, df_sel["redshift"].values
+                )
+            ]
+        )
+        log_sfr_ms = np.log10(np.maximum(log_sfr_ms, 1e-20))
+        if sfr_is_log:
+            df_sel["log_delta_ms"] = df_sel[sfr_col].values - log_sfr_ms
+        else:
+            df_sel["log_delta_ms"] = (
+                np.log10(np.maximum(df_sel[sfr_col].values, 1e-20)) - log_sfr_ms
+            )
+        valid_dms = np.isfinite(df_sel["log_delta_ms"])
+        print(
+            f"  Delta_MS: {valid_dms.sum():,} valid, "
+            f"median = {df_sel.loc[valid_dms, 'log_delta_ms'].median():.2f} dex"
+        )
+
+    # Sersic reliability flag
+    if radius_col in df_sel.columns:
+        sersic_ok = flag_sersic_reliable(
+            df_sel,
+            z_col="redshift",
+            radius_col=radius_col,
+            chi2_col=sersic_chi2_col if sersic_chi2_col in df_sel.columns else None,
+            snr_col="snr_f444w" if "snr_f444w" in df_sel.columns else None,
+        )
+        df_sel["sersic_reliable"] = sersic_ok.astype(int)
+        print(
+            f"  Sersic reliable: {sersic_ok.sum():,} / {len(df_sel):,} "
+            f"({100*sersic_ok.mean():.0f}%)"
+        )
+    else:
+        print(f"  Sersic: SKIPPED ('{radius_col}' not found)")
+
+    # Sigma_SFR (SFR surface density)
+    if radius_col in df_sel.columns and sfr_col in df_sel.columns:
+        log_sigma = compute_sigma_sfr(
+            df_sel,
+            sfr_col=sfr_col if sfr_is_log else sfr_col,
+            radius_col=radius_col,
+            z_col="redshift",
+            sfr_is_log=sfr_is_log,
+        )
+        df_sel["log_sigma_sfr"] = log_sigma
+    else:
+        print(f"  Sigma_SFR: SKIPPED (need both {sfr_col} and {radius_col})")
+
+    # Ensure E(B-V) is in output
+    if ebv_minchi2 and ebv_minchi2 in df_sel.columns:
+        print(f"  E(B-V): present as '{ebv_minchi2}'")
+    else:
+        print(f"  E(B-V): not found")
+
+    # Ensure metallicity is in output (from CIGALE extension)
+    if metallicity_col and metallicity_col in df_sel.columns:
+        valid_z_gas = np.isfinite(df_sel[metallicity_col]) & (
+            df_sel[metallicity_col] > 0
+        )
+        print(
+            f"  Metallicity: {valid_z_gas.sum():,} valid, "
+            f"median = {df_sel.loc[valid_z_gas, metallicity_col].median():.4f} "
+            f"(solar = 0.02)"
+        )
+    else:
+        print(f"  Metallicity: '{metallicity_col}' not found")
+
+    # ------------------------------------------------------------------
     # 8. Summary statistics
     # ------------------------------------------------------------------
     print(f"\n--- Sample Summary ---")
@@ -894,35 +1188,42 @@ if __name__ == "__main__":
         "--exclude",
         type=int,
         nargs="*",
-        default=[2],
+        default=None,
         help="Population classes to exclude: 0=complete_sfg, 1=incomplete_sfg, "
-        "2=all_qt, 3=all_sb. Default: [2] (quiescent only).",
+        "2=all_qt, 3=all_sb. Default: None (keep all).",
     )
     parser.add_argument(
-        "--keep-all",
+        "--no-qt",
         action="store_true",
-        help="Keep all population classes (overrides --exclude).",
+        help="Disable quiescent (NUVrJ) flagging — all sources treated as SF.",
+    )
+    parser.add_argument(
+        "--no-sb", action="store_true", help="Disable starburst flagging."
+    )
+    parser.add_argument(
+        "--no-mc",
+        action="store_true",
+        help="Disable mass-completeness flagging — all sources class 0.",
     )
     parser.add_argument(
         "--output",
         type=str,
         default=None,
-        help="Output parquet path. Default: auto-named based on exclusions.",
+        help="Output parquet path. Default: COSMOSWeb_stacking_catalog.parquet",
     )
     args = parser.parse_args()
 
     base = Path("/Users/mviero/data/Astronomy/catalogs/cosmos")
 
-    exclude = None if args.keep_all else (args.exclude or None)
-
     if args.output:
         output_path = Path(args.output)
     else:
-        output_path = base / "COSMOSWeb_wijesekera_phot_all.parquet"
+        output_path = base / "COSMOSWeb_sersic_stacking_catalog.parquet"
 
     df = create_wijesekera_catalog(
         photometry_path=base / "COSMOSWeb_mastercatalog_v1.fits",
         lephare_path=base / "COSMOSWeb_mastercatalog_v1_lephare.fits",
+        cigale_path=base / "COSMOSWeb_mastercatalog_v1_cigale.fits",
         output_path=output_path,
         z_col="zfinal",
         mass_col="mass_med",
@@ -937,7 +1238,13 @@ if __name__ == "__main__":
         ebv_minchi2="ebv_minchi2",
         law_minchi2="law_minchi2",
         star_flag_col="flag_star",
+        radius_col="radius_sersic",
+        sersic_chi2_col="fmf_chi2",
+        metallicity_col="metallicity",
         chi2_col="chi2_best",
         chi2_max=100.0,
-        exclude_classes=exclude,
+        exclude_classes=args.exclude,
+        flag_quiescent=not args.no_qt,
+        flag_starburst=not args.no_sb,
+        flag_mass_complete=not args.no_mc,
     )
