@@ -20,58 +20,18 @@ from .cosmology import CosmologyCalculator
 from .exceptions.simstack_exceptions import SimstackError
 from .populations import PopulationManager
 from .results import SimstackResults, create_results_processor
+from .serialization import (
+    EnhancedJSONEncoder,
+    get_cosmology_enum,
+    reconstruct_config_from_json,
+    serialize_config,
+    validate_saved_json,
+)
 from .sky_catalogs import SkyCatalogs
 from .sky_maps import SkyMaps, load_maps
 from .utils import setup_logging
 
 logger = setup_logging()
-
-
-class EnhancedJSONEncoder(json.JSONEncoder):
-    """Enhanced JSON encoder for numpy arrays and custom objects"""
-
-    def default(self, obj):
-        # Handle numpy types
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, np.integer | np.int32 | np.int64):
-            return int(obj)
-        if isinstance(obj, np.floating | np.float32 | np.float64):
-            return float(obj)
-        if isinstance(obj, np.bool_):
-            return bool(obj)
-
-        # Handle pandas Series/DataFrame
-        if hasattr(obj, "to_dict"):
-            try:
-                return obj.to_dict()
-            except (AttributeError, TypeError, ValueError):
-                pass
-
-        # Handle custom enum/object types by converting to string
-        if hasattr(obj, "__name__"):  # Class types
-            return str(obj.__name__)
-        if hasattr(obj, "name"):  # Enum types
-            return str(obj.name)
-        if hasattr(obj, "value"):  # Enum values
-            return obj.value
-
-        # Handle other custom objects by converting to string
-        if hasattr(obj, "__dict__"):
-            # Try to serialize the object's dictionary
-            try:
-                return {
-                    k: v
-                    for k, v in obj.__dict__.items()
-                    if isinstance(
-                        v, str | int | float | bool | list | dict | type(None)
-                    )
-                }
-            except (AttributeError, TypeError, ValueError):
-                return str(obj)
-
-        # Final fallback - convert to string
-        return str(obj)
 
 
 class SimstackWrapper:
@@ -714,41 +674,7 @@ class SimstackWrapper:
             raise SimstackError(f"Save failed: {e}") from e
 
     def _validate_saved_json(self, filepath: Path) -> None:
-        """Validate that saved JSON contains all necessary data for analysis"""
-        try:
-            with open(filepath) as f:
-                data = json.load(f)
-
-            required_keys = [
-                "flux_densities",
-                "flux_errors",
-                "map_names",
-                "population_labels",
-                "catalog_metadata",
-                "populations",
-                "population_details",
-            ]
-
-            missing_keys = [key for key in required_keys if key not in data]
-            if missing_keys:
-                logger.warning(
-                    f"JSON validation warning - missing keys: {missing_keys}"
-                )
-
-            # Check catalog metadata
-            catalog_meta = data.get("catalog_metadata", {})
-            if not catalog_meta.get("catalog_info", {}).get("n_populations", 0):
-                logger.warning("JSON validation warning - no population metadata found")
-
-            # Check population data
-            pop_data = data.get("populations", [])
-            if not pop_data:
-                logger.warning("JSON validation warning - no population data found")
-
-            logger.info("✓ JSON validation completed")
-
-        except (OSError, ValueError) as e:
-            logger.warning(f"JSON validation failed: {e}")
+        validate_saved_json(filepath)
 
     def load_stacking_results(self, filepath: str | Path) -> None:
         """Load stacking results from self-contained JSON"""
@@ -839,19 +765,7 @@ class SimstackWrapper:
         )
 
     def _get_cosmology_enum(self, cosmology_str: str):
-        """Convert cosmology string to enum"""
-        from .config import Cosmology
-
-        cosmology_upper = cosmology_str.upper()
-        if cosmology_upper in ["PLANCK18", "Planck18"]:
-            return Cosmology.PLANCK18
-        elif cosmology_upper in ["PLANCK15", "Planck15"]:
-            return Cosmology.PLANCK15
-        else:
-            logger.warning(
-                f"Unknown cosmology string '{cosmology_str}', defaulting to Planck18"
-            )
-            return Cosmology.PLANCK18
+        return get_cosmology_enum(cosmology_str)
 
     def _reconstruct_population_manager(self) -> None:
         """Reconstruct population manager from embedded JSON data"""
@@ -1217,318 +1131,12 @@ class SimstackWrapper:
             raise SimstackError(f"Analysis failed: {e}") from e
 
     def _serialize_config(self, config: SimstackConfig) -> dict:
-        """Enhanced config serialization that handles custom objects safely - NON-RECURSIVE VERSION"""
-
-        def safe_serialize(obj, depth=0, max_depth=10):
-            """Non-recursive serialization with depth limiting"""
-            if depth > max_depth:
-                return f"<max_depth_reached_{type(obj).__name__}>"
-
-            if obj is None:
-                return None
-            elif isinstance(obj, str | int | float | bool):
-                return obj
-            elif isinstance(obj, list | tuple):
-                return [safe_serialize(item, depth + 1, max_depth) for item in obj]
-            elif isinstance(obj, dict):
-                return {
-                    str(k): safe_serialize(v, depth + 1, max_depth)
-                    for k, v in obj.items()
-                }
-            elif hasattr(obj, "name") and isinstance(obj.name, str):
-                return str(obj.name)
-            elif hasattr(obj, "value"):
-                return obj.value
-            elif hasattr(obj, "__dict__"):
-                # Limit attribute serialization to avoid recursion
-                result = {}
-                for k, v in obj.__dict__.items():
-                    if not k.startswith("_"):  # Skip private attributes
-                        try:
-                            result[str(k)] = safe_serialize(v, depth + 1, max_depth)
-                        except (RecursionError, TypeError, AttributeError):
-                            result[str(k)] = str(type(v).__name__)
-                return result
-            else:
-                # Convert everything else to string representation
-                try:
-                    return str(obj)
-                except (TypeError, AttributeError):
-                    return f"<{type(obj).__name__}>"
-
-        config_dict = {}
-
-        try:
-            # Manually serialize specific config sections to avoid recursion
-            logger.info("Serializing configuration sections...")
-
-            # Handle catalog config
-            if hasattr(config, "catalog") and config.catalog:
-                logger.debug("Serializing catalog config...")
-                catalog_dict = {}
-
-                # Basic catalog info
-                catalog_dict["path"] = getattr(config.catalog, "path", "")
-                catalog_dict["file"] = getattr(config.catalog, "file", "")
-
-                # Astrometry
-                if hasattr(config.catalog, "astrometry"):
-                    catalog_dict["astrometry"] = dict(config.catalog.astrometry)
-
-                # Classification
-                if hasattr(config.catalog, "classification"):
-                    classification_dict = {}
-                    classification = config.catalog.classification
-
-                    # Split type and params
-                    if hasattr(classification, "split_type"):
-                        classification_dict["split_type"] = (
-                            str(classification.split_type)
-                            if classification.split_type
-                            else None
-                        )
-
-                    if hasattr(classification, "split_params"):
-                        classification_dict["split_params"] = safe_serialize(
-                            classification.split_params, 0, 5
-                        )
-
-                    # Binning configuration
-                    if hasattr(classification, "binning"):
-                        binning_dict = {}
-                        for bin_name, bin_config in classification.binning.items():
-                            binning_dict[bin_name] = {
-                                "id": getattr(bin_config, "id", bin_name),
-                                "label": getattr(bin_config, "label", bin_name),
-                                "bins": getattr(bin_config, "bins", []),
-                                "formula_ref": getattr(bin_config, "formula_ref", None),
-                            }
-                        classification_dict["binning"] = binning_dict
-
-                    # Formulas
-                    if hasattr(classification, "formulas"):
-                        classification_dict["formulas"] = safe_serialize(
-                            classification.formulas, 0, 3
-                        )
-
-                    catalog_dict["classification"] = classification_dict
-
-                config_dict["catalog"] = catalog_dict
-
-            # Handle maps config
-            if hasattr(config, "maps") and config.maps:
-                logger.debug("Serializing maps config...")
-                maps_dict = {}
-                for map_name, map_config in config.maps.items():
-                    maps_dict[map_name] = {
-                        "wavelength": getattr(map_config, "wavelength", 0),
-                        "path_map": getattr(map_config, "path_map", ""),
-                        "path_noise": getattr(map_config, "path_noise", ""),
-                        "color_correction": getattr(
-                            map_config, "color_correction", 1.0
-                        ),
-                        "beam": {
-                            "fwhm": (
-                                getattr(map_config.beam, "fwhm", 0)
-                                if hasattr(map_config, "beam")
-                                else 0
-                            ),
-                            "area_sr": (
-                                getattr(map_config.beam, "area_sr", 1.0)
-                                if hasattr(map_config, "beam")
-                                else 1.0
-                            ),
-                        },
-                    }
-                config_dict["maps"] = maps_dict
-
-            # Handle other simple sections
-            simple_attrs = ["cosmology", "output", "binning", "error_estimator"]
-            for attr in simple_attrs:
-                if hasattr(config, attr):
-                    logger.debug(f"Serializing {attr} config...")
-                    try:
-                        config_dict[attr] = safe_serialize(getattr(config, attr), 0, 5)
-                    except (RecursionError, TypeError, AttributeError) as e:
-                        logger.warning(f"Failed to serialize {attr}: {e}")
-                        config_dict[attr] = f"<serialization_failed: {e}>"
-
-            logger.info("✓ Configuration serialization completed")
-
-        except (AttributeError, TypeError, ValueError, RecursionError) as e:
-            logger.warning(f"Config serialization failed: {e}")
-            # Minimal fallback config
-            config_dict = {
-                "serialization_error": str(e),
-                "config_type": str(type(config).__name__),
-                "fallback_data": {
-                    "cosmology": (
-                        getattr(config, "cosmology", "Planck18")
-                        if hasattr(config, "cosmology")
-                        else "Planck18"
-                    ),
-                    "catalog_file": (
-                        getattr(config.catalog, "file", "")
-                        if hasattr(config, "catalog")
-                        else ""
-                    ),
-                    "n_maps": len(config.maps) if hasattr(config, "maps") else 0,
-                },
-            }
-
-        return config_dict
+        return serialize_config(config)
 
     def _reconstruct_config_from_json(self) -> SimstackConfig:
-        """Reconstruct config from embedded JSON data"""
         if not self._embedded_config:
             raise SimstackError("No embedded config data available")
-
-        try:
-            from .config import (
-                BeamConfig,
-                BinConfig,
-                BootstrapConfig,
-                CatalogConfig,
-                ClassificationConfig,
-                ErrorConfig,
-                MapConfig,
-                OutputConfig,
-                SplitParams,
-                SplitType,
-                SimstackConfig,
-            )
-
-            # Reconstruct catalog config
-            catalog_data = self._embedded_config.get("catalog", {})
-
-            # Astrometry
-            astrometry_data = catalog_data.get("astrometry", {})
-            astrometry_config = astrometry_data
-
-            # Classification with binning
-            classification_data = catalog_data.get("classification", {})
-
-            # Binning configurations
-            binning_config = {}
-            if "binning" in classification_data:
-                binning_dict = classification_data["binning"]
-                for bin_name, bin_config_dict in binning_dict.items():
-                    if not isinstance(bin_config_dict, dict):
-                        continue
-
-                    bin_config = BinConfig(
-                        id=bin_config_dict.get("id", bin_name),
-                        label=bin_config_dict.get(
-                            "label", bin_name.replace("_", " ").title()
-                        ),
-                        bins=bin_config_dict.get("bins", []),
-                        formula_ref=bin_config_dict.get("formula_ref"),
-                    )
-                    binning_config[bin_name] = bin_config
-
-            # Classification config
-            # JSON may store any of: "labels" (value), "LABELS" (name),
-            # or "SplitType.LABELS" (str repr from EnhancedJSONEncoder fallback).
-            _split_type_str = classification_data.get("split_type")
-            _split_type = None
-            if _split_type_str:
-                _split_map = (
-                    {st.value: st for st in SplitType}  # "labels"
-                    | {st.name: st for st in SplitType}  # "LABELS"
-                    | {str(st): st for st in SplitType}  # "SplitType.LABELS"
-                )
-                _split_type = _split_map.get(_split_type_str)
-                if _split_type is None:
-                    raise ValueError(
-                        f"Cannot parse split_type from JSON: {_split_type_str!r}"
-                    )
-            _sp_dict = classification_data.get("split_params")
-            _split_params = None
-            if isinstance(_sp_dict, dict):
-                _split_params = SplitParams(
-                    id=_sp_dict.get("id", "population_split"),
-                    formula=_sp_dict.get("formula"),
-                    bins=_sp_dict.get("bins", {}),
-                )
-            classification_config = ClassificationConfig(
-                split_type=_split_type,
-                binning=binning_config,
-                split_params=_split_params,
-                formulas=classification_data.get("formulas"),
-            )
-
-            # Full catalog config
-            catalog_config = CatalogConfig(
-                path=catalog_data.get("path", ""),
-                file=catalog_data.get("file", ""),
-                astrometry=astrometry_config,
-                classification=classification_config,
-            )
-
-            # Reconstruct maps config
-            maps_data = self._embedded_config.get("maps", {})
-            maps_config = {}
-            for map_name, map_data in maps_data.items():
-                # Beam config
-                beam_data = map_data.get("beam", {})
-                beam_config = BeamConfig(
-                    fwhm=beam_data.get("fwhm", 0), area_sr=beam_data.get("area_sr", 1.0)
-                )
-
-                # Map config
-                maps_config[map_name] = MapConfig(
-                    wavelength=map_data.get("wavelength", 0),
-                    path_map=map_data.get("path_map", ""),
-                    path_noise=map_data.get("path_noise", ""),
-                    color_correction=map_data.get("color_correction", 1.0),
-                    beam=beam_config,
-                )
-
-            # Other config sections
-            output_data = self._embedded_config.get("output", {})
-            output_config = OutputConfig(
-                folder=output_data.get("folder", ""),
-                shortname=output_data.get("shortname", ""),
-            )
-
-            binning_data = self._embedded_config.get("binning", {})
-            binning_config_dict = {
-                "stack_all_z_at_once": binning_data.get("stack_all_z_at_once", True),
-                "add_foreground": binning_data.get("add_foreground", True),
-                "crop_circles": binning_data.get("crop_circles", True),
-            }
-
-            error_est_data = self._embedded_config.get("error_estimator", {})
-            bootstrap_data = error_est_data.get("bootstrap", {})
-            bootstrap_config = BootstrapConfig(
-                enabled=bootstrap_data.get("enabled", True),
-                iterations=bootstrap_data.get("iterations", 5),
-                initial_seed=bootstrap_data.get("initial_seed", 1),
-            )
-
-            error_estimator_config = ErrorConfig(
-                write_simmaps=error_est_data.get("write_simmaps", False),
-                randomize=error_est_data.get("randomize", False),
-                bootstrap=bootstrap_config,
-            )
-
-            # Create the full config
-            config = SimstackConfig(
-                binning=binning_config_dict,
-                error_estimator=error_estimator_config,
-                cosmology=self._get_cosmology_enum(
-                    self._embedded_config.get("cosmology", "Planck18")
-                ),
-                output=output_config,
-                catalog=catalog_config,
-                maps=maps_config,
-            )
-
-            return config
-
-        except (ImportError, AttributeError, TypeError, KeyError) as e:
-            logger.error(f"Failed to reconstruct config from JSON: {e}")
-            raise SimstackError(f"Config reconstruction failed: {e}") from e
+        return reconstruct_config_from_json(self._embedded_config)
 
     def _extract_stacking_data(self) -> dict:
         """Enhanced stacking data extraction"""
