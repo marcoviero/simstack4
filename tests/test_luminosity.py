@@ -229,10 +229,16 @@ class TestLIRIntegration:
         dnu = np.append(dnu[0], dnu)
         integral_jy_hz = np.sum(model_sed * dnu)
 
-        # Convert to L_sun using same D_L
+        # Convert to L_sun using same D_L.
+        # calculate_LIR includes a 1/(1+z) bandwidth-compression factor, so we
+        # apply it here too for a like-for-like comparison.
         D_L_mpc = fitter.luminosity_distance(redshift)
         D_L_m = D_L_mpc * 3.08568025e22
-        L_direct = 4.0 * np.pi * D_L_m**2 * integral_jy_hz * 1e-26 / fitter.L_sun
+        L_direct = (
+            4.0 * np.pi * D_L_m**2 * integral_jy_hz * 1e-26
+            / (1.0 + redshift)
+            / fitter.L_sun
+        )
 
         # Compare with calculate_LIR
         L_method, _ = fitter.calculate_LIR(amplitude, temperature, beta, redshift)

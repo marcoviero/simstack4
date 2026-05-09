@@ -364,7 +364,7 @@ class TestSchreiberPrior:
         # but with 30% noise and 5 points, the data still dominates.
         # Just check it runs and returns reasonable results.
         assert result_prior["fit_success"]
-        assert result_prior["temperature_prior"] is True
+        assert result_prior["temperature_prior"] == "viero"
 
 
 # ---------------------------------------------------------------------------
@@ -390,8 +390,8 @@ class TestLogPrior:
         assert lp == -np.inf
 
     def test_rejects_above_upper_bound(self, fitter):
-        """T_rest > T_rest_max (80K default) should be rejected."""
-        lp = fitter.log_prior([-34.0, 85.0], redshift=0.5)
+        """T_rest > T_rest_max (90K default) should be rejected."""
+        lp = fitter.log_prior([-34.0, 95.0], redshift=0.5)
         assert lp == -np.inf
 
     def test_rejects_bad_amplitude(self, fitter):

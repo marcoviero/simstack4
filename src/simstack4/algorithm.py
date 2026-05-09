@@ -387,12 +387,20 @@ class SimstackAlgorithm:
                         flat_to_crop, map_shape,
                         crop_info["n_crop"],
                     )
-                    # Mean-subtract to match base layers (which were mean-
-                    # subtracted over the full map before cropping).
-                    # For peak-normalised PSF, full-map sum of stamped
-                    # layer ≈ n_A × kernel_sum.
-                    full_map_mean_A = len(idx_A) * kernel_sum / n_full
-                    layer_A -= full_map_mean_A
+                    # Mean-subtract layer_A to match the base layer centering.
+                    # crop_circles=True: base layers used the full-map mean, so
+                    #   approximate it analytically (n_A PSF stamps × kernel_sum).
+                    # crop_circles=False: base layers were re-centered over
+                    #   signal pixels in _build_per_bin_cache; do the same here.
+                    if self.crop_circles:
+                        full_map_mean_A = len(idx_A) * kernel_sum / n_full
+                        layer_A -= full_map_mean_A
+                    else:
+                        signal_mask_crop = crop_info.get("signal_mask_crop")
+                        if signal_mask_crop is not None:
+                            layer_A -= np.mean(layer_A[signal_mask_crop])
+                        else:
+                            layer_A -= np.mean(layer_A)
 
                     # layer_B = base_k − layer_A  (no convolution)
                     layer_B = cache[k] - layer_A
@@ -526,11 +534,16 @@ class SimstackAlgorithm:
                 map_name, map_data
             )
         else:
-            obs_flat = map_data.data.ravel()
-            valid = ~np.isnan(obs_flat)
-            flat_indices = np.where(valid)[0]
-            obs_vector = obs_flat[flat_indices]
-            obs_vector -= np.nanmean(obs_vector)
+            # Use signal pixels (non-zero, non-NaN) matching sky_maps.py's
+            # mean-subtraction domain, so obs_vector and layers share the same
+            # reference frame.  Zero-padded boundary pixels are excluded.
+            signal_flat = (
+                map_data.valid_pixel_mask.ravel()
+                if map_data.valid_pixel_mask is not None
+                else ~np.isnan(map_data.data.ravel())
+            )
+            flat_indices = np.where(signal_flat)[0]
+            obs_vector = map_data.data.ravel()[flat_indices].copy()
 
         n_crop = len(flat_indices)
         logger.info(
@@ -556,6 +569,15 @@ class SimstackAlgorithm:
         if self.add_foreground:
             cache[n_layers - 1] = 1.0  # uniform foreground
 
+        # crop_circles=False: flat_indices already covers only signal pixels,
+        # but layers were mean-subtracted over the full map.  Re-centre each
+        # population layer over the signal pixels so layers and obs_vector
+        # share the same reference frame.
+        if not self.crop_circles:
+            for i in range(n_pops):
+                if np.any(cache[i] != 0):
+                    cache[i] -= np.mean(cache[i])
+
         # Build flat→crop lookup
         flat_to_crop = np.full(n_full, -1, dtype=np.int32)
         flat_to_crop[flat_indices] = np.arange(n_crop, dtype=np.int32)
@@ -565,11 +587,17 @@ class SimstackAlgorithm:
             f"({cache.nbytes / 1e9:.2f} GB), mem {memory_usage_gb():.2f}GB"
         )
 
+        signal_mask_crop = (
+            self.sky_maps[map_name].valid_pixel_mask.ravel()[flat_indices]
+            if not self.crop_circles
+            else None
+        )
         crop_info = {
             "flat_to_crop": flat_to_crop,
             "obs_vector": obs_vector,
             "n_crop": n_crop,
             "flat_indices": flat_indices,
+            "signal_mask_crop": signal_mask_crop,
         }
 
         return cache, crop_info
@@ -996,10 +1024,24 @@ class SimstackAlgorithm:
                 layer_matrix, map_data.data, map_name
             )
         else:
-            observed_vector = map_data.data.ravel()
-            valid_mask = ~np.isnan(observed_vector)
-            layer_matrix = layer_matrix[:, valid_mask]
-            observed_vector = observed_vector[valid_mask]
+            # Restrict to signal pixels (non-zero, non-NaN) as defined by
+            # sky_maps.py's _apply_mean_subtraction.  Zero-padded boundary
+            # pixels are not real observations and corrupt the regression.
+            # sky_maps.py also mean-subtracts the map over these pixels so
+            # observed_vector is already zero-mean here.
+            signal_mask = (
+                map_data.valid_pixel_mask.ravel()
+                if map_data.valid_pixel_mask is not None
+                else ~np.isnan(map_data.data.ravel())
+            )
+            layer_matrix = layer_matrix[:, signal_mask]
+            observed_vector = map_data.data.ravel()[signal_mask]
+            # Layers were mean-subtracted over the full map; re-centre over
+            # signal pixels to match the map's reference frame.
+            n_pop_layers = len(layer_specs)
+            for i in range(n_pop_layers):
+                if np.any(layer_matrix[i] != 0):
+                    layer_matrix[i] -= np.mean(layer_matrix[i])
 
         # Solve
         flux_densities, flux_errors, fit_stats = self._solve_linear_system(
