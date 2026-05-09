@@ -59,7 +59,7 @@ bins = [-1.8, -1.2, -0.7, -0.2, 0.6, 1.2, 1.8]
 [catalog.classification.binning.stellar_mass]
 id = "mass_med"                  # Column name for stellar mass
 #bins = [9.0, 10.25, 10.75, 12.0]
-bins = [9.0, 10.5, 10.75, 11.0, 11.75]  # Stellar mass bin edges
+bins = [9.0, 10.0, 10.4, 10.8, 11.2, 11.9]  # Stellar mass bin edges
 
 # Map configurations - each section defines a new map
 [maps.mips_24]

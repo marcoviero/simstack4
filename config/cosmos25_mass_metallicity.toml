@@ -13,7 +13,7 @@ randomize = false             # For null-testing: shuffle (x,y) when building la
 [error_estimator.bootstrap]
 enabled = true                # Use bootstrap method for error estimation
 method="per_bin"             # "per_bin"
-iterations = 25              # Number of bootstrap iterations
+iterations = 10              # Number of bootstrap iterations
 initial_seed = 1              # Seed for random shuffling (ensures consistency across bands)
 split_fraction = 0.5
 
@@ -26,8 +26,7 @@ shortname = "cosmos25"      # Name for output folder
 
 [catalog]
 path = "$CATSPATH/cosmos"     # Path to catalog directory
-#file = "COSMOSWeb_clean2.parquet"  # Catalog filename
-file = "COSMOSWeb_wijesekera_phot.parquet"  # Catalog filename
+file = "COSMOSWeb_sersic_stacking_catalog.parquet"  # Catalog filename
 
 [catalog.astrometry]
 ra = "ra"                     # Column name for right ascension
@@ -35,7 +34,8 @@ dec = "dec"                   # Column name for declination
 
 [catalog.classification]
 split_type = "labels"
-bin_property_columns = ["mass_med", "beta_uv_phot", "log_l_uv_phot", "sfr_med"]
+#bin_property_columns = ["mass_med", "metallicity", "beta_uv_phot", "log_l_uv_phot", "sfr_med"]
+bin_property_columns = ["mass_med", "beta_uv_phot", "log_l_uv_phot", "sfr_med", "metallicity", "log_sigma_sfr", "log_ssfr"]
 
 [catalog.classification.split_params]
 id = "population_class"
@@ -45,28 +45,19 @@ id = "population_class"
 [catalog.classification.binning.redshift]
 id = "zpdf_med"                 # Column name for redshift
 label = "Redshift"
-#bins = [0.01, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0]  # Redshift bin edges
+#bins = [0.5, 1.0, 1.5, 2.0, 3.0, 5.0]  # Redshift bin edges
 #bins = [0.5, 1.0, 1.5, 2.0, 2.5, 3.5, 5.0]  # Redshift bin edges
-bins = [0.01, 0.5, 1.25, 2.0, 2.75, 3.5, 5.0]  # Redshift bin edges
+bins = [0.01, 0.23, 0.33, 0.79, 0.98, 1.43, 1.62, 3.39, 3.88, 4.96]
 
-[catalog.classification.binning.l_uv]
-id = "log_l_uv_phot"
-label = "UV Luminosity"
-#bins = [8.5, 10.4, 10.9, 12.0]
-#bins = [8.5, 10.0, 11.0, 12.0]
-#bins = [8.5, 10.3, 10.8, 12.0]
-bins = [9.0, 10.2, 10.5, 10.9, 12.0]
+[catalog.classification.binning.metallicity]
+id = "metallicity"
+label = "Metallicity"
+bins = [0.002, 0.005, 0.01, 0.02, 0.04]
 
-[catalog.classification.binning.beta_uv]
-id = "beta_uv_phot"
-label = "UV Continuum Slope β"
-#bins = [-1.8, -1.0, -0.5, -0.25, 0.0, 0.3, 1.1]
-#bins = [-1.9, -1.25, -0.85, -0.55, -0.19, 0.33, 1.5]
-#bins = [-1.75, -0.75, -0.15, 0.5, 0.75, 1.0, 1.25, 1.5]
-#bins = [-2, -1.5, -0.75, 0, 0.75, 1.5]
-#bins = [-1.8, -1.2, -0.8, -0.2, 0.8, 1.2, 1.8]
-#bins = [-1.8, -1.2, -0.7, -0.2, 0.6, 1.2, 1.8]
-bins = [-2.0, -1.5, -1.0, -0.55, -0.1, 0.6, 1.2, 1.8]
+#[catalog.classification.binning.stellar_mass]
+#id = "mass_med"                  # Column name for stellar mass
+#bins = [9.0, 10.25, 10.75, 12.0]
+#bins = [9.0, 10.3, 10.7, 11.2, 11.9]  # Stellar mass bin edges
 
 # Map configurations - each section defines a new map
 [maps.mips_24]
@@ -79,16 +70,6 @@ path_noise = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_unc_10.cutout.fits"
 fwhm = 5.51                   # FWHM in arcsec
 area_sr = 1.328e-09          # Solid angle (1.0 if already in Jy/beam)
 
-[maps.mips_70]
-wavelength = 70.0             # Wavelength in microns
-color_correction = 1.33       # Color correction factor
-path_map = "$MAPSPATH/cosmos/mips/scosmos_mips_70_sci_v3.fits"
-path_noise = "$MAPSPATH/cosmos/mips/scosmos_mips_70_unc_v3.fits"
-
-[maps.mips_70.beam]
-fwhm = 18.0                   # FWHM in arcsec
-area_sr = 1.296e-08          # Solid angle (1.0 if already in Jy/beam)
-
 [maps.pacs_green]
 wavelength = 100.0
 color_correction = 1.0
@@ -98,7 +79,6 @@ path_noise = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS100_20160805_img_avg_noise.fit
 [maps.pacs_green.beam]
 fwhm = 7.49
 area_sr = 2.033e-09
-
 [maps.pacs_red]
 wavelength = 160.0
 color_correction = 1.0
