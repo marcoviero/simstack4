@@ -840,23 +840,18 @@ class SimstackWrapper:
 
     def _get_cosmology_enum(self, cosmology_str: str):
         """Convert cosmology string to enum"""
-        try:
-            from .config import Cosmology
+        from .config import Cosmology
 
-            # Handle both string formats
-            cosmology_upper = cosmology_str.upper()
-            if cosmology_upper in ["PLANCK18", "Planck18"]:
-                return Cosmology.PLANCK18
-            elif cosmology_upper in ["PLANCK15", "Planck15"]:
-                return Cosmology.PLANCK15
-            else:
-                logger.warning(
-                    f"Unknown cosmology string '{cosmology_str}', defaulting to Planck18"
-                )
-                return Cosmology.PLANCK18
-        except ImportError:
-            logger.warning("Could not import Cosmology enum, returning string")
-            return cosmology_str
+        cosmology_upper = cosmology_str.upper()
+        if cosmology_upper in ["PLANCK18", "Planck18"]:
+            return Cosmology.PLANCK18
+        elif cosmology_upper in ["PLANCK15", "Planck15"]:
+            return Cosmology.PLANCK15
+        else:
+            logger.warning(
+                f"Unknown cosmology string '{cosmology_str}', defaulting to Planck18"
+            )
+            return Cosmology.PLANCK18
 
     def _reconstruct_population_manager(self) -> None:
         """Reconstruct population manager from embedded JSON data"""
@@ -867,19 +862,10 @@ class SimstackWrapper:
 
         try:
             # Import required classes
-            import inspect
-
             from .populations import PopulationBin, PopulationManager
 
             # Create population bins from embedded data
             populations = {}
-
-            # Inspect PopulationBin constructor to understand its signature
-            try:
-                sig = inspect.signature(PopulationBin.__init__)
-                logger.debug(f"PopulationBin constructor signature: {sig}")
-            except (AttributeError, TypeError) as e:
-                logger.debug(f"Could not inspect PopulationBin constructor: {e}")
 
             for pop_data in self._population_info:
                 pop_id = pop_data["population_id"]

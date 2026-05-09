@@ -629,7 +629,7 @@ class SimstackAlgorithm:
                         and 0 <= iy < observed_map.shape[0]
                     ):
                         self._add_circle_to_mask(mask, x, y, circle_radius_pix)
-            except Exception as e:
+            except (ValueError, KeyError, RuntimeError) as e:
                 logger.warning(f"Crop mask error for {pop_bin.id_label}: {e}")
                 continue
 
@@ -940,7 +940,7 @@ class SimstackAlgorithm:
                     ):
                         self._add_circle_to_mask(mask, x, y, circle_radius_pix)
 
-            except Exception as e:
+            except (ValueError, KeyError, RuntimeError) as e:
                 logger.warning(f"Error processing population {pop_bin.id_label}: {e}")
                 continue
 
@@ -1102,17 +1102,8 @@ class SimstackAlgorithm:
 
             return flux_densities, systematic_errors, fit_stats
 
-        except Exception as e:
-            logger.error(f"Linear system solution failed: {e}")
-            return (
-                np.zeros(n_populations),
-                np.ones(n_populations),
-                {
-                    "chi_squared": np.inf,
-                    "degrees_of_freedom": 1,
-                    "reduced_chi_squared": np.inf,
-                },
-            )
+        except linalg.LinAlgError as e:
+            raise AlgorithmError(f"Linear system solution failed: {e}") from e
 
     def _validate_inputs(self) -> None:
         """Validate inputs"""

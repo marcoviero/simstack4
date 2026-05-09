@@ -194,7 +194,7 @@ class Greybody:
         else:
             try:
                 self._cosmology_calc = CosmologyCalculator()
-            except Exception:
+            except (ImportError, RuntimeError):
                 self._cosmology_calc = None
                 logger.warning(
                     "CosmologyCalculator unavailable, "
@@ -312,14 +312,14 @@ class Greybody:
                     logger.debug(
                         f"Curve_fit initial guess: A={amplitude_guess:.2f}, T_rest={T_guess:.1f}K"
                     )
-                except Exception as e:
+                except (RuntimeError, ValueError) as e:
                     logger.debug(
                         f"Curve_fit for initial guess failed: {e}, using defaults"
                     )
 
             return amplitude_guess, T_guess
 
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError) as e:
             logger.warning(f"Initial guess estimation failed: {e}")
             return -35.0, 30.0
 
@@ -536,7 +536,7 @@ class Greybody:
             try:
                 sampler.run_mcmc(pos, effective_iterations, progress=True)
                 total_steps = effective_iterations
-            except Exception as progress_error:
+            except (ImportError, TypeError) as progress_error:
                 logger.info(f"Progress bar failed ({progress_error}), running without")
                 sampler.run_mcmc(pos, effective_iterations, progress=False)
                 total_steps = effective_iterations
@@ -825,7 +825,7 @@ class Greybody:
                     )
                     temperature_rest = popt_T[0]
                     temperature_err = np.sqrt(pcov_T[0, 0])
-                except Exception:
+                except (RuntimeError, ValueError, np.linalg.LinAlgError):
                     # Fallback: use prior center
                     temperature_rest = T_center
                     temperature_err = T_sigma
@@ -987,7 +987,7 @@ class Greybody:
 
             return results
 
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, np.linalg.LinAlgError) as e:
             logger.warning(f"Greybody fit failed: {e}")
             return {
                 "fit_success": False,
