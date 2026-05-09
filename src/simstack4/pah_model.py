@@ -22,6 +22,7 @@ Usage in greybody.py:
     # Full SED: greybody + PAH
     f_total = greybody_flux + pah.flux(...)
 """
+
 import numpy as np
 
 # numpy 2.x compatibility
@@ -31,20 +32,20 @@ _trapz = getattr(np, "trapezoid", None) or getattr(np, "trapz")
 # PAH feature parameters (rest-frame)
 # (center_um, relative_strength, fwhm_um)
 PAH_FEATURES = [
-    (6.2,  0.1262, 0.19),   # C-C stretch
-    (7.7,  0.4577, 0.70),   # C-C stretch (strongest)
-    (8.6,  0.6089, 0.34),   # C-H in-plane bend
-    (11.3, 0.0000, 0.24),   # C-H out-of-plane bend (not detected)
-    (12.7, 0.5187, 0.45),   # C-H out-of-plane bend
+    (6.2, 0.1262, 0.19),  # C-C stretch
+    (7.7, 0.4577, 0.70),  # C-C stretch (strongest)
+    (8.6, 0.6089, 0.34),  # C-H in-plane bend
+    (11.3, 0.0000, 0.24),  # C-H out-of-plane bend (not detected)
+    (12.7, 0.5187, 0.45),  # C-H out-of-plane bend
 ]
 
 # Minor features (optional, for high-resolution work)
 PAH_FEATURES_MINOR = [
-    (3.3,  0.08, 0.05),   # C-H stretch
-    (5.25, 0.05, 0.10),   # combination band
-    (5.7,  0.05, 0.10),   # combination band
-    (16.4, 0.10, 0.20),   # C-H/C-C bend
-    (17.0, 0.08, 0.30),   # C-C-C bend
+    (3.3, 0.08, 0.05),  # C-H stretch
+    (5.25, 0.05, 0.10),  # combination band
+    (5.7, 0.05, 0.10),  # combination band
+    (16.4, 0.10, 0.20),  # C-H/C-C bend
+    (17.0, 0.08, 0.30),  # C-C-C bend
 ]
 
 
@@ -94,9 +95,9 @@ class PAHModel:
             self.features.extend(PAH_FEATURES_MINOR)
 
         # Physical constants (CGS)
-        self.h = 6.626e-27      # erg s
-        self.k_B = 1.381e-16    # erg/K
-        self.c = 2.998e10       # cm/s
+        self.h = 6.626e-27  # erg s
+        self.k_B = 1.381e-16  # erg/K
+        self.c = 2.998e10  # cm/s
 
     def pah_template_strength(self, z, band_lo=20.5, band_hi=30.0):
         """
@@ -110,8 +111,10 @@ class PAHModel:
         for lam_c, strength, fwhm in self.features[:5]:  # major only
             lam_obs = lam_c * (1 + z)
             sigma = fwhm * (1 + z) / 2.355
-            frac = 0.5 * (erf((band_hi - lam_obs) / (sigma * np.sqrt(2)))
-                          - erf((band_lo - lam_obs) / (sigma * np.sqrt(2))))
+            frac = 0.5 * (
+                erf((band_hi - lam_obs) / (sigma * np.sqrt(2)))
+                - erf((band_lo - lam_obs) / (sigma * np.sqrt(2)))
+            )
             total += strength * max(frac, 0)
         return total
 
@@ -255,8 +258,8 @@ class PAHModel:
         #
         # Simple scaling: pah_flux = 10^(amplitude) * ratio * template_normalized
         # where template is normalized to peak = 1
-        A_gb = 10 ** greybody_amplitude_log10
-        ratio = 10 ** log_ratio
+        A_gb = 10**greybody_amplitude_log10
+        ratio = 10**log_ratio
 
         # Normalize template to unit integral (over the wavelength grid)
         if template.max() > 0:
@@ -377,8 +380,18 @@ class PAHModel:
 
         n_feat = len(self.features)
         feature_names = []
-        _all_names = ["6.2 C-C", "7.7 C-C", "8.6 C-H", "11.3 C-H", "12.7 C-H",
-                       "3.3 C-H", "5.25", "5.7", "16.4 C-H", "17.0 C-C"]
+        _all_names = [
+            "6.2 C-C",
+            "7.7 C-C",
+            "8.6 C-H",
+            "11.3 C-H",
+            "12.7 C-H",
+            "3.3 C-H",
+            "5.25",
+            "5.7",
+            "16.4 C-H",
+            "17.0 C-C",
+        ]
         for i in range(n_feat):
             feature_names.append(_all_names[i] if i < len(_all_names) else f"F{i}")
 
@@ -405,11 +418,13 @@ class PAHModel:
 
         def _model(params):
             idx = 0
-            amps = params[idx:idx + n_feat]; idx += n_feat
+            amps = params[idx : idx + n_feat]
+            idx += n_feat
             if fix_widths:
                 sigmas_int = np.array([fw / 2.355 for _, _, fw in self.features])
             else:
-                sigmas_int = params[idx:idx + n_feat]; idx += n_feat
+                sigmas_int = params[idx : idx + n_feat]
+                idx += n_feat
             centers = np.array([lc for lc, _, _ in self.features])
             C0 = params[idx]
 
@@ -421,16 +436,19 @@ class PAHModel:
         def _residuals(params):
             return w * (flux_dt - _model(params))
 
-        result = least_squares(_residuals, p0, bounds=(bounds_lo, bounds_hi),
-                               method="trf", max_nfev=10000)
+        result = least_squares(
+            _residuals, p0, bounds=(bounds_lo, bounds_hi), method="trf", max_nfev=10000
+        )
 
         # ── Extract results ──────────────────────────────────────────
         idx = 0
-        amplitudes = result.x[idx:idx + n_feat]; idx += n_feat
+        amplitudes = result.x[idx : idx + n_feat]
+        idx += n_feat
         if fix_widths:
             widths_sigma = np.array([fw / 2.355 for _, _, fw in self.features])
         else:
-            widths_sigma = result.x[idx:idx + n_feat]; idx += n_feat
+            widths_sigma = result.x[idx : idx + n_feat]
+            idx += n_feat
         centers = np.array([lc for lc, _, _ in self.features])
         C0 = result.x[idx]
         widths_fwhm = widths_sigma * 2.355
@@ -439,7 +457,7 @@ class PAHModel:
         model_spectrum = model_dt * smooth_trend
         residuals = flux - model_spectrum
         n_params = len(result.x)
-        chi2_red = np.sum(_residuals(result.x)**2) / max(len(lam) - n_params, 1)
+        chi2_red = np.sum(_residuals(result.x) ** 2) / max(len(lam) - n_params, 1)
 
         amp_max = amplitudes.max() if amplitudes.max() > 0 else 1
         self.features = [
@@ -450,30 +468,42 @@ class PAHModel:
         self._fitted_continuum_level = C0
 
         fit_result = {
-            "amplitudes": amplitudes, "widths_fwhm": widths_fwhm,
-            "centers": centers, "continuum_level": C0,
-            "model_spectrum": model_spectrum, "model_detrended": model_dt,
-            "residuals": residuals, "chi2_red": chi2_red,
+            "amplitudes": amplitudes,
+            "widths_fwhm": widths_fwhm,
+            "centers": centers,
+            "continuum_level": C0,
+            "model_spectrum": model_spectrum,
+            "model_detrended": model_dt,
+            "residuals": residuals,
+            "chi2_red": chi2_red,
             "feature_names": feature_names[:n_feat],
-            "wavelengths": lam, "data": flux,
-            "detrended_flux": flux_dt, "smooth_trend": smooth_trend,
+            "wavelengths": lam,
+            "data": flux,
+            "detrended_flux": flux_dt,
+            "smooth_trend": smooth_trend,
         }
 
         if verbose:
-            print(f"\nPAH spectrum fit ({'fixed' if fix_centers else 'free'} centers, "
-                  f"{'fixed' if fix_widths else 'free'} widths, "
-                  f"{'detrended' if detrend else 'raw'}):")
+            print(
+                f"\nPAH spectrum fit ({'fixed' if fix_centers else 'free'} centers, "
+                f"{'fixed' if fix_widths else 'free'} widths, "
+                f"{'detrended' if detrend else 'raw'}):"
+            )
             print(f"  chi2_red = {chi2_red:.3f}  (N={len(lam)}, params={n_params})")
             print(f"  Baseline: {C0:.4f}")
-            print(f"\n  {'Feature':<12} {'Center':>7} {'FWHM':>6} "
-                  f"{'Amp':>10} {'Rel':>5} {'Bump%':>6}")
+            print(
+                f"\n  {'Feature':<12} {'Center':>7} {'FWHM':>6} "
+                f"{'Amp':>10} {'Rel':>5} {'Bump%':>6}"
+            )
             print(f"  {'-'*52}")
             for i in range(n_feat):
                 rel = amplitudes[i] / amp_max
                 bump = amplitudes[i] / C0 * 100 if C0 > 0 else 0
-                print(f"  {feature_names[i]:<12} {centers[i]:7.2f}μm "
-                      f"{widths_fwhm[i]:5.2f}  "
-                      f"{amplitudes[i]:10.4f} {rel:5.2f} {bump:5.1f}%")
+                print(
+                    f"  {feature_names[i]:<12} {centers[i]:7.2f}μm "
+                    f"{widths_fwhm[i]:5.2f}  "
+                    f"{amplitudes[i]:10.4f} {rel:5.2f} {bump:5.1f}%"
+                )
 
         return fit_result
 
@@ -483,7 +513,9 @@ class PAHModel:
         """
         import matplotlib.pyplot as plt
 
-        has_detrend = "detrended_flux" in fit_result and fit_result["detrended_flux"] is not None
+        has_detrend = (
+            "detrended_flux" in fit_result and fit_result["detrended_flux"] is not None
+        )
 
         if ax is not None:
             fig = ax.figure
@@ -502,8 +534,14 @@ class PAHModel:
         ax.scatter(lam, data, c="k", s=15, zorder=5, alpha=0.5, label="Data")
         ax.plot(lam, model, "r-", lw=2, label="PAH + trend", zorder=4)
         if has_detrend:
-            ax.plot(lam, fit_result["smooth_trend"], "b--", lw=1.5, alpha=0.6,
-                    label="Smooth z-trend")
+            ax.plot(
+                lam,
+                fit_result["smooth_trend"],
+                "b--",
+                lw=1.5,
+                alpha=0.6,
+                label="Smooth z-trend",
+            )
         ax.set_xlabel("Rest-frame wavelength ($\\mu$m)")
         ax.set_ylabel("L$_{24}$/L$_{IR}$")
         ax.set_title("Raw data + model")
@@ -515,23 +553,42 @@ class PAHModel:
             flux_dt = fit_result["detrended_flux"]
             model_dt = fit_result["model_detrended"]
 
-            ax.scatter(lam, flux_dt, c="k", s=15, zorder=5, alpha=0.5, label="Detrended")
+            ax.scatter(
+                lam, flux_dt, c="k", s=15, zorder=5, alpha=0.5, label="Detrended"
+            )
             ax.plot(lam, model_dt, "r-", lw=2, label="PAH model", zorder=4)
 
             C0 = fit_result["continuum_level"]
-            ax.axhline(C0, color="gray", ls="--", lw=1, alpha=0.5, label=f"Baseline={C0:.3f}")
+            ax.axhline(
+                C0, color="gray", ls="--", lw=1, alpha=0.5, label=f"Baseline={C0:.3f}"
+            )
 
             if show_components:
                 colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
                 for i, (A, fwhm, center) in enumerate(
-                    zip(fit_result["amplitudes"], fit_result["widths_fwhm"],
-                        fit_result["centers"])):
+                    zip(
+                        fit_result["amplitudes"],
+                        fit_result["widths_fwhm"],
+                        fit_result["centers"],
+                    )
+                ):
                     sigma = fwhm / 2.355
                     feat = C0 + A * np.exp(-0.5 * ((lam - center) / sigma) ** 2)
-                    name = fit_result["feature_names"][i] if i < len(fit_result["feature_names"]) else ""
+                    name = (
+                        fit_result["feature_names"][i]
+                        if i < len(fit_result["feature_names"])
+                        else ""
+                    )
                     bump = A / C0 * 100 if C0 > 0 else 0
-                    ax.plot(lam, feat, "-", color=colors[i % len(colors)],
-                            lw=1.5, alpha=0.7, label=f"{center:.1f}μm ({bump:.0f}%)")
+                    ax.plot(
+                        lam,
+                        feat,
+                        "-",
+                        color=colors[i % len(colors)],
+                        lw=1.5,
+                        alpha=0.7,
+                        label=f"{center:.1f}μm ({bump:.0f}%)",
+                    )
 
             for lam_c, _, _ in self.features:
                 ax.axvline(lam_c, color="gray", ls=":", alpha=0.2)
@@ -602,26 +659,118 @@ class PAHModel:
         from scipy.optimize import least_squares
 
         # ── MIPS 24um bandpass (from IRSA calibration) ───────────
-        bp_lam = np.array([
-            18.005, 19.134, 19.716, 19.944, 20.177, 20.415, 20.577, 20.742,
-            20.909, 20.993, 21.079, 21.252, 21.427, 21.606, 21.787, 21.879,
-            21.972, 22.160, 22.351, 22.545, 22.743, 22.944, 23.149, 23.358,
-            23.570, 23.786, 24.006, 24.231, 24.459, 24.692, 24.930, 25.172,
-            25.419, 25.670, 25.927, 26.189, 26.456, 26.729, 27.007, 27.292,
-            27.582, 27.878, 28.181, 28.491, 28.808, 29.131, 29.462, 29.801,
-            30.148, 30.865, 31.618, 32.207,
-        ])
-        bp_resp = np.array([
-            0.000237, 0.000644, 0.004662, 0.012914, 0.024468, 0.076447,
-            0.177656, 0.377777, 0.735924, 0.813463, 0.857335, 0.907091,
-            0.957009, 0.984957, 0.997749, 1.000000, 0.998522, 0.970058,
-            0.926258, 0.880798, 0.856114, 0.856779, 0.834520, 0.795473,
-            0.752764, 0.777653, 0.839877, 0.911819, 0.924876, 0.897806,
-            0.859096, 0.803216, 0.736609, 0.649479, 0.558191, 0.486209,
-            0.428693, 0.381986, 0.326682, 0.261178, 0.195445, 0.148445,
-            0.117945, 0.097827, 0.080512, 0.060997, 0.042525, 0.029764,
-            0.021807, 0.011002, 0.003471, 0.000727,
-        ])
+        bp_lam = np.array(
+            [
+                18.005,
+                19.134,
+                19.716,
+                19.944,
+                20.177,
+                20.415,
+                20.577,
+                20.742,
+                20.909,
+                20.993,
+                21.079,
+                21.252,
+                21.427,
+                21.606,
+                21.787,
+                21.879,
+                21.972,
+                22.160,
+                22.351,
+                22.545,
+                22.743,
+                22.944,
+                23.149,
+                23.358,
+                23.570,
+                23.786,
+                24.006,
+                24.231,
+                24.459,
+                24.692,
+                24.930,
+                25.172,
+                25.419,
+                25.670,
+                25.927,
+                26.189,
+                26.456,
+                26.729,
+                27.007,
+                27.292,
+                27.582,
+                27.878,
+                28.181,
+                28.491,
+                28.808,
+                29.131,
+                29.462,
+                29.801,
+                30.148,
+                30.865,
+                31.618,
+                32.207,
+            ]
+        )
+        bp_resp = np.array(
+            [
+                0.000237,
+                0.000644,
+                0.004662,
+                0.012914,
+                0.024468,
+                0.076447,
+                0.177656,
+                0.377777,
+                0.735924,
+                0.813463,
+                0.857335,
+                0.907091,
+                0.957009,
+                0.984957,
+                0.997749,
+                1.000000,
+                0.998522,
+                0.970058,
+                0.926258,
+                0.880798,
+                0.856114,
+                0.856779,
+                0.834520,
+                0.795473,
+                0.752764,
+                0.777653,
+                0.839877,
+                0.911819,
+                0.924876,
+                0.897806,
+                0.859096,
+                0.803216,
+                0.736609,
+                0.649479,
+                0.558191,
+                0.486209,
+                0.428693,
+                0.381986,
+                0.326682,
+                0.261178,
+                0.195445,
+                0.148445,
+                0.117945,
+                0.097827,
+                0.080512,
+                0.060997,
+                0.042525,
+                0.029764,
+                0.021807,
+                0.011002,
+                0.003471,
+                0.000727,
+            ]
+        )
         bp_lam_f = np.linspace(18, 33, 500)
         bp_resp_f = np.interp(bp_lam_f, bp_lam, bp_resp, left=0, right=0)
         bp_norm = _trapz(bp_resp_f, bp_lam_f)
@@ -642,7 +791,9 @@ class PAHModel:
             # Estimate errors from scatter: MAD of flux in narrow z-windows
             w = np.ones_like(flux)
             if verbose:
-                print("  WARNING: no flux_errors or weights — fit may be poorly constrained")
+                print(
+                    "  WARNING: no flux_errors or weights — fit may be poorly constrained"
+                )
 
         has_lir = False
         lir = None
@@ -656,8 +807,18 @@ class PAHModel:
                 lir = None
 
         n_feat = len(self.features)
-        feature_names = ["6.2 C-C", "7.7 C-C", "8.6 C-H", "11.3 C-H", "12.7 C-H",
-                         "3.3 C-H", "5.25", "5.7", "16.4", "17.0"][:n_feat]
+        feature_names = [
+            "6.2 C-C",
+            "7.7 C-C",
+            "8.6 C-H",
+            "11.3 C-H",
+            "12.7 C-H",
+            "3.3 C-H",
+            "5.25",
+            "5.7",
+            "16.4",
+            "17.0",
+        ][:n_feat]
 
         # ── Feature groups ───────────────────────────────────────
         # Each group gets one free amplitude; features within a group
@@ -710,7 +871,7 @@ class PAHModel:
                 rest_lam = bp_lam_f / (1 + zi)
                 for j, (lc, _, _) in enumerate(self.features):
                     sigma = widths_sigma[j]
-                    feat_spec = np.exp(-0.5 * ((rest_lam - lc) / sigma)**2)
+                    feat_spec = np.exp(-0.5 * ((rest_lam - lc) / sigma) ** 2)
                     templates[j, i] = _trapz(feat_spec * bp_resp_f, bp_lam_f) / bp_norm
             return templates
 
@@ -757,12 +918,14 @@ class PAHModel:
 
         def _unpack(params):
             idx = 0
-            group_amps = params[idx:idx + n_groups]; idx += n_groups
+            group_amps = params[idx : idx + n_groups]
+            idx += n_groups
             if fix_widths:
                 sigmas = widths_sigma_default.copy()
             else:
-                sigmas = params[idx:idx + n_feat]; idx += n_feat
-            trend_coeffs = params[idx:idx + n_trend]
+                sigmas = params[idx : idx + n_feat]
+                idx += n_feat
+            trend_coeffs = params[idx : idx + n_trend]
             return group_amps, sigmas, trend_coeffs
 
         def _expand_amps(group_amps):
@@ -800,8 +963,9 @@ class PAHModel:
         def _residuals(params):
             return w * (flux - _model(params))
 
-        result = least_squares(_residuals, p0, bounds=(bounds_lo, bounds_hi),
-                               method="trf", max_nfev=20000)
+        result = least_squares(
+            _residuals, p0, bounds=(bounds_lo, bounds_hi), method="trf", max_nfev=20000
+        )
 
         # ── Extract results ──────────────────────────────────────
         group_amps, widths_sigma, trend_coeffs = _unpack(result.x)
@@ -822,7 +986,7 @@ class PAHModel:
         flux_dt = flux / smooth_trend
 
         n_params = len(result.x)
-        chi2_red = np.sum(_residuals(result.x)**2) / max(len(z) - n_params, 1)
+        chi2_red = np.sum(_residuals(result.x) ** 2) / max(len(z) - n_params, 1)
 
         amp_max = amplitudes.max() if amplitudes.max() > 0 else 1
         self.features = [
@@ -831,34 +995,50 @@ class PAHModel:
         ]
 
         fit_result = {
-            "amplitudes": amplitudes, "widths_fwhm": widths_fwhm,
-            "centers": centers, "trend_coeffs": trend_coeffs,
-            "group_amplitudes": group_amps, "feature_groups": groups,
-            "model_flux_vs_z": model_full, "model_detrended": model_dt,
-            "z_values": z, "data": flux,
-            "detrended_flux": flux_dt, "smooth_trend": smooth_trend,
-            "chi2_red": chi2_red, "feature_names": feature_names,
+            "amplitudes": amplitudes,
+            "widths_fwhm": widths_fwhm,
+            "centers": centers,
+            "trend_coeffs": trend_coeffs,
+            "group_amplitudes": group_amps,
+            "feature_groups": groups,
+            "model_flux_vs_z": model_full,
+            "model_detrended": model_dt,
+            "z_values": z,
+            "data": flux,
+            "detrended_flux": flux_dt,
+            "smooth_trend": smooth_trend,
+            "chi2_red": chi2_red,
+            "feature_names": feature_names,
             "success": result.success,
             "wavelengths": 24.0 / (1 + z),
-            "model_spectrum": model_full, "continuum_level": 1.0,
+            "model_spectrum": model_full,
+            "continuum_level": 1.0,
         }
 
         if verbose:
             grp_label = f", {n_groups} PAH groups" if feature_groups else ""
             print(f"\nPAH forward-model fit (joint trend + PAH{grp_label}):")
             print(f"  chi2_red = {chi2_red:.3f}  (N={len(z)}, params={n_params})")
-            trend_labels = ["z", "z²", "logLIR", "const"] if has_lir else ["z", "z²", "const"]
-            trend_str = " + ".join(f"{c:.3f}*{l}" for c, l in zip(trend_coeffs, trend_labels))
+            trend_labels = (
+                ["z", "z²", "logLIR", "const"] if has_lir else ["z", "z²", "const"]
+            )
+            trend_str = " + ".join(
+                f"{c:.3f}*{l}" for c, l in zip(trend_coeffs, trend_labels)
+            )
             print(f"  Trend: log10(baseline) = {trend_str}")
-            print(f"\n  {'Feature':<12} {'Center':>7} {'FWHM':>6} "
-                  f"{'Amplitude':>10} {'Rel':>5} {'Group':>6}")
+            print(
+                f"\n  {'Feature':<12} {'Center':>7} {'FWHM':>6} "
+                f"{'Amplitude':>10} {'Rel':>5} {'Group':>6}"
+            )
             print(f"  {'-'*52}")
             for i in range(n_feat):
                 rel = amplitudes[i] / amp_max if amp_max > 0 else 0
                 gi = group_of_feat[i]
                 grp_str = f"G{gi}" if gi >= 0 else "  --"
-                print(f"  {feature_names[i]:<12} {centers[i]:7.2f}um "
-                      f"{widths_fwhm[i]:5.2f}  {amplitudes[i]:10.4f} {rel:5.2f} {grp_str:>6}")
+                print(
+                    f"  {feature_names[i]:<12} {centers[i]:7.2f}um "
+                    f"{widths_fwhm[i]:5.2f}  {amplitudes[i]:10.4f} {rel:5.2f} {grp_str:>6}"
+                )
 
         return fit_result
 
@@ -907,9 +1087,16 @@ class PAHModel:
         for z_f, name in feat_z.items():
             if z.min() < z_f < z.max():
                 ax.axvline(z_f, color="gray", ls=":", alpha=0.3)
-                ax.text(z_f, ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else flux.max() * 1.05,
-                        f"{name}μm", fontsize=7, ha="center", va="bottom",
-                        color="red", alpha=0.7)
+                ax.text(
+                    z_f,
+                    ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else flux.max() * 1.05,
+                    f"{name}μm",
+                    fontsize=7,
+                    ha="center",
+                    va="bottom",
+                    color="red",
+                    alpha=0.7,
+                )
 
         ax.set_xlabel("Redshift")
         ax.set_ylabel("L$_{24}$/L$_{IR}$ (or flux ratio)")
@@ -919,10 +1106,12 @@ class PAHModel:
 
         # ── Panel 2: Detrended flux vs rest wavelength ───────────
         ax = axes[1]
-        ax.scatter(rest_lam, flux_dt, c="k", s=15, alpha=0.5, zorder=3,
-                   label="Detrended data")
-        ax.plot(rest_lam, model_dt, "r-", lw=2, label="Forward model (detrended)",
-                zorder=4)
+        ax.scatter(
+            rest_lam, flux_dt, c="k", s=15, alpha=0.5, zorder=3, label="Detrended data"
+        )
+        ax.plot(
+            rest_lam, model_dt, "r-", lw=2, label="Forward model (detrended)", zorder=4
+        )
 
         # Overlay the recovered INTRINSIC PAH spectrum
         lam_fine = np.linspace(5, 16, 500)
@@ -931,14 +1120,26 @@ class PAHModel:
         for j, (lc, _, fwhm) in enumerate(self.features):
             sigma = fwhm / 2.355
             if j < len(amps) and amps[j] > 0.001:
-                feat = amps[j] * np.exp(-0.5 * ((lam_fine - lc) / sigma)**2)
-                ax.plot(lam_fine, 1.0 + feat, "-", color=colors[j % len(colors)],
-                        lw=1.5, alpha=0.6,
-                        label=f"{lc:.1f}μm A={amps[j]:.3f}")
+                feat = amps[j] * np.exp(-0.5 * ((lam_fine - lc) / sigma) ** 2)
+                ax.plot(
+                    lam_fine,
+                    1.0 + feat,
+                    "-",
+                    color=colors[j % len(colors)],
+                    lw=1.5,
+                    alpha=0.6,
+                    label=f"{lc:.1f}μm A={amps[j]:.3f}",
+                )
                 spec_intrinsic += feat
 
-        ax.plot(lam_fine, spec_intrinsic, "k--", lw=1, alpha=0.3,
-                label="Intrinsic PAH (recovered)")
+        ax.plot(
+            lam_fine,
+            spec_intrinsic,
+            "k--",
+            lw=1,
+            alpha=0.3,
+            label="Intrinsic PAH (recovered)",
+        )
         ax.axhline(1, color="gray", ls="--", lw=0.8, alpha=0.3)
 
         for lc, _, _ in self.features:
@@ -946,8 +1147,10 @@ class PAHModel:
 
         ax.set_xlabel("Rest-frame wavelength (μm)")
         ax.set_ylabel("Flux / smooth trend")
-        ax.set_title(f"Recovered intrinsic PAH spectrum\n"
-                     f"($\\chi^2_r$ = {fit_result['chi2_red']:.2f})")
+        ax.set_title(
+            f"Recovered intrinsic PAH spectrum\n"
+            f"($\\chi^2_r$ = {fit_result['chi2_red']:.2f})"
+        )
         ax.legend(fontsize=7, loc="upper right")
         ax.set_xlim(5, 16)
         ax.grid(True, alpha=0.2)
@@ -956,26 +1159,118 @@ class PAHModel:
         ax = axes[2]
 
         # Embedded bandpass (same as in fit_forward_model)
-        bp_lam = np.array([
-            18.005, 19.134, 19.716, 19.944, 20.177, 20.415, 20.577, 20.742,
-            20.909, 20.993, 21.079, 21.252, 21.427, 21.606, 21.787, 21.879,
-            21.972, 22.160, 22.351, 22.545, 22.743, 22.944, 23.149, 23.358,
-            23.570, 23.786, 24.006, 24.231, 24.459, 24.692, 24.930, 25.172,
-            25.419, 25.670, 25.927, 26.189, 26.456, 26.729, 27.007, 27.292,
-            27.582, 27.878, 28.181, 28.491, 28.808, 29.131, 29.462, 29.801,
-            30.148, 30.865, 31.618, 32.207,
-        ])
-        bp_resp = np.array([
-            0.000237, 0.000644, 0.004662, 0.012914, 0.024468, 0.076447,
-            0.177656, 0.377777, 0.735924, 0.813463, 0.857335, 0.907091,
-            0.957009, 0.984957, 0.997749, 1.000000, 0.998522, 0.970058,
-            0.926258, 0.880798, 0.856114, 0.856779, 0.834520, 0.795473,
-            0.752764, 0.777653, 0.839877, 0.911819, 0.924876, 0.897806,
-            0.859096, 0.803216, 0.736609, 0.649479, 0.558191, 0.486209,
-            0.428693, 0.381986, 0.326682, 0.261178, 0.195445, 0.148445,
-            0.117945, 0.097827, 0.080512, 0.060997, 0.042525, 0.029764,
-            0.021807, 0.011002, 0.003471, 0.000727,
-        ])
+        bp_lam = np.array(
+            [
+                18.005,
+                19.134,
+                19.716,
+                19.944,
+                20.177,
+                20.415,
+                20.577,
+                20.742,
+                20.909,
+                20.993,
+                21.079,
+                21.252,
+                21.427,
+                21.606,
+                21.787,
+                21.879,
+                21.972,
+                22.160,
+                22.351,
+                22.545,
+                22.743,
+                22.944,
+                23.149,
+                23.358,
+                23.570,
+                23.786,
+                24.006,
+                24.231,
+                24.459,
+                24.692,
+                24.930,
+                25.172,
+                25.419,
+                25.670,
+                25.927,
+                26.189,
+                26.456,
+                26.729,
+                27.007,
+                27.292,
+                27.582,
+                27.878,
+                28.181,
+                28.491,
+                28.808,
+                29.131,
+                29.462,
+                29.801,
+                30.148,
+                30.865,
+                31.618,
+                32.207,
+            ]
+        )
+        bp_resp = np.array(
+            [
+                0.000237,
+                0.000644,
+                0.004662,
+                0.012914,
+                0.024468,
+                0.076447,
+                0.177656,
+                0.377777,
+                0.735924,
+                0.813463,
+                0.857335,
+                0.907091,
+                0.957009,
+                0.984957,
+                0.997749,
+                1.000000,
+                0.998522,
+                0.970058,
+                0.926258,
+                0.880798,
+                0.856114,
+                0.856779,
+                0.834520,
+                0.795473,
+                0.752764,
+                0.777653,
+                0.839877,
+                0.911819,
+                0.924876,
+                0.897806,
+                0.859096,
+                0.803216,
+                0.736609,
+                0.649479,
+                0.558191,
+                0.486209,
+                0.428693,
+                0.381986,
+                0.326682,
+                0.261178,
+                0.195445,
+                0.148445,
+                0.117945,
+                0.097827,
+                0.080512,
+                0.060997,
+                0.042525,
+                0.029764,
+                0.021807,
+                0.011002,
+                0.003471,
+                0.000727,
+            ]
+        )
 
         ax.fill_between(bp_lam, bp_resp, alpha=0.15, color="k")
         ax.plot(bp_lam, bp_resp, "k-", lw=2, label="MIPS 24μm response")
@@ -987,13 +1282,21 @@ class PAHModel:
             pah_scaled = (spec_intrinsic - 1.0) * 0.3  # scale for visibility
             in_band = (obs_lam > 18) & (obs_lam < 33)
             if in_band.any():
-                ax.plot(obs_lam[in_band], pah_scaled[in_band],
-                        "-", color=color, lw=1.5, alpha=0.7,
-                        label=f"PAH at z={z_show}")
+                ax.plot(
+                    obs_lam[in_band],
+                    pah_scaled[in_band],
+                    "-",
+                    color=color,
+                    lw=1.5,
+                    alpha=0.7,
+                    label=f"PAH at z={z_show}",
+                )
 
         ax.set_xlabel("Observed wavelength (μm)")
         ax.set_ylabel("Response / PAH signal")
-        ax.set_title("MIPS bandpass + PAH features\n(showing which features are in-band)")
+        ax.set_title(
+            "MIPS bandpass + PAH features\n(showing which features are in-band)"
+        )
         ax.legend(fontsize=7, loc="upper right")
         ax.set_xlim(17, 33)
         ax.grid(True, alpha=0.2)
@@ -1001,7 +1304,8 @@ class PAHModel:
         fig.suptitle(
             f"PAH forward-model fit  |  {len(z)} spectral points  |  "
             f"$\\chi^2_r$ = {fit_result['chi2_red']:.2f}",
-            fontsize=13, y=1.01,
+            fontsize=13,
+            y=1.01,
         )
         plt.tight_layout()
 
@@ -1058,15 +1362,29 @@ class PAHModel:
         # Strategy 1: Extract from population IDs (most reliable)
         bin_edges = None
         if "pop_id" in df.columns:
+            import re as _re
+            # Build alternate match keys: strip common log_ prefix so that
+            # group_by="log_sigma_sfr" also matches pop_id parts named "sigma_sfr"
+            _gb_key = group_by.lower().replace("_", "")
+            _gb_key_nolog = _re.sub(r'^log', '', _gb_key)
             edge_set = set()
             for pop_id in df["pop_id"].dropna().unique():
                 # Population IDs contain bin ranges like "metallicity_0.005_0.01"
                 parts = str(pop_id).split("__")
                 for part in parts:
-                    if group_by.lower().replace("_", "") in part.lower().replace("_", ""):
-                        # Try to extract numbers from this part
+                    part_key = part.lower().replace("_", "")
+                    if _gb_key in part_key or (
+                        _gb_key_nolog and _gb_key_nolog in part_key
+                    ):
+                        # Strip the dimension name token to isolate the numbers
+                        # Use the actual dimension substring present in part_key
+                        dim_token = group_by if group_by in part else _re.sub(
+                            r'^log_?', '', group_by, flags=_re.IGNORECASE
+                        )
                         nums = []
-                        for token in part.replace(group_by, "").replace("_", " ").split():
+                        for token in (
+                            part.replace(dim_token, "").replace("_", " ").split()
+                        ):
                             try:
                                 nums.append(float(token))
                             except ValueError:
@@ -1097,10 +1415,18 @@ class PAHModel:
             else:
                 centers = list(unique)
 
-            edges = [centers[0] - spacings[0] * 0.5 if len(spacings) > 0 else centers[0] - 0.01]
+            edges = [
+                (
+                    centers[0] - spacings[0] * 0.5
+                    if len(spacings) > 0
+                    else centers[0] - 0.01
+                )
+            ]
             for i in range(len(centers) - 1):
                 edges.append((centers[i] + centers[i + 1]) / 2)
-            edges.append(centers[-1] + (spacings[-1] * 0.5 if len(spacings) > 0 else 0.01))
+            edges.append(
+                centers[-1] + (spacings[-1] * 0.5 if len(spacings) > 0 else 0.01)
+            )
             bin_edges = [(edges[i], edges[i + 1]) for i in range(len(edges) - 1)]
 
         # Smart label formatting based on value scale
@@ -1135,8 +1461,10 @@ class PAHModel:
                 continue
 
             if verbose:
-                print(f"\n  {group_by}={label}: {n_pts} pts, "
-                      f"z = {sub['z'].min():.2f}-{sub['z'].max():.2f}")
+                print(
+                    f"\n  {group_by}={label}: {n_pts} pts, "
+                    f"z = {sub['z'].min():.2f}-{sub['z'].max():.2f}"
+                )
 
             # Fresh PAHModel per bin
             pah_bin = PAHModel(
@@ -1169,7 +1497,8 @@ class PAHModel:
 
                 # Evolution row
                 row = {
-                    "bin_lo": lo, "bin_hi": hi,
+                    "bin_lo": lo,
+                    "bin_hi": hi,
                     "bin_center": (lo + hi) / 2,
                     "n_points": n_pts,
                     "chi2_red": r["chi2_red"],
@@ -1202,8 +1531,11 @@ class PAHModel:
                 print(f" {c.replace('A_',''):>8}", end="")
             print()
             for _, row in df_evo.iterrows():
-                print(f"  {_fmt(row['bin_lo'])}-{_fmt(row['bin_hi'])} "
-                      f" {row['n_points']:4.0f} {row['chi2_red']:5.2f}", end="")
+                print(
+                    f"  {_fmt(row['bin_lo'])}-{_fmt(row['bin_hi'])} "
+                    f" {row['n_points']:4.0f} {row['chi2_red']:5.2f}",
+                    end="",
+                )
                 for c in a_cols:
                     print(f" {row[c]:8.4f}", end="")
                 print()
@@ -1235,8 +1567,11 @@ class PAHModel:
 
         group_by = per_bin_results.get("_group_by", "bin")
         df_evo = per_bin_results.get("_evolution")
-        bin_labels = [k for k in per_bin_results
-                      if not k.startswith("_") and isinstance(per_bin_results[k], dict)]
+        bin_labels = [
+            k
+            for k in per_bin_results
+            if not k.startswith("_") and isinstance(per_bin_results[k], dict)
+        ]
 
         if not bin_labels:
             print("No bins to plot")
@@ -1252,11 +1587,17 @@ class PAHModel:
         for i, label in enumerate(bin_labels):
             r = per_bin_results[label]
             z = r["z_values"]
-            ax.scatter(z, r["detrended_flux"], c=[colors[i]], s=12,
-                       alpha=0.4, zorder=2)
-            ax.plot(z, r["model_detrended"], "-", color=colors[i], lw=2,
-                    alpha=0.8, zorder=3,
-                    label=f"{group_by}={label}")
+            ax.scatter(z, r["detrended_flux"], c=[colors[i]], s=12, alpha=0.4, zorder=2)
+            ax.plot(
+                z,
+                r["model_detrended"],
+                "-",
+                color=colors[i],
+                lw=2,
+                alpha=0.8,
+                zorder=3,
+                label=f"{group_by}={label}",
+            )
         ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
         ax.set_xlabel("Redshift")
         ax.set_ylabel("Flux / smooth trend")
@@ -1274,24 +1615,41 @@ class PAHModel:
 
             # Build the recovered intrinsic spectrum
             spec = np.ones_like(lam_fine)
-            features = [(c, a, fw) for c, a, fw in
-                        zip(r["centers"], amps, r["widths_fwhm"])]
+            features = [
+                (c, a, fw) for c, a, fw in zip(r["centers"], amps, r["widths_fwhm"])
+            ]
             for lc, amp, fwhm in features:
                 sigma = fwhm / 2.355
-                spec += amp * np.exp(-0.5 * ((lam_fine - lc) / sigma)**2)
+                spec += amp * np.exp(-0.5 * ((lam_fine - lc) / sigma) ** 2)
 
-            ax.plot(lam_fine, spec, "-", color=colors[i], lw=2.5,
-                    alpha=0.8, label=f"{group_by}={label}")
+            ax.plot(
+                lam_fine,
+                spec,
+                "-",
+                color=colors[i],
+                lw=2.5,
+                alpha=0.8,
+                label=f"{group_by}={label}",
+            )
 
         ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
         for lc, _, _ in self.features:
             ax.axvline(lc, color="gray", ls=":", alpha=0.2)
-            ax.text(lc, ax.get_ylim()[1] if ax.get_ylim()[1] > 1 else 1.6,
-                    f"{lc}", fontsize=7, ha="center", va="bottom", color="gray")
+            ax.text(
+                lc,
+                ax.get_ylim()[1] if ax.get_ylim()[1] > 1 else 1.6,
+                f"{lc}",
+                fontsize=7,
+                ha="center",
+                va="bottom",
+                color="gray",
+            )
 
         ax.set_xlabel("Rest-frame wavelength (μm)")
         ax.set_ylabel("1 + PAH emission")
-        ax.set_title("Recovered intrinsic PAH spectra\n(deconvolved from MIPS bandpass)")
+        ax.set_title(
+            "Recovered intrinsic PAH spectra\n(deconvolved from MIPS bandpass)"
+        )
         ax.legend(fontsize=8)
         ax.set_xlim(5, 15)
         ax.grid(True, alpha=0.2)
@@ -1308,8 +1666,17 @@ class PAHModel:
                 y = df_evo[ac].values
                 if np.max(y) < 0.001:
                     continue  # skip undetected features
-                ax.plot(x, y, "o-", color=feat_colors[j % len(feat_colors)],
-                        ms=9, mfc="white", mew=2.5, lw=2.5, label=name)
+                ax.plot(
+                    x,
+                    y,
+                    "o-",
+                    color=feat_colors[j % len(feat_colors)],
+                    ms=9,
+                    mfc="white",
+                    mew=2.5,
+                    lw=2.5,
+                    label=name,
+                )
 
             ax.set_xlabel(group_by.replace("_", " ").title())
             ax.set_ylabel("Intrinsic PAH amplitude")
@@ -1317,13 +1684,20 @@ class PAHModel:
             ax.legend(fontsize=8)
             ax.grid(True, alpha=0.2)
         else:
-            ax.text(0.5, 0.5, "Need ≥2 bins",
-                    ha="center", va="center", transform=ax.transAxes)
+            ax.text(
+                0.5,
+                0.5,
+                "Need ≥2 bins",
+                ha="center",
+                va="center",
+                transform=ax.transAxes,
+            )
 
         fig.suptitle(
             f"PAH emission vs {group_by}  |  {n_bins} bins  |  "
             f"Forward model with real MIPS bandpass",
-            fontsize=13, y=1.01,
+            fontsize=13,
+            y=1.01,
         )
         plt.tight_layout()
 
@@ -1389,26 +1763,118 @@ class PAHModel:
         from scipy.optimize import least_squares
 
         # ── MIPS 24um bandpass ─────────────────────────────────────
-        bp_lam = np.array([
-            18.005, 19.134, 19.716, 19.944, 20.177, 20.415, 20.577, 20.742,
-            20.909, 20.993, 21.079, 21.252, 21.427, 21.606, 21.787, 21.879,
-            21.972, 22.160, 22.351, 22.545, 22.743, 22.944, 23.149, 23.358,
-            23.570, 23.786, 24.006, 24.231, 24.459, 24.692, 24.930, 25.172,
-            25.419, 25.670, 25.927, 26.189, 26.456, 26.729, 27.007, 27.292,
-            27.582, 27.878, 28.181, 28.491, 28.808, 29.131, 29.462, 29.801,
-            30.148, 30.865, 31.618, 32.207,
-        ])
-        bp_resp = np.array([
-            0.000237, 0.000644, 0.004662, 0.012914, 0.024468, 0.076447,
-            0.177656, 0.377777, 0.735924, 0.813463, 0.857335, 0.907091,
-            0.957009, 0.984957, 0.997749, 1.000000, 0.998522, 0.970058,
-            0.926258, 0.880798, 0.856114, 0.856779, 0.834520, 0.795473,
-            0.752764, 0.777653, 0.839877, 0.911819, 0.924876, 0.897806,
-            0.859096, 0.803216, 0.736609, 0.649479, 0.558191, 0.486209,
-            0.428693, 0.381986, 0.326682, 0.261178, 0.195445, 0.148445,
-            0.117945, 0.097827, 0.080512, 0.060997, 0.042525, 0.029764,
-            0.021807, 0.011002, 0.003471, 0.000727,
-        ])
+        bp_lam = np.array(
+            [
+                18.005,
+                19.134,
+                19.716,
+                19.944,
+                20.177,
+                20.415,
+                20.577,
+                20.742,
+                20.909,
+                20.993,
+                21.079,
+                21.252,
+                21.427,
+                21.606,
+                21.787,
+                21.879,
+                21.972,
+                22.160,
+                22.351,
+                22.545,
+                22.743,
+                22.944,
+                23.149,
+                23.358,
+                23.570,
+                23.786,
+                24.006,
+                24.231,
+                24.459,
+                24.692,
+                24.930,
+                25.172,
+                25.419,
+                25.670,
+                25.927,
+                26.189,
+                26.456,
+                26.729,
+                27.007,
+                27.292,
+                27.582,
+                27.878,
+                28.181,
+                28.491,
+                28.808,
+                29.131,
+                29.462,
+                29.801,
+                30.148,
+                30.865,
+                31.618,
+                32.207,
+            ]
+        )
+        bp_resp = np.array(
+            [
+                0.000237,
+                0.000644,
+                0.004662,
+                0.012914,
+                0.024468,
+                0.076447,
+                0.177656,
+                0.377777,
+                0.735924,
+                0.813463,
+                0.857335,
+                0.907091,
+                0.957009,
+                0.984957,
+                0.997749,
+                1.000000,
+                0.998522,
+                0.970058,
+                0.926258,
+                0.880798,
+                0.856114,
+                0.856779,
+                0.834520,
+                0.795473,
+                0.752764,
+                0.777653,
+                0.839877,
+                0.911819,
+                0.924876,
+                0.897806,
+                0.859096,
+                0.803216,
+                0.736609,
+                0.649479,
+                0.558191,
+                0.486209,
+                0.428693,
+                0.381986,
+                0.326682,
+                0.261178,
+                0.195445,
+                0.148445,
+                0.117945,
+                0.097827,
+                0.080512,
+                0.060997,
+                0.042525,
+                0.029764,
+                0.021807,
+                0.011002,
+                0.003471,
+                0.000727,
+            ]
+        )
         bp_lam_f = np.linspace(18, 33, 500)
         bp_resp_f = np.interp(bp_lam_f, bp_lam, bp_resp, left=0, right=0)
         bp_norm = _trapz(bp_resp_f, bp_lam_f)
@@ -1416,8 +1882,16 @@ class PAHModel:
         # ── Feature groups ─────────────────────────────────────────
         n_feat = len(self.features)
         feature_names = [
-            "6.2 C-C", "7.7 C-C", "8.6 C-H", "11.3 C-H", "12.7 C-H",
-            "3.3 C-H", "5.25", "5.7", "16.4", "17.0",
+            "6.2 C-C",
+            "7.7 C-C",
+            "8.6 C-H",
+            "11.3 C-H",
+            "12.7 C-H",
+            "3.3 C-H",
+            "5.25",
+            "5.7",
+            "16.4",
+            "17.0",
         ][:n_feat]
 
         if feature_groups is None:
@@ -1446,7 +1920,11 @@ class PAHModel:
                         lc = self.features[j][0]
                         sigma = widths_sigma[j]
                         feat_spec = np.exp(-0.5 * ((rest_lam - lc) / sigma) ** 2)
-                        T[gi, i] += feat_scale[j] * _trapz(feat_spec * bp_resp_f, bp_lam_f) / bp_norm
+                        T[gi, i] += (
+                            feat_scale[j]
+                            * _trapz(feat_spec * bp_resp_f, bp_lam_f)
+                            / bp_norm
+                        )
             return T
 
         # ── Split df into per-bin datasets ─────────────────────────
@@ -1461,9 +1939,13 @@ class PAHModel:
                 for pop_id in df["pop_id"].dropna().unique():
                     parts = str(pop_id).split("__")
                     for part in parts:
-                        if group_col.lower().replace("_", "") in part.lower().replace("_", ""):
+                        if group_col.lower().replace("_", "") in part.lower().replace(
+                            "_", ""
+                        ):
                             nums = []
-                            for token in part.replace(group_col, "").replace("_", " ").split():
+                            for token in (
+                                part.replace(group_col, "").replace("_", " ").split()
+                            ):
                                 try:
                                     nums.append(float(token))
                                 except ValueError:
@@ -1478,7 +1960,9 @@ class PAHModel:
                 vals = df[group_col].dropna().values
                 unique = np.sort(np.unique(np.round(vals, 6)))
                 if len(unique) < 2:
-                    print(f"Only {len(unique)} unique {group_col} values — cannot detect bins")
+                    print(
+                        f"Only {len(unique)} unique {group_col} values — cannot detect bins"
+                    )
                     return None
                 spacings = np.diff(unique)
                 med_sp = np.median(spacings)
@@ -1498,7 +1982,9 @@ class PAHModel:
         for lo, hi in bin_edges:
             mask = (df[group_col] >= lo) & (df[group_col] < hi)
             sub = df.loc[mask]
-            valid = np.isfinite(sub["z"]) & np.isfinite(sub[flux_col]) & (sub[flux_col] > 0)
+            valid = (
+                np.isfinite(sub["z"]) & np.isfinite(sub[flux_col]) & (sub[flux_col] > 0)
+            )
             sub = sub.loc[valid]
             if len(sub) < 8:
                 continue
@@ -1520,35 +2006,43 @@ class PAHModel:
         if verbose:
             print(f"\nMulti-bin PAH forward model: {M} bins, {n_groups} feature groups")
             for i, (lbl, z_m, flux_m, _, ctr) in enumerate(bins_data):
-                print(f"  Bin {i}: {lbl}, {len(z_m)} pts, "
-                      f"z={z_m.min():.2f}-{z_m.max():.2f}, center={ctr:.2f}")
+                print(
+                    f"  Bin {i}: {lbl}, {len(z_m)} pts, "
+                    f"z={z_m.min():.2f}-{z_m.max():.2f}, center={ctr:.2f}"
+                )
 
         # Precompute templates at the union of all z-values
         z_union = np.sort(np.unique(np.concatenate([b[1] for b in bins_data])))
         if verbose:
-            print(f"  Precomputing templates at {len(z_union)} z values... ", end="", flush=True)
+            print(
+                f"  Precomputing templates at {len(z_union)} z values... ",
+                end="",
+                flush=True,
+            )
         T_grid = _compute_group_templates(z_union)
         if verbose:
             print("done")
 
         def _T_for(z_m):
-            return np.array([np.interp(z_m, z_union, T_grid[gi]) for gi in range(n_groups)])
+            return np.array(
+                [np.interp(z_m, z_union, T_grid[gi]) for gi in range(n_groups)]
+            )
 
         # ── Parameter layout ───────────────────────────────────────
         # [α_0..α_{M-1}, r_1..r_{G-1}, a_0,b_0,c_0, a_1,b_1,c_1, ...]
         n_alpha = M
-        n_ratios = n_groups - 1   # r_0 fixed to 1
+        n_ratios = n_groups - 1  # r_0 fixed to 1
         n_base = M * 3
         n_params = n_alpha + n_ratios + n_base
 
         def _unpack(p):
             alpha = p[:M]
-            ratios = np.concatenate([[1.0], p[M:M + n_ratios]])
-            baseline = p[M + n_ratios:].reshape(M, 3)
+            ratios = np.concatenate([[1.0], p[M : M + n_ratios]])
+            baseline = p[M + n_ratios :].reshape(M, 3)
             return alpha, ratios, baseline
 
         def _pred(alpha_m, ratios, bcoeffs, z_m, T_m):
-            bl = 10 ** (bcoeffs[0] * z_m + bcoeffs[1] * z_m ** 2 + bcoeffs[2])
+            bl = 10 ** (bcoeffs[0] * z_m + bcoeffs[1] * z_m**2 + bcoeffs[2])
             pah = np.ones(len(z_m))
             for gi in range(n_groups):
                 pah += alpha_m * ratios[gi] * T_m[gi]
@@ -1559,14 +2053,16 @@ class PAHModel:
             parts = []
             for m, (_, z_m, flux_m, w_m, _) in enumerate(bins_data):
                 T_m = _T_for(z_m)
-                parts.append(w_m * (flux_m - _pred(alpha[m], ratios, baseline[m], z_m, T_m)))
+                parts.append(
+                    w_m * (flux_m - _pred(alpha[m], ratios, baseline[m], z_m, T_m))
+                )
             return np.concatenate(parts)
 
         # ── Initialization ─────────────────────────────────────────
         # Per-bin baseline from log-linear fit (α = 0)
         p0_base = []
         for _, z_m, flux_m, _, _ in bins_data:
-            X = np.column_stack([z_m, z_m ** 2, np.ones_like(z_m)])
+            X = np.column_stack([z_m, z_m**2, np.ones_like(z_m)])
             try:
                 c0, _, _, _ = np.linalg.lstsq(X, np.log10(flux_m), rcond=None)
             except Exception:
@@ -1576,11 +2072,11 @@ class PAHModel:
         # Per-bin α from projection of residuals onto composite template
         p0_alpha = []
         for m, (_, z_m, flux_m, _, _) in enumerate(bins_data):
-            bc = np.array(p0_base[m * 3: (m + 1) * 3])
-            bl_est = 10 ** (bc[0] * z_m + bc[1] * z_m ** 2 + bc[2])
+            bc = np.array(p0_base[m * 3 : (m + 1) * 3])
+            bl_est = 10 ** (bc[0] * z_m + bc[1] * z_m**2 + bc[2])
             excess = flux_m / bl_est - 1.0
             T_m = _T_for(z_m)
-            T_comp = np.sum(T_m, axis=0)   # sum all groups equally for init
+            T_comp = np.sum(T_m, axis=0)  # sum all groups equally for init
             denom = float(np.dot(T_comp, T_comp))
             alpha_est = float(np.dot(excess, T_comp)) / denom if denom > 0 else 0.1
             p0_alpha.append(max(alpha_est, 0.01))
@@ -1588,22 +2084,28 @@ class PAHModel:
         p0_ratios = np.ones(n_ratios) * 0.5
         p0 = np.array(p0_alpha + list(p0_ratios) + p0_base)
 
-        bounds_lo = np.concatenate([
-            np.zeros(M),
-            np.zeros(n_ratios),
-            np.full(n_base, -10.0),
-        ])
-        bounds_hi = np.concatenate([
-            np.full(M, 5.0),
-            np.full(n_ratios, 5.0),
-            np.full(n_base, 10.0),
-        ])
+        bounds_lo = np.concatenate(
+            [
+                np.zeros(M),
+                np.zeros(n_ratios),
+                np.full(n_base, -10.0),
+            ]
+        )
+        bounds_hi = np.concatenate(
+            [
+                np.full(M, 5.0),
+                np.full(n_ratios, 5.0),
+                np.full(n_base, 10.0),
+            ]
+        )
 
         # ── Optimize ───────────────────────────────────────────────
         opt = least_squares(
-            _residuals, p0,
+            _residuals,
+            p0,
             bounds=(bounds_lo, bounds_hi),
-            method="trf", max_nfev=30000,
+            method="trf",
+            max_nfev=30000,
             x_scale="jac",
         )
 
@@ -1617,16 +2119,20 @@ class PAHModel:
 
         alpha_opt, ratios_opt, baseline_opt = _unpack(opt.x)
         alpha_err = perr[:M]
-        ratio_err = perr[M:M + n_ratios]
+        ratio_err = perr[M : M + n_ratios]
 
         n_data = sum(len(b[1]) for b in bins_data)
-        chi2_red = float(np.sum(opt.fun ** 2) / max(n_data - n_params, 1))
+        chi2_red = float(np.sum(opt.fun**2) / max(n_data - n_params, 1))
 
         # ── Build per-bin output ────────────────────────────────────
         model_per_bin = {}
         for m, (label, z_m, flux_m, w_m, ctr) in enumerate(bins_data):
             T_m = _T_for(z_m)
-            bl_m = 10 ** (baseline_opt[m, 0] * z_m + baseline_opt[m, 1] * z_m ** 2 + baseline_opt[m, 2])
+            bl_m = 10 ** (
+                baseline_opt[m, 0] * z_m
+                + baseline_opt[m, 1] * z_m**2
+                + baseline_opt[m, 2]
+            )
             mdl_m = _pred(alpha_opt[m], ratios_opt, baseline_opt[m], z_m, T_m)
             ferr_m = np.where(w_m > 0, 1.0 / w_m, np.median(flux_m) * 0.03)
             model_per_bin[label] = {
@@ -1661,7 +2167,7 @@ class PAHModel:
             "group_ratios": ratios_opt,
             "ratio_errors": np.concatenate([[0.0], ratio_err]),
             "baseline_coeffs": baseline_opt,
-            "baseline_err": perr[M + n_ratios:].reshape(M, 3),
+            "baseline_err": perr[M + n_ratios :].reshape(M, 3),
             "model_per_bin": model_per_bin,
             "chi2_red": chi2_red,
             "success": opt.success,
@@ -1716,10 +2222,18 @@ class PAHModel:
             d = model_per_bin[label]
             idx = np.argsort(d["z"])
             ax.scatter(d["z"], d["flux"], c=[colors[m]], s=12, alpha=0.4, zorder=3)
-            ax.plot(d["z"][idx], d["model"][idx], "-", color=colors[m],
-                    lw=2, label=label, zorder=4)
-            ax.plot(d["z"][idx], d["baseline"][idx], "--", color=colors[m],
-                    lw=1, alpha=0.35)
+            ax.plot(
+                d["z"][idx],
+                d["model"][idx],
+                "-",
+                color=colors[m],
+                lw=2,
+                label=label,
+                zorder=4,
+            )
+            ax.plot(
+                d["z"][idx], d["baseline"][idx], "--", color=colors[m], lw=1, alpha=0.35
+            )
         ax.set_xlabel("Redshift")
         ax.set_ylabel(r"$f_{24}/f_{\rm peak}$")
         ax.set_title("Flux vs z\n(model — baseline)")
@@ -1731,10 +2245,18 @@ class PAHModel:
         for m, label in enumerate(bin_labels):
             d = model_per_bin[label]
             idx = np.argsort(d["z"])
-            ax.scatter(d["z"], d["detrended_data"], c=[colors[m]],
-                       s=12, alpha=0.4, zorder=3)
-            ax.plot(d["z"][idx], d["detrended_model"][idx], "-",
-                    color=colors[m], lw=2, label=label, zorder=4)
+            ax.scatter(
+                d["z"], d["detrended_data"], c=[colors[m]], s=12, alpha=0.4, zorder=3
+            )
+            ax.plot(
+                d["z"][idx],
+                d["detrended_model"][idx],
+                "-",
+                color=colors[m],
+                lw=2,
+                label=label,
+                zorder=4,
+            )
         ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
         ax.set_xlabel("Redshift")
         ax.set_ylabel("Flux / baseline")
@@ -1752,16 +2274,27 @@ class PAHModel:
                 for j in g:
                     lc, _, fwhm = self.features[j]
                     sigma = fwhm / 2.355
-                    spec += alpha[m] * r_gi * feat_scale[j] * np.exp(
-                        -0.5 * ((lam_fine - lc) / sigma) ** 2
+                    spec += (
+                        alpha[m]
+                        * r_gi
+                        * feat_scale[j]
+                        * np.exp(-0.5 * ((lam_fine - lc) / sigma) ** 2)
                     )
-            ax.plot(lam_fine, spec, "-", color=colors[m], lw=2.5,
-                    alpha=0.9, label=label)
+            ax.plot(
+                lam_fine, spec, "-", color=colors[m], lw=2.5, alpha=0.9, label=label
+            )
         ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
         for lc, _, _ in self.features:
             ax.axvline(lc, color="gray", ls=":", alpha=0.2)
-            ax.text(lc, ax.get_ylim()[1] if ax.get_ylim()[1] > 1 else 1.2,
-                    f"{lc}", fontsize=6, ha="center", va="bottom", color="gray")
+            ax.text(
+                lc,
+                ax.get_ylim()[1] if ax.get_ylim()[1] > 1 else 1.2,
+                f"{lc}",
+                fontsize=6,
+                ha="center",
+                va="bottom",
+                color="gray",
+            )
         ax.set_xlabel("Rest-frame wavelength (μm)")
         ax.set_ylabel("1 + PAH emission")
         ax.set_title("Recovered intrinsic PAH spectra\n(jointly constrained)")
@@ -1772,9 +2305,17 @@ class PAHModel:
         # ── Panel 4: α vs bin center ────────────────────────────────
         ax = axes[3]
         ax.errorbar(
-            bin_centers, alpha, yerr=alpha_err,
-            fmt="o-", color="navy", ms=9, mfc="white", mew=2.5,
-            lw=2, capsize=4, elinewidth=1.5,
+            bin_centers,
+            alpha,
+            yerr=alpha_err,
+            fmt="o-",
+            color="navy",
+            ms=9,
+            mfc="white",
+            mew=2.5,
+            lw=2,
+            capsize=4,
+            elinewidth=1.5,
         )
         ax.axhline(0, color="k", ls="--", lw=0.8, alpha=0.3)
         ax.set_xlabel(group_col.replace("_", " ").title())
@@ -1784,7 +2325,8 @@ class PAHModel:
 
         fig.suptitle(
             f"Multi-bin PAH forward model  |  {M} bins  |  χ²_r = {chi2_red:.2f}",
-            fontsize=13, y=1.01,
+            fontsize=13,
+            y=1.01,
         )
         plt.tight_layout()
 
@@ -1798,8 +2340,10 @@ class PAHModel:
 
     def __repr__(self):
         a, b, c, d = self.coeffs
-        return (f"PAHModel(log(L_PAH/L_IR) = {a:.3f}*logLIR {b:+.3f}*z "
-                f"{c:+.3f}*PAH {d:+.3f}, T_warm={self.T_warm}K)")
+        return (
+            f"PAHModel(log(L_PAH/L_IR) = {a:.3f}*logLIR {b:+.3f}*z "
+            f"{c:+.3f}*PAH {d:+.3f}, T_warm={self.T_warm}K)"
+        )
 
 
 def greybody_plus_pah(

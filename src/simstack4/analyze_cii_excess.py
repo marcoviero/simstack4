@@ -43,29 +43,29 @@ from pathlib import Path
 # ── Line catalog ─────────────────────────────────────────────────────
 # rest wavelength in microns
 LINES = {
-    "[CII] 158":   157.74,
-    "[NII] 205":   205.18,
-    "[OI] 145":    145.53,
-    "[NII] 122":   121.90,
-    "[OIII] 88":    88.36,
-    "[OI] 63":      63.18,
-    "CO(3-2)":     866.96,
-    "CO(4-3)":     650.25,
-    "CO(5-4)":     520.23,
-    "CO(6-5)":     433.56,
-    "CO(7-6)":     371.65,
-    "CI(1-0)":     609.14,
-    "CI(2-1)":     370.42,
+    "[CII] 158": 157.74,
+    "[NII] 205": 205.18,
+    "[OI] 145": 145.53,
+    "[NII] 122": 121.90,
+    "[OIII] 88": 88.36,
+    "[OI] 63": 63.18,
+    "CO(3-2)": 866.96,
+    "CO(4-3)": 650.25,
+    "CO(5-4)": 520.23,
+    "CO(6-5)": 433.56,
+    "CO(7-6)": 371.65,
+    "CI(1-0)": 609.14,
+    "CI(2-1)": 370.42,
 }
 
 # Band edges (50% transmission, microns)
 BAND_EDGES = {
-    "PACS_100":    (85, 125),
-    "PACS_160":    (130, 210),
-    "SPIRE_250":   (194, 313),
-    "SPIRE_350":   (283, 413),
-    "SPIRE_500":   (383, 693),
-    "SCUBA2_850":  (770, 940),
+    "PACS_100": (85, 125),
+    "PACS_160": (130, 210),
+    "SPIRE_250": (194, 313),
+    "SPIRE_350": (283, 413),
+    "SPIRE_500": (383, 693),
+    "SCUBA2_850": (770, 940),
 }
 
 
@@ -133,9 +133,7 @@ def analyze_line_excess(
 
     # Map names and wavelengths from config
     sr = wrapper.stacking_results
-    wavelengths = np.array([
-        wrapper.config.maps[m].wavelength for m in sr.map_names
-    ])
+    wavelengths = np.array([wrapper.config.maps[m].wavelength for m in sr.map_names])
     map_names = list(sr.map_names)
 
     line_rest_lam = LINES.get(primary_line)
@@ -186,24 +184,27 @@ def analyze_line_excess(
 
         if line_band_idx is None:
             # Line not in any observed band at this z — record as control
-            rows.append({
-                "pop_id": pop_id,
-                "z": z,
-                "l_ir": l_ir,
-                "line_in_band": False,
-                "line_band": "none",
-                "lam_line_obs": lam_line_obs,
-                "excess_frac": np.nan,
-                "excess_jy": np.nan,
-                "excess_snr": np.nan,
-                "n_lines_in_band": 0,
-                "lines_in_band": "",
-                "tier": tier,
-            })
+            rows.append(
+                {
+                    "pop_id": pop_id,
+                    "z": z,
+                    "l_ir": l_ir,
+                    "line_in_band": False,
+                    "line_band": "none",
+                    "lam_line_obs": lam_line_obs,
+                    "excess_frac": np.nan,
+                    "excess_jy": np.nan,
+                    "excess_snr": np.nan,
+                    "n_lines_in_band": 0,
+                    "lines_in_band": "",
+                    "tier": tier,
+                }
+            )
             # Get bin_properties for sigma_sfr etc
             props = sed.bin_properties or {}
             if isinstance(props, str):
                 import ast
+
                 try:
                     props = ast.literal_eval(props)
                 except (ValueError, SyntaxError):
@@ -214,8 +215,8 @@ def analyze_line_excess(
             continue
 
         # Data and model in the line band
-        flux_data = sed.flux_densities[line_band_idx]   # Jy
-        flux_err = sed.flux_errors[line_band_idx]       # Jy
+        flux_data = sed.flux_densities[line_band_idx]  # Jy
+        flux_err = sed.flux_errors[line_band_idx]  # Jy
 
         # Evaluate model at the data wavelength
         if sed.model_wavelengths is not None and sed.model_fluxes is not None:
@@ -244,7 +245,9 @@ def analyze_line_excess(
         all_excess_frac = []
         for j in range(len(sed.wavelengths)):
             if sed.model_wavelengths is not None:
-                fm = np.interp(sed.wavelengths[j], sed.model_wavelengths, sed.model_fluxes)
+                fm = np.interp(
+                    sed.wavelengths[j], sed.model_wavelengths, sed.model_fluxes
+                )
                 if fm > 0:
                     all_excess_frac.append((sed.flux_densities[j] - fm) / fm)
                 else:
@@ -270,33 +273,36 @@ def analyze_line_excess(
         props = sed.bin_properties or {}
         if isinstance(props, str):
             import ast
+
             try:
                 props = ast.literal_eval(props)
             except (ValueError, SyntaxError):
                 props = {}
 
-        rows.append({
-            "pop_id": pop_id,
-            "z": z,
-            "l_ir": l_ir,
-            "line_in_band": True,
-            "line_band": line_band_name,
-            "lam_line_obs": lam_line_obs,
-            "excess_frac": excess_frac,
-            "excess_frac_corrected": excess_frac - baseline_mean,
-            "excess_jy": excess_jy,
-            "excess_snr": excess_snr,
-            "baseline_frac": baseline_mean,
-            "flux_data": flux_data,
-            "flux_model": flux_model,
-            "flux_err": flux_err,
-            "n_lines_in_band": len(all_lines),
-            "lines_in_band": " + ".join([n for n, _, _ in all_lines]),
-            "log_sigma_sfr": props.get("log_sigma_sfr", np.nan),
-            "stellar_mass": props.get("mass_med", sed.median_mass),
-            "n_sources": sed.n_sources,
-            "tier": tier,
-        })
+        rows.append(
+            {
+                "pop_id": pop_id,
+                "z": z,
+                "l_ir": l_ir,
+                "line_in_band": True,
+                "line_band": line_band_name,
+                "lam_line_obs": lam_line_obs,
+                "excess_frac": excess_frac,
+                "excess_frac_corrected": excess_frac - baseline_mean,
+                "excess_jy": excess_jy,
+                "excess_snr": excess_snr,
+                "baseline_frac": baseline_mean,
+                "flux_data": flux_data,
+                "flux_model": flux_model,
+                "flux_err": flux_err,
+                "n_lines_in_band": len(all_lines),
+                "lines_in_band": " + ".join([n for n, _, _ in all_lines]),
+                "log_sigma_sfr": props.get("log_sigma_sfr", np.nan),
+                "stellar_mass": props.get("mass_med", sed.median_mass),
+                "n_sources": sed.n_sources,
+                "tier": tier,
+            }
+        )
 
     if not rows:
         print("No populations found")
@@ -318,15 +324,19 @@ def analyze_line_excess(
         valid = np.isfinite(ef)
         if np.any(valid):
             print(f"\n  Raw fractional excess (data-model)/model:")
-            print(f"    median = {ef[valid].median():+.4f} "
-                  f"({ef[valid].median()*100:+.2f}%)")
+            print(
+                f"    median = {ef[valid].median():+.4f} "
+                f"({ef[valid].median()*100:+.2f}%)"
+            )
             print(f"    mean   = {ef[valid].mean():+.4f}")
             print(f"    std    = {ef[valid].std():.4f}")
         valid_c = np.isfinite(efc)
         if np.any(valid_c):
             print(f"\n  Baseline-corrected excess:")
-            print(f"    median = {efc[valid_c].median():+.4f} "
-                  f"({efc[valid_c].median()*100:+.2f}%)")
+            print(
+                f"    median = {efc[valid_c].median():+.4f} "
+                f"({efc[valid_c].median()*100:+.2f}%)"
+            )
 
         # By band
         print(f"\n  By band:")
@@ -334,16 +344,20 @@ def analyze_line_excess(
             bm = df_line["line_band"] == band
             n = bm.sum()
             med = ef[bm & valid].median() if (bm & valid).any() else np.nan
-            print(f"    {band:>12}: {n:>3} pops, "
-                  f"median excess = {med:+.4f} ({med*100:+.2f}%)")
+            print(
+                f"    {band:>12}: {n:>3} pops, "
+                f"median excess = {med:+.4f} ({med*100:+.2f}%)"
+            )
 
         # Detection significance
         if np.any(valid):
             mean_excess = ef[valid].mean()
             sem = ef[valid].std() / np.sqrt(valid.sum())
             significance = mean_excess / sem if sem > 0 else 0
-            print(f"\n  Detection significance: {significance:.1f} sigma "
-                  f"(mean excess / SEM)")
+            print(
+                f"\n  Detection significance: {significance:.1f} sigma "
+                f"(mean excess / SEM)"
+            )
 
     # ── plotting ─────────────────────────────────────────────────────
     has_sigma = np.isfinite(df_line.get("log_sigma_sfr", pd.Series())).any()
@@ -355,8 +369,10 @@ def analyze_line_excess(
     # Panel 1: excess vs redshift, colored by band
     ax = axes[0]
     band_colors = {
-        "PACS_160": "C0", "SPIRE_250": "C1",
-        "SPIRE_350": "C2", "SPIRE_500": "C3",
+        "PACS_160": "C0",
+        "SPIRE_250": "C1",
+        "SPIRE_350": "C2",
+        "SPIRE_500": "C3",
         "SCUBA2_850": "C4",
     }
     for band, color in band_colors.items():
@@ -365,7 +381,10 @@ def analyze_line_excess(
             ax.scatter(
                 df_line.loc[bm, "z"],
                 df_line.loc[bm, "excess_frac"] * 100,
-                c=color, s=30, alpha=0.7, label=band.replace("_", " "),
+                c=color,
+                s=30,
+                alpha=0.7,
+                label=band.replace("_", " "),
             )
     ax.axhline(0, color="k", ls="--", lw=1, alpha=0.5)
     ax.set_xlabel("Redshift")
@@ -381,15 +400,19 @@ def analyze_line_excess(
         sc = ax.scatter(
             df_line.loc[valid, "l_ir"],
             df_line.loc[valid, "excess_frac"] * 100,
-            c=df_line.loc[valid, "z"], cmap=cmap, s=30, alpha=0.7,
+            c=df_line.loc[valid, "z"],
+            cmap=cmap,
+            s=30,
+            alpha=0.7,
         )
         plt.colorbar(sc, ax=ax, label="Redshift")
     ax.axhline(0, color="k", ls="--", lw=1, alpha=0.5)
     # Reference: CII/FIR ~ 0.3% for L_IR < 1e11, dropping to 0.03% at 1e13
     lir_ref = np.logspace(10, 13, 50)
     cii_frac_ref = 0.3 * (lir_ref / 1e11) ** (-0.5)  # approximate deficit
-    ax.plot(lir_ref, cii_frac_ref, "r--", lw=1.5, alpha=0.6,
-            label="[CII] deficit (approx)")
+    ax.plot(
+        lir_ref, cii_frac_ref, "r--", lw=1.5, alpha=0.6, label="[CII] deficit (approx)"
+    )
     ax.set_xscale("log")
     ax.set_xlabel("L_IR (L_sun)")
     ax.set_ylabel(f"{primary_line} excess (%)")
@@ -405,12 +428,16 @@ def analyze_line_excess(
             sc = ax.scatter(
                 df_line.loc[valid_c, "l_ir"],
                 df_line.loc[valid_c, "excess_frac_corrected"] * 100,
-                c=df_line.loc[valid_c, "z"], cmap=cmap, s=30, alpha=0.7,
+                c=df_line.loc[valid_c, "z"],
+                cmap=cmap,
+                s=30,
+                alpha=0.7,
             )
             plt.colorbar(sc, ax=ax, label="Redshift")
     ax.axhline(0, color="k", ls="--", lw=1, alpha=0.5)
-    ax.plot(lir_ref, cii_frac_ref, "r--", lw=1.5, alpha=0.6,
-            label="[CII] deficit (approx)")
+    ax.plot(
+        lir_ref, cii_frac_ref, "r--", lw=1.5, alpha=0.6, label="[CII] deficit (approx)"
+    )
     ax.set_xscale("log")
     ax.set_xlabel("L_IR (L_sun)")
     ax.set_ylabel(f"Corrected {primary_line} excess (%)")
@@ -427,19 +454,36 @@ def analyze_line_excess(
             min(valid_line.max(), 5),
             30,
         )
-        ax.hist(valid_line, bins=bins_h, alpha=0.6, color="C3",
-                label=f"{primary_line} in band (N={len(valid_line)})",
-                density=True)
+        ax.hist(
+            valid_line,
+            bins=bins_h,
+            alpha=0.6,
+            color="C3",
+            label=f"{primary_line} in band (N={len(valid_line)})",
+            density=True,
+        )
     # Compare: residuals from non-line bands
     if "baseline_frac" in df_line.columns:
         bl = df_line["baseline_frac"].dropna() * 100
         if len(bl) > 0:
-            ax.hist(bl, bins=bins_h, alpha=0.4, color="gray",
-                    label=f"Baseline (other bands)", density=True)
+            ax.hist(
+                bl,
+                bins=bins_h,
+                alpha=0.4,
+                color="gray",
+                label=f"Baseline (other bands)",
+                density=True,
+            )
     ax.axvline(0, color="k", ls="--", lw=1, alpha=0.5)
     if len(valid_line) > 0:
-        ax.axvline(valid_line.median(), color="C3", ls="-", lw=2, alpha=0.7,
-                   label=f"Median = {valid_line.median():.2f}%")
+        ax.axvline(
+            valid_line.median(),
+            color="C3",
+            ls="-",
+            lw=2,
+            alpha=0.7,
+            label=f"Median = {valid_line.median():.2f}%",
+        )
     ax.set_xlabel("Fractional excess (%)")
     ax.set_ylabel("Density")
     ax.set_title("Excess distribution")
@@ -449,15 +493,17 @@ def analyze_line_excess(
     # Panel 5 (if Sigma_SFR available): excess vs Sigma_SFR
     if has_sigma:
         ax = axes[4]
-        valid_s = (
-            np.isfinite(df_line["log_sigma_sfr"])
-            & np.isfinite(df_line["excess_frac"])
+        valid_s = np.isfinite(df_line["log_sigma_sfr"]) & np.isfinite(
+            df_line["excess_frac"]
         )
         if valid_s.any():
             sc = ax.scatter(
                 df_line.loc[valid_s, "log_sigma_sfr"],
                 df_line.loc[valid_s, "excess_frac"] * 100,
-                c=df_line.loc[valid_s, "z"], cmap=cmap, s=30, alpha=0.7,
+                c=df_line.loc[valid_s, "z"],
+                cmap=cmap,
+                s=30,
+                alpha=0.7,
             )
             plt.colorbar(sc, ax=ax, label="Redshift")
         ax.axhline(0, color="k", ls="--", lw=1, alpha=0.5)
@@ -470,7 +516,8 @@ def analyze_line_excess(
         f"{primary_line} line excess in stacked SEDs "
         f"({len(df_line)} detections, {len(df_ctrl)} controls, "
         f"tier >= {min_tier})",
-        fontsize=13, y=1.02,
+        fontsize=13,
+        y=1.02,
     )
     plt.tight_layout()
 
@@ -495,11 +542,22 @@ def analyze_all_lines(wrapper, min_tier="B", split_filter=None):
         from plots import _parse_bins, _extract_pop_type
 
     results = []
-    for line_name in ["[CII] 158", "[NII] 205", "[OI] 145", "[NII] 122",
-                      "[OIII] 88", "[OI] 63", "CO(5-4)", "CO(6-5)", "CO(7-6)"]:
+    for line_name in [
+        "[CII] 158",
+        "[NII] 205",
+        "[OI] 145",
+        "[NII] 122",
+        "[OIII] 88",
+        "[OI] 63",
+        "CO(5-4)",
+        "CO(6-5)",
+        "CO(7-6)",
+    ]:
         _, df = analyze_line_excess(
-            wrapper, primary_line=line_name,
-            min_tier=min_tier, split_filter=split_filter,
+            wrapper,
+            primary_line=line_name,
+            min_tier=min_tier,
+            split_filter=split_filter,
         )
         plt.close()  # don't show individual plots
 
@@ -507,21 +565,33 @@ def analyze_all_lines(wrapper, min_tier="B", split_filter=None):
             df_det = df[df["line_in_band"]]
             valid = np.isfinite(df_det["excess_frac"])
             if valid.any():
-                results.append({
-                    "line": line_name,
-                    "n_pops": valid.sum(),
-                    "median_excess_pct": df_det.loc[valid, "excess_frac"].median() * 100,
-                    "mean_excess_pct": df_det.loc[valid, "excess_frac"].mean() * 100,
-                    "std_pct": df_det.loc[valid, "excess_frac"].std() * 100,
-                    "significance": (
-                        df_det.loc[valid, "excess_frac"].mean()
-                        / (df_det.loc[valid, "excess_frac"].std()
-                           / np.sqrt(valid.sum()))
-                    ) if valid.sum() > 1 else 0,
-                })
+                results.append(
+                    {
+                        "line": line_name,
+                        "n_pops": valid.sum(),
+                        "median_excess_pct": df_det.loc[valid, "excess_frac"].median()
+                        * 100,
+                        "mean_excess_pct": df_det.loc[valid, "excess_frac"].mean()
+                        * 100,
+                        "std_pct": df_det.loc[valid, "excess_frac"].std() * 100,
+                        "significance": (
+                            (
+                                df_det.loc[valid, "excess_frac"].mean()
+                                / (
+                                    df_det.loc[valid, "excess_frac"].std()
+                                    / np.sqrt(valid.sum())
+                                )
+                            )
+                            if valid.sum() > 1
+                            else 0
+                        ),
+                    }
+                )
 
     if results:
-        summary = pd.DataFrame(results).sort_values("median_excess_pct", ascending=False)
+        summary = pd.DataFrame(results).sort_values(
+            "median_excess_pct", ascending=False
+        )
         print("\n" + "=" * 70)
         print("LINE EXCESS SUMMARY (all bright FIR lines)")
         print("=" * 70)

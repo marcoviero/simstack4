@@ -59,7 +59,9 @@ class ProgressTracker:
         if self.current_step > 1:
             avg_time_per_step = elapsed / self.current_step
             remaining = (self.total_steps - self.current_step) * avg_time_per_step
-            eta_str = f"{remaining:.0f}s" if remaining < 60 else f"{remaining / 60:.1f}m"
+            eta_str = (
+                f"{remaining:.0f}s" if remaining < 60 else f"{remaining / 60:.1f}m"
+            )
         else:
             eta_str = "..."
 
@@ -80,9 +82,9 @@ class StackingResults:
         str, np.ndarray
     ]  # [map_name][population_index] - bootstrap errors
     flux_errors_systematic: dict[str, np.ndarray]  # Traditional least-squares errors
-    bootstrap_flux_samples: dict[
-        str, np.ndarray
-    ] | None  # [map_name][bootstrap_iter, population_index]
+    bootstrap_flux_samples: (
+        dict[str, np.ndarray] | None
+    )  # [map_name][bootstrap_iter, population_index]
     population_labels: list[str]
     map_names: list[str]
     n_sources: dict[str, int]  # sources per population
@@ -93,8 +95,12 @@ class StackingResults:
     memory_used_gb: float
     bootstrap_enabled: bool
     bootstrap_iterations: int
-    bootstrap_split_fraction: float  # What fraction goes to "A" vs "B" (e.g., 0.8 for 80:20)
-    bin_properties: dict[str, dict[str, float]] | None = None  # {pop_label: {col: median}}
+    bootstrap_split_fraction: (
+        float  # What fraction goes to "A" vs "B" (e.g., 0.8 for 80:20)
+    )
+    bin_properties: dict[str, dict[str, float]] | None = (
+        None  # {pop_label: {col: median}}
+    )
 
     def __post_init__(self):
         """Calculate derived quantities"""
@@ -307,8 +313,7 @@ class SimstackAlgorithm:
 
         # Step 2: Per-bin error estimation — one map at a time
         per_bin_errors = {
-            map_name: np.zeros(n_populations)
-            for map_name in self.sky_maps.maps.keys()
+            map_name: np.zeros(n_populations) for map_name in self.sky_maps.maps.keys()
         }
 
         for map_name in self.sky_maps.maps.keys():
@@ -316,9 +321,7 @@ class SimstackAlgorithm:
             map_data = self.sky_maps[map_name]
 
             # ---- 2a. Build & cache all cropped base layers ----
-            cache, crop_info = self._build_per_bin_cache(
-                map_name, population_ids
-            )
+            cache, crop_info = self._build_per_bin_cache(map_name, population_ids)
             # cache: (n_layers, n_crop_pixels) — base layers + foreground
             # crop_info: dict with flat_indices, obs_vector, etc.
 
@@ -326,8 +329,8 @@ class SimstackAlgorithm:
             obs_vector = crop_info["obs_vector"]
 
             # ---- 2b. Gram matrix and projection ----
-            G_base = cache @ cache.T          # (n_layers, n_layers)
-            h_base = cache @ obs_vector       # (n_layers,)
+            G_base = cache @ cache.T  # (n_layers, n_layers)
+            h_base = cache @ obs_vector  # (n_layers,)
 
             # ---- 2c. Get PSF kernel + crop geometry ----
             psf_kernel = self.sky_maps.create_psf_kernel(map_name)
@@ -368,9 +371,7 @@ class SimstackAlgorithm:
 
                 for iteration in range(self.bootstrap_iterations):
                     rng = np.random.RandomState(
-                        self.bootstrap_seed
-                        + k * self.bootstrap_iterations
-                        + iteration
+                        self.bootstrap_seed + k * self.bootstrap_iterations + iteration
                     )
 
                     # Split sources
@@ -382,9 +383,12 @@ class SimstackAlgorithm:
                     # Build layer_A via direct PSF stamping with real kernel
                     # (exact match to convolve_with_psf, ~1000× faster)
                     layer_A = self._stamp_psf_cropped(
-                        rows_all[idx_A], cols_all[idx_A],
-                        psf_kernel, psf_half,
-                        flat_to_crop, map_shape,
+                        rows_all[idx_A],
+                        cols_all[idx_A],
+                        psf_kernel,
+                        psf_half,
+                        flat_to_crop,
+                        map_shape,
                         crop_info["n_crop"],
                     )
                     # Mean-subtract layer_A to match the base layer centering.
@@ -407,8 +411,8 @@ class SimstackAlgorithm:
 
                     # ---- Gram matrix update ----
                     # Cross-products with all base layers
-                    A_dot_base = cache @ layer_A   # (n_layers,)
-                    B_dot_base = cache @ layer_B   # (n_layers,)
+                    A_dot_base = cache @ layer_A  # (n_layers,)
+                    B_dot_base = cache @ layer_B  # (n_layers,)
 
                     A_dot_A = np.dot(layer_A, layer_A)
                     B_dot_B = np.dot(layer_B, layer_B)
@@ -427,9 +431,7 @@ class SimstackAlgorithm:
                     old_keep = np.concatenate(
                         [np.arange(k), np.arange(k + 1, n_layers)]
                     )
-                    new_keep = np.concatenate(
-                        [np.arange(k), np.arange(k + 2, n_new)]
-                    )
+                    new_keep = np.concatenate([np.arange(k), np.arange(k + 2, n_new)])
 
                     # Unchanged block
                     G_new[np.ix_(new_keep, new_keep)] = G_base[
@@ -456,9 +458,7 @@ class SimstackAlgorithm:
                     try:
                         x_new = np.linalg.solve(G_new, h_new)
                     except np.linalg.LinAlgError:
-                        x_new, _, _, _ = np.linalg.lstsq(
-                            G_new, h_new, rcond=None
-                        )
+                        x_new, _, _, _ = np.linalg.lstsq(G_new, h_new, rcond=None)
 
                     flux_k_total = x_new[k] + x_new[k + 1]
                     flux_k_samples.append(flux_k_total)
@@ -530,9 +530,7 @@ class SimstackAlgorithm:
 
         # ---- Step 1: Compute crop mask (no layer data needed) ----
         if self.crop_circles:
-            flat_indices, obs_vector = self._compute_crop_geometry(
-                map_name, map_data
-            )
+            flat_indices, obs_vector = self._compute_crop_geometry(map_name, map_data)
         else:
             # Use signal pixels (non-zero, non-NaN) matching sky_maps.py's
             # mean-subtraction domain, so obs_vector and layers share the same
@@ -727,8 +725,10 @@ class SimstackAlgorithm:
 
         # Bounds check
         valid = (
-            (all_rows >= 0) & (all_rows < n_rows)
-            & (all_cols >= 0) & (all_cols < n_cols)
+            (all_rows >= 0)
+            & (all_rows < n_rows)
+            & (all_cols >= 0)
+            & (all_cols < n_cols)
         )
 
         all_flat = np.where(valid, all_rows * n_cols + all_cols, 0)
@@ -739,9 +739,9 @@ class SimstackAlgorithm:
         v_mask = valid.ravel()
         v_crop_idx = all_crop.ravel()[v_mask]
         # Broadcast PSF values across sources
-        v_vals = np.broadcast_to(
-            kvals[None, :], (len(src_rows), n_kpix)
-        ).ravel()[v_mask]
+        v_vals = np.broadcast_to(kvals[None, :], (len(src_rows), n_kpix)).ravel()[
+            v_mask
+        ]
 
         np.add.at(layer, v_crop_idx, v_vals)
 
@@ -1168,7 +1168,7 @@ class SimstackAlgorithm:
                 for col in property_columns:
                     if col in subset.columns:
                         vals = pd.to_numeric(subset[col], errors="coerce")
-                        median_val = vals.mean() #median()
+                        median_val = vals.mean()  # median()
                         if pd.notna(median_val):
                             props[col] = float(median_val)
                     else:

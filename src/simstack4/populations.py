@@ -5,6 +5,7 @@ This replaces the jpop, lpop, mpop loop system from simstack3 with a more
 flexible and efficient population management system that supports arbitrary
 binning dimensions (redshift, stellar mass, beta slope, L_UV, etc.).
 """
+
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from itertools import product
@@ -448,9 +449,7 @@ class PopulationManager:
         beta_col = formula_params.bins.get("beta_uv")
 
         if not l_nuv_col:
-            raise PopulationError(
-                "l_nuv column required for L_UV(1600) calculation"
-            )
+            raise PopulationError("l_nuv column required for L_UV(1600) calculation")
         if not beta_col:
             raise PopulationError(
                 "beta_uv column required for L_UV(1600) calculation. "
@@ -458,7 +457,9 @@ class PopulationManager:
             )
 
         if l_nuv_col not in catalog_df.columns:
-            available = [c for c in catalog_df.columns if "nuv" in c.lower() or "l_" in c.lower()]
+            available = [
+                c for c in catalog_df.columns if "nuv" in c.lower() or "l_" in c.lower()
+            ]
             raise PopulationError(
                 f"L_NUV column '{l_nuv_col}' not found. Available: {available}"
             )

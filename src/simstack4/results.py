@@ -8,6 +8,7 @@ Classes
 -------
 SimstackResults : Main results processor and orchestrator.
 """
+
 import pdb
 import pickle
 from pathlib import Path
@@ -19,6 +20,7 @@ from scipy.optimize import curve_fit
 
 try:
     import emcee
+
     HAS_EMCEE = True
 except ImportError:
     HAS_EMCEE = False
@@ -54,6 +56,7 @@ def _ensure_dict(obj):
         return obj
     if isinstance(obj, str):
         import ast
+
         try:
             parsed = ast.literal_eval(obj)
             if isinstance(parsed, dict):
@@ -61,7 +64,6 @@ def _ensure_dict(obj):
         except (ValueError, SyntaxError):
             pass
     return None
-
 
 
 class SimstackResults:
@@ -87,7 +89,7 @@ class SimstackResults:
         # --- Regression greybody configuration ---
         use_regression: bool = False,
         use_regression_prior: bool = False,
-        regression_degree: str = 'linear',
+        regression_degree: str = "linear",
         regression_property_names: list | None = None,
         regression_min_sources: int = 5,
         # --- Greybody fitter configuration (forwarded to GreybodyFitter) ---
@@ -224,10 +226,8 @@ class SimstackResults:
             # When bootstrap is NOT run, both arrays are identical —
             # skip combination to avoid double-counting.
             err_formal = 0.0
-            if hasattr(self.raw_results, 'flux_errors_systematic'):
-                sys_errors = self.raw_results.flux_errors_systematic.get(
-                    map_name, None
-                )
+            if hasattr(self.raw_results, "flux_errors_systematic"):
+                sys_errors = self.raw_results.flux_errors_systematic.get(map_name, None)
                 if sys_errors is not None:
                     err_formal = sys_errors[pop_index]
 
@@ -307,21 +307,26 @@ class SimstackResults:
         # Fit greybody model
         if isinstance(self.greybody_fitter, CovarianceGreybodyFitter):
             greybody_results = self.greybody_fitter.fit_sed_with_covariance(
-                wave_fit, flux_fit, error_fit, z_median, bootstrap_cov_fit,
+                wave_fit,
+                flux_fit,
+                error_fit,
+                z_median,
+                bootstrap_cov_fit,
                 prior_override=prior_override,
             )
         else:
             greybody_results = self.greybody_fitter.fit_sed(
-                wave_fit, flux_fit, error_fit, z_median,
+                wave_fit,
+                flux_fit,
+                error_fit,
+                z_median,
                 prior_override=prior_override,
             )
 
         # Create SED result
         # Use n_sources from StackingResults (definitely populated by algorithm)
         # with fallback to population manager
-        n_sources = self.raw_results.n_sources.get(
-            pop_label, pop_bin.n_sources
-        )
+        n_sources = self.raw_results.n_sources.get(pop_label, pop_bin.n_sources)
 
         sed_result = SEDResults(
             population_id=pop_label,
@@ -433,7 +438,9 @@ class SimstackResults:
                             temp_samples = []
 
                             for i in sample_indices:
-                                sample_amp, sample_temp_rest = sed_result.mcmc_samples[i]
+                                sample_amp, sample_temp_rest = sed_result.mcmc_samples[
+                                    i
+                                ]
 
                                 try:
                                     sample_lir, _ = self.greybody_fitter.calculate_LIR(
@@ -520,11 +527,11 @@ class SimstackResults:
         logger.info("Processing stacking results...")
 
         pop_labels = [
-            lbl for lbl in self.raw_results.population_labels
-            if lbl != "foreground"
+            lbl for lbl in self.raw_results.population_labels if lbl != "foreground"
         ]
         pop_indices = {
-            lbl: i for i, lbl in enumerate(self.raw_results.population_labels)
+            lbl: i
+            for i, lbl in enumerate(self.raw_results.population_labels)
             if lbl != "foreground"
         }
 
@@ -546,7 +553,9 @@ class SimstackResults:
 
         # === Pass 2: Re-fit low-SNR SEDs with empirical prior ===
         n_refit = 0
-        empirical_z_values = np.array(list(empirical_prior.keys())) if empirical_prior else np.array([])
+        empirical_z_values = (
+            np.array(list(empirical_prior.keys())) if empirical_prior else np.array([])
+        )
 
         for pop_label, sed_result in pass1_results.items():
             tier = sed_result.fit_quality_tier
@@ -579,7 +588,8 @@ class SimstackResults:
 
             try:
                 sed_result_v2 = self._create_sed_for_population(
-                    pop_label, pop_indices[pop_label],
+                    pop_label,
+                    pop_indices[pop_label],
                     prior_override=(T_emp, T_emp_sigma),
                 )
                 self.sed_results[pop_label] = sed_result_v2
@@ -600,6 +610,7 @@ class SimstackResults:
             except Exception as e:
                 logger.error(f"Failed to derive quantities for {pop_label}: {e}")
                 import traceback
+
                 logger.error(traceback.format_exc())
 
         # Process band-by-band results
@@ -668,7 +679,7 @@ class SimstackResults:
         Suffix:  'redshift_0.01_0.5__stellar_mass_8.5_10.0__split_0'  → 'split_0'
         Neither: 'stellar_mass_9.5_10.0__redshift_0.5_1.0'            → '_all_'
         """
-        segments = pop_id.split('__')
+        segments = pop_id.split("__")
 
         # Check first segment (prefix style: sfg__...)
         first = segments[0]
@@ -678,7 +689,7 @@ class SimstackResults:
         # Check last segment (suffix style: ...__split_0)
         if len(segments) > 1:
             last = segments[-1]
-            parts = last.split('_')
+            parts = last.split("_")
             # A bin-range segment has ≥3 parts ending in two floats
             # e.g. "stellar_mass_8.5_10.0"  →  skip
             # A type-label segment does not, e.g. "split_0"
@@ -686,13 +697,13 @@ class SimstackResults:
                 try:
                     float(parts[-2])
                     float(parts[-1])
-                    return '_all_'
+                    return "_all_"
                 except ValueError:
                     return last
             else:
                 return last
 
-        return '_all_'
+        return "_all_"
 
     def _run_regression_fit(self) -> None:
         """
@@ -730,7 +741,7 @@ class SimstackResults:
             # User specified — validate against available dimensions
             prop_names = []
             for pname in self.regression_property_names:
-                if pname == 'redshift' or pname in available_dims:
+                if pname == "redshift" or pname in available_dims:
                     prop_names.append(pname)
                 else:
                     logger.warning(
@@ -738,17 +749,18 @@ class SimstackResults:
                         f"dimensions {available_dims}, skipping"
                     )
             if not prop_names:
-                prop_names = ['redshift']  # always available
+                prop_names = ["redshift"]  # always available
         else:
             # Auto-detect: use binning dimensions + redshift
             prop_names = []
             # Always include these if they're binning axes
-            for candidate in ['stellar_mass', 'redshift', 'beta_uv']:
-                if candidate in available_dims or candidate == 'redshift':
+            for candidate in ["stellar_mass", "redshift", "beta_uv"]:
+                if candidate in available_dims or candidate == "redshift":
                     prop_names.append(candidate)
 
-        logger.info(f"Regression properties: {prop_names} "
-                    f"(binning dims: {available_dims})")
+        logger.info(
+            f"Regression properties: {prop_names} " f"(binning dims: {available_dims})"
+        )
 
         # Gather wavelengths from first SED
         first_sed = self.sed_results[pop_ids[0]]
@@ -779,29 +791,32 @@ class SimstackResults:
                 pop_bin = self.population_manager.populations[pop_id]
                 br = pop_bin.bin_ranges
                 for pname in prop_names:
-                    if pname == 'redshift':
-                        if 'redshift' in br:
-                            prop_arrays['redshift'][i] = (
-                                br['redshift'][0] + br['redshift'][1]) / 2
+                    if pname == "redshift":
+                        if "redshift" in br:
+                            prop_arrays["redshift"][i] = (
+                                br["redshift"][0] + br["redshift"][1]
+                            ) / 2
                         else:
-                            prop_arrays['redshift'][i] = sed.median_redshift
-                    elif pname == 'stellar_mass':
-                        if 'stellar_mass' in br:
-                            prop_arrays['stellar_mass'][i] = (
-                                br['stellar_mass'][0] + br['stellar_mass'][1]) / 2
+                            prop_arrays["redshift"][i] = sed.median_redshift
+                    elif pname == "stellar_mass":
+                        if "stellar_mass" in br:
+                            prop_arrays["stellar_mass"][i] = (
+                                br["stellar_mass"][0] + br["stellar_mass"][1]
+                            ) / 2
                         else:
-                            prop_arrays['stellar_mass'][i] = sed.median_mass
+                            prop_arrays["stellar_mass"][i] = sed.median_mass
                     elif pname in br:
-                        prop_arrays[pname][i] = (
-                            br[pname][0] + br[pname][1]) / 2
+                        prop_arrays[pname][i] = (br[pname][0] + br[pname][1]) / 2
             else:
-                if 'redshift' in prop_arrays:
-                    prop_arrays['redshift'][i] = sed.median_redshift
-                if 'stellar_mass' in prop_arrays:
-                    prop_arrays['stellar_mass'][i] = sed.median_mass
+                if "redshift" in prop_arrays:
+                    prop_arrays["redshift"][i] = sed.median_redshift
+                if "stellar_mass" in prop_arrays:
+                    prop_arrays["stellar_mass"][i] = sed.median_mass
 
-        logger.info(f"Population types found: {list(pop_types.keys())} "
-                    f"({', '.join(f'{k}: {len(v)}' for k, v in pop_types.items())})")
+        logger.info(
+            f"Population types found: {list(pop_types.keys())} "
+            f"({', '.join(f'{k}: {len(v)}' for k, v in pop_types.items())})"
+        )
 
         # Fit separate regression surface per type
         self.regression_result = {}  # type → result dict
@@ -816,21 +831,23 @@ class SimstackResults:
             n_excluded = np.sum(~source_mask)
 
             if n_excluded > 0:
-                logger.info(f"  [{ptype}] excluding {n_excluded} populations "
-                            f"with < {self.regression_min_sources} sources")
+                logger.info(
+                    f"  [{ptype}] excluding {n_excluded} populations "
+                    f"with < {self.regression_min_sources} sources"
+                )
 
             if len(type_indices_f) < n_min_params:
                 logger.warning(
                     f"  [{ptype}] too few populations ({len(type_indices_f)}) "
-                    f"for {n_min_params}-param regression, skipping")
+                    f"for {n_min_params}-param regression, skipping"
+                )
                 continue
 
             # Extract data for this type
             fluxes_t = fluxes[type_indices_f]
             errors_t = errors[type_indices_f]
             redshifts_t = redshifts[type_indices_f]
-            props_t = {pname: arr[type_indices_f]
-                       for pname, arr in prop_arrays.items()}
+            props_t = {pname: arr[type_indices_f] for pname, arr in prop_arrays.items()}
 
             # Build sed_results for initialization
             type_pop_ids = [pop_ids[j] for j in type_indices_f]
@@ -846,12 +863,17 @@ class SimstackResults:
 
             try:
                 reg_result = reg_fitter.fit(
-                    wavelengths_obs, fluxes_t, errors_t, redshifts_t,
-                    props_t, sed_results=type_seds,
+                    wavelengths_obs,
+                    fluxes_t,
+                    errors_t,
+                    redshifts_t,
+                    props_t,
+                    sed_results=type_seds,
                 )
             except Exception as e:
                 logger.error(f"  [{ptype}] regression fit failed: {e}")
                 import traceback
+
                 logger.error(traceback.format_exc())
                 continue
 
@@ -862,10 +884,10 @@ class SimstackResults:
             for fi, orig_i in enumerate(type_indices_f):
                 pid = pop_ids[orig_i]
                 sed = self.sed_results[pid]
-                sed.regression_T_rest = float(reg_result['T_rest'][fi])
-                sed.regression_log10_A = float(reg_result['log10_A'][fi])
-                sed.regression_L_IR = float(reg_result['L_IR'][fi])
-                sed.regression_chi2 = float(reg_result['chi2_per_pop'][fi])
+                sed.regression_T_rest = float(reg_result["T_rest"][fi])
+                sed.regression_log10_A = float(reg_result["log10_A"][fi])
+                sed.regression_L_IR = float(reg_result["L_IR"][fi])
+                sed.regression_chi2 = float(reg_result["chi2_per_pop"][fi])
 
             logger.info(
                 f"  [{ptype}] χ²/dof={reg_result['chi2_reduced']:.2f}, "
@@ -899,10 +921,12 @@ class SimstackResults:
         # Compute regression prior sigma PER TYPE from tier-A scatter
         type_sigmas = {}
         for pop_id, sed in self.sed_results.items():
-            if (sed.fit_quality_tier == "A"
-                    and sed.regression_T_rest is not None
-                    and sed.dust_temperature_rest_frame is not None
-                    and np.isfinite(sed.dust_temperature_rest_frame)):
+            if (
+                sed.fit_quality_tier == "A"
+                and sed.regression_T_rest is not None
+                and sed.dust_temperature_rest_frame is not None
+                and np.isfinite(sed.dust_temperature_rest_frame)
+            ):
                 ptype = self._extract_pop_type(pop_id)
                 type_sigmas.setdefault(ptype, []).append(
                     sed.dust_temperature_rest_frame - sed.regression_T_rest
@@ -911,8 +935,10 @@ class SimstackResults:
         regression_sigmas = {}
         for ptype, residuals in type_sigmas.items():
             if len(residuals) < 3:
-                logger.warning(f"  [{ptype}] too few tier-A fits "
-                               f"({len(residuals)}) for regression sigma")
+                logger.warning(
+                    f"  [{ptype}] too few tier-A fits "
+                    f"({len(residuals)}) for regression sigma"
+                )
                 continue
             residuals = np.array(residuals)
             sigma = 1.4826 * np.median(np.abs(residuals - np.median(residuals)))
@@ -947,7 +973,8 @@ class SimstackResults:
 
             try:
                 sed_refit = self._create_sed_for_population(
-                    pop_id, pop_index,
+                    pop_id,
+                    pop_index,
                     prior_override=(T_prior, sigma),
                 )
                 # Preserve regression fields from Pass 3
@@ -1008,19 +1035,21 @@ class SimstackResults:
                 "dust_temperature_error_K": sed_result.dust_temperature_error,
                 "emissivity_index": sed_result.emissivity_index,
                 "chi2_reduced": sed_result.chi2_reduced,
-                "total_ir_luminosity_lsun": derived.total_ir_luminosity
-                if derived
-                else 0,
-                "total_ir_luminosity_error_lsun": derived.total_ir_luminosity_error
-                if derived
-                else 0,
+                "total_ir_luminosity_lsun": (
+                    derived.total_ir_luminosity if derived else 0
+                ),
+                "total_ir_luminosity_error_lsun": (
+                    derived.total_ir_luminosity_error if derived else 0
+                ),
                 "dust_mass_msun": derived.dust_mass if derived else None,
                 "sfr_msun_yr": derived.star_formation_rate if derived else 0,
                 "specific_sfr_yr": derived.specific_sfr if derived else 0,
                 "mcmc_used": sed_result.mcmc_samples is not None,
-                "mcmc_n_samples": len(sed_result.mcmc_samples)
-                if sed_result.mcmc_samples is not None
-                else 0,
+                "mcmc_n_samples": (
+                    len(sed_result.mcmc_samples)
+                    if sed_result.mcmc_samples is not None
+                    else 0
+                ),
                 "fit_quality_tier": sed_result.fit_quality_tier,
                 "sed_snr": sed_result.sed_snr,
                 "prior_center_K": sed_result.prior_center,
@@ -1029,20 +1058,20 @@ class SimstackResults:
 
             # Add MCMC-derived uncertainties if available
             if derived and derived.total_ir_luminosity_mcmc_error:
-                row[
-                    "total_ir_luminosity_mcmc_error_lower"
-                ] = derived.total_ir_luminosity_mcmc_error[0]
-                row[
-                    "total_ir_luminosity_mcmc_error_upper"
-                ] = derived.total_ir_luminosity_mcmc_error[1]
+                row["total_ir_luminosity_mcmc_error_lower"] = (
+                    derived.total_ir_luminosity_mcmc_error[0]
+                )
+                row["total_ir_luminosity_mcmc_error_upper"] = (
+                    derived.total_ir_luminosity_mcmc_error[1]
+                )
 
             if derived and derived.dust_temperature_mcmc_error:
-                row[
-                    "dust_temperature_mcmc_error_lower"
-                ] = derived.dust_temperature_mcmc_error[0]
-                row[
-                    "dust_temperature_mcmc_error_upper"
-                ] = derived.dust_temperature_mcmc_error[1]
+                row["dust_temperature_mcmc_error_lower"] = (
+                    derived.dust_temperature_mcmc_error[0]
+                )
+                row["dust_temperature_mcmc_error_upper"] = (
+                    derived.dust_temperature_mcmc_error[1]
+                )
 
             # Add per-bin median catalog properties
             props = _ensure_dict(sed_result.bin_properties)
@@ -1074,9 +1103,7 @@ class SimstackResults:
         print(f"Bands: {len(self.raw_results.map_names)}")
 
         fitting_method = "MCMC" if self.greybody_fitter.use_mcmc else "curve_fit"
-        prior_type = (
-            self.greybody_fitter.temperature_prior
-        )
+        prior_type = self.greybody_fitter.temperature_prior
 
         print(f"Fitting method: {fitting_method}")
         print(f"Prior type: {prior_type}")
@@ -1103,8 +1130,10 @@ class SimstackResults:
 
         # Fit quality tier summary
         from collections import Counter
+
         tiers = Counter(
-            sed.fit_quality_tier for sed in self.sed_results.values()
+            sed.fit_quality_tier
+            for sed in self.sed_results.values()
             if sed.fit_quality_tier is not None
         )
         if tiers:
@@ -1161,8 +1190,12 @@ class SimstackResults:
             print("Population Results:")
 
             # Detect bin_property columns (prefixed with "median_" from bin_properties)
-            bp_cols = [c for c in summary_df.columns if c.startswith("median_")
-                       and c not in ("median_redshift", "median_log_mass")]
+            bp_cols = [
+                c
+                for c in summary_df.columns
+                if c.startswith("median_")
+                and c not in ("median_redshift", "median_log_mass")
+            ]
 
             # Build header
             header = f"{'Population':<30} {'N_src':<8} {'z_med':<8} "
@@ -1355,7 +1388,7 @@ def create_results_processor(
     exclude_wavelengths: list[float] | None = None,
     use_regression: bool = False,
     use_regression_prior: bool = False,
-    regression_degree: str = 'linear',
+    regression_degree: str = "linear",
     regression_property_names: list | None = None,
     regression_min_sources: int = 5,
     **greybody_kwargs,

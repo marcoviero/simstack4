@@ -25,6 +25,7 @@ try:
     from .utils import setup_logging, validate_environment
 except ImportError as e:
     import warnings
+
     warnings.warn(f"Some modules not fully implemented yet: {e}")
 
     # Create placeholder classes
@@ -42,10 +43,12 @@ except ImportError as e:
 
     def setup_logging(*args, **kwargs):
         import logging
+
         return logging.getLogger("simstack4")
 
     def validate_environment():
         return {"status": "placeholder"}
+
 
 # Exceptions
 from .exceptions.simstack_exceptions import (
@@ -55,7 +58,7 @@ from .exceptions.simstack_exceptions import (
     MapError,
     CosmologyError,
     PopulationError,
-    ValidationError
+    ValidationError,
 )
 
 __all__ = [
@@ -67,11 +70,9 @@ __all__ = [
     "SimstackWrapper",
     "SimstackResults",
     "SimstackPlots",
-
     # Utilities
     "setup_logging",
     "validate_environment",
-
     # Exceptions
     "SimstackError",
     "ConfigError",

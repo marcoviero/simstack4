@@ -63,29 +63,29 @@ from pathlib import Path
 
 # ── Line catalog ─────────────────────────────────────────────────────
 LINES = {
-    "[CII] 158":   157.74,
-    "[NII] 205":   205.18,
-    "[OI] 145":    145.53,
-    "[NII] 122":   121.90,
-    "[OIII] 88":    88.36,
-    "[OI] 63":      63.18,
-    "CO(3-2)":     866.96,
-    "CO(4-3)":     650.25,
-    "CO(5-4)":     520.23,
-    "CO(6-5)":     433.56,
-    "CO(7-6)":     371.65,
-    "CI(1-0)":     609.14,
-    "CI(2-1)":     370.42,
+    "[CII] 158": 157.74,
+    "[NII] 205": 205.18,
+    "[OI] 145": 145.53,
+    "[NII] 122": 121.90,
+    "[OIII] 88": 88.36,
+    "[OI] 63": 63.18,
+    "CO(3-2)": 866.96,
+    "CO(4-3)": 650.25,
+    "CO(5-4)": 520.23,
+    "CO(6-5)": 433.56,
+    "CO(7-6)": 371.65,
+    "CI(1-0)": 609.14,
+    "CI(2-1)": 370.42,
 }
 
 # Band edges (50% transmission, microns)
 BAND_EDGES = {
-    "PACS_100":    (85, 125),
-    "PACS_160":    (130, 210),
-    "SPIRE_250":   (194, 313),
-    "SPIRE_350":   (283, 413),
-    "SPIRE_500":   (383, 693),
-    "SCUBA2_850":  (770, 940),
+    "PACS_100": (85, 125),
+    "PACS_160": (130, 210),
+    "SPIRE_250": (194, 313),
+    "SPIRE_350": (283, 413),
+    "SPIRE_500": (383, 693),
+    "SCUBA2_850": (770, 940),
 }
 
 # Solar luminosity
@@ -134,8 +134,8 @@ def _cmb_correction_factor(z, T_dust, beta_emis=1.8):
     if T_dust is None or np.any(np.asarray(T_dust) <= 0):
         return 1.0
 
-    h = 6.626e-27   # erg s
-    k = 1.381e-16   # erg/K
+    h = 6.626e-27  # erg s
+    k = 1.381e-16  # erg/K
     c_cgs = 2.998e10  # cm/s
 
     z = np.asarray(z, dtype=float)
@@ -279,8 +279,14 @@ def measure_line_intensity(
     print(f"Measuring {line} ({line_rest_lam:.1f} um) in stacked SEDs")
 
     # Diagnostic: check model wavelength frame
-    sample_sed = next((s for s in pr.sed_results.values() if s.greybody_fit_success 
-                       and s.model_wavelengths is not None), None)
+    sample_sed = next(
+        (
+            s
+            for s in pr.sed_results.values()
+            if s.greybody_fit_success and s.model_wavelengths is not None
+        ),
+        None,
+    )
     _model_is_rest_frame = False
     if sample_sed is not None:
         mw = sample_sed.model_wavelengths
@@ -346,6 +352,7 @@ def measure_line_intensity(
         props = sed.bin_properties or {}
         if isinstance(props, str):
             import ast
+
             try:
                 props = ast.literal_eval(props)
             except (ValueError, SyntaxError):
@@ -456,9 +463,14 @@ def measure_line_intensity(
             snr = excess_jy / res["flux_err"] if res["flux_err"] > 0 else 0
 
             # Convert to luminosity
-            dl_mpc = sed.luminosity_distances[line_band_idx] if hasattr(sed, 'luminosity_distances') else None
+            dl_mpc = (
+                sed.luminosity_distances[line_band_idx]
+                if hasattr(sed, "luminosity_distances")
+                else None
+            )
             if dl_mpc is None:
                 from astropy.cosmology import Planck18
+
                 dl_mpc = Planck18.luminosity_distance(z).value
 
             l_line = _excess_to_luminosity(excess_jy, z, dl_mpc, band_lo, band_hi)
@@ -467,31 +479,46 @@ def measure_line_intensity(
             # Other lines in the same band (blending)
             all_lines = _lines_in_band(z, band_lo, band_hi)
 
-            row.update({
-                "excess_jy": excess_jy,
-                "excess_frac": excess_frac,
-                "excess_frac_corrected": excess_corrected,
-                "excess_snr": snr,
-                "baseline_frac": baseline_mean,
-                "l_line": l_line,
-                "log_l_line": np.log10(abs(l_line)) * np.sign(l_line) if l_line != 0 else np.nan,
-                "l_line_over_l_ir": l_line_fir,
-                "log_l_line_over_l_ir": np.log10(l_line_fir) if l_line_fir > 0 else np.nan,
-                "flux_data": res["flux_data"],
-                "flux_model": res["flux_model"],
-                "flux_err": res["flux_err"],
-                "n_lines_in_band": len(all_lines),
-                "lines_in_band": " + ".join([n for n, _, _ in all_lines]),
-            })
+            row.update(
+                {
+                    "excess_jy": excess_jy,
+                    "excess_frac": excess_frac,
+                    "excess_frac_corrected": excess_corrected,
+                    "excess_snr": snr,
+                    "baseline_frac": baseline_mean,
+                    "l_line": l_line,
+                    "log_l_line": (
+                        np.log10(abs(l_line)) * np.sign(l_line)
+                        if l_line != 0
+                        else np.nan
+                    ),
+                    "l_line_over_l_ir": l_line_fir,
+                    "log_l_line_over_l_ir": (
+                        np.log10(l_line_fir) if l_line_fir > 0 else np.nan
+                    ),
+                    "flux_data": res["flux_data"],
+                    "flux_model": res["flux_model"],
+                    "flux_err": res["flux_err"],
+                    "n_lines_in_band": len(all_lines),
+                    "lines_in_band": " + ".join([n for n, _, _ in all_lines]),
+                }
+            )
         else:
-            row.update({
-                "excess_jy": np.nan, "excess_frac": np.nan,
-                "excess_frac_corrected": np.nan, "excess_snr": np.nan,
-                "baseline_frac": np.nan, "l_line": np.nan,
-                "log_l_line": np.nan, "l_line_over_l_ir": np.nan,
-                "log_l_line_over_l_ir": np.nan,
-                "n_lines_in_band": 0, "lines_in_band": "",
-            })
+            row.update(
+                {
+                    "excess_jy": np.nan,
+                    "excess_frac": np.nan,
+                    "excess_frac_corrected": np.nan,
+                    "excess_snr": np.nan,
+                    "baseline_frac": np.nan,
+                    "l_line": np.nan,
+                    "log_l_line": np.nan,
+                    "l_line_over_l_ir": np.nan,
+                    "log_l_line_over_l_ir": np.nan,
+                    "n_lines_in_band": 0,
+                    "lines_in_band": "",
+                }
+            )
 
         rows.append(row)
 
@@ -519,24 +546,32 @@ def measure_line_intensity(
             llfir = df_det.loc[valid, "l_line_over_l_ir"]
 
             print(f"\n  Fractional excess (data-model)/model:")
-            print(f"    Raw:       median = {ef.median()*100:+.3f}%,  "
-                  f"mean = {ef.mean()*100:+.3f}%")
+            print(
+                f"    Raw:       median = {ef.median()*100:+.3f}%,  "
+                f"mean = {ef.mean()*100:+.3f}%"
+            )
             print(f"    Corrected: median = {efc.median()*100:+.3f}%")
 
             valid_l = np.isfinite(llfir) & (llfir > 0)
             if valid_l.any():
                 print(f"\n  L_{line} / L_FIR:")
-                print(f"    median = {llfir[valid_l].median():.4f} "
-                      f"({llfir[valid_l].median()*100:.2f}%)")
-                print(f"    range  = [{llfir[valid_l].min():.4f}, "
-                      f"{llfir[valid_l].max():.4f}]")
+                print(
+                    f"    median = {llfir[valid_l].median():.4f} "
+                    f"({llfir[valid_l].median()*100:.2f}%)"
+                )
+                print(
+                    f"    range  = [{llfir[valid_l].min():.4f}, "
+                    f"{llfir[valid_l].max():.4f}]"
+                )
 
             valid_ll = np.isfinite(ll) & (ll > 0)
             if valid_ll.any():
                 print(f"\n  L_{line}:")
                 print(f"    median = {ll[valid_ll].median():.2e} L_sun")
-                print(f"    range  = [{ll[valid_ll].min():.2e}, "
-                      f"{ll[valid_ll].max():.2e}]")
+                print(
+                    f"    range  = [{ll[valid_ll].min():.2e}, "
+                    f"{ll[valid_ll].max():.2e}]"
+                )
 
             # By band
             print(f"\n  By band:")
@@ -544,10 +579,16 @@ def measure_line_intensity(
                 bm = (df_det["line_band"] == band) & valid
                 if bm.any():
                     med = ef[bm].median()
-                    med_ratio = llfir[bm & np.isfinite(llfir)].median() if (bm & np.isfinite(llfir)).any() else np.nan
-                    print(f"    {band:>12}: {bm.sum():>3} pops, "
-                          f"excess = {med*100:+.3f}%, "
-                          f"L_line/L_FIR = {med_ratio:.4f}")
+                    med_ratio = (
+                        llfir[bm & np.isfinite(llfir)].median()
+                        if (bm & np.isfinite(llfir)).any()
+                        else np.nan
+                    )
+                    print(
+                        f"    {band:>12}: {bm.sum():>3} pops, "
+                        f"excess = {med*100:+.3f}%, "
+                        f"L_line/L_FIR = {med_ratio:.4f}"
+                    )
 
             # Detection significance
             mean_excess = ef.mean()
@@ -559,52 +600,70 @@ def measure_line_intensity(
             if apply_cmb_correction:
                 cmb_vals = df_det.loc[valid, "cmb_correction"]
                 print(f"\n  CMB correction applied (da Cunha+2013):")
-                print(f"    L_IR multiplied by {cmb_vals.min():.3f} - {cmb_vals.max():.3f}")
+                print(
+                    f"    L_IR multiplied by {cmb_vals.min():.3f} - {cmb_vals.max():.3f}"
+                )
                 print(f"    median correction: x{cmb_vals.median():.3f}")
             else:
                 print(f"\n  CMB correction: OFF (set apply_cmb_correction=True)")
 
             # Diagnostic: if excess is suspiciously large, show examples
             if ef.median() > 0.1:  # > 10% is too high for any line
-                print(f"\n  WARNING: median excess = {ef.median()*100:.1f}% is "
-                      f"unrealistically high for {line}.")
+                print(
+                    f"\n  WARNING: median excess = {ef.median()*100:.1f}% is "
+                    f"unrealistically high for {line}."
+                )
                 print(f"  Expected: 0.1-1% for [CII], <0.1% for other lines.")
                 print(f"  Likely cause: model interpolation mismatch.")
                 print(f"\n  Diagnostic — first 3 populations:")
                 for _, row in df_det[valid].head(3).iterrows():
-                    print(f"    z={row['z']:.2f}, band={row['line_band']}, "
-                          f"lam_obs={row['lam_line_obs']:.0f}um")
+                    print(
+                        f"    z={row['z']:.2f}, band={row['line_band']}, "
+                        f"lam_obs={row['lam_line_obs']:.0f}um"
+                    )
                     if "flux_data" in row and "flux_model" in row:
-                        print(f"      data={row['flux_data']:.4e} Jy, "
-                              f"model={row['flux_model']:.4e} Jy, "
-                              f"excess={row['excess_frac']*100:+.1f}%")
+                        print(
+                            f"      data={row['flux_data']:.4e} Jy, "
+                            f"model={row['flux_model']:.4e} Jy, "
+                            f"excess={row['excess_frac']*100:+.1f}%"
+                        )
 
     # ── 9-panel science plot (3x3) ───────────────────────────────────
     fig, axes = plt.subplots(3, 3, figsize=(18, 16))
     cmap = "plasma"
 
     valid_det = df_det["line_in_band"] & np.isfinite(df_det["excess_frac"])
-    valid_ratio = valid_det & np.isfinite(df_det["l_line_over_l_ir"]) & (df_det["l_line_over_l_ir"] > 0)
+    valid_ratio = (
+        valid_det
+        & np.isfinite(df_det["l_line_over_l_ir"])
+        & (df_det["l_line_over_l_ir"] > 0)
+    )
 
     # Helper: binned medians with errors (IQR)
     def _binned_stats(x, y, edges, min_count=2):
         centers, medians, lo_err, hi_err, counts = [], [], [], [], []
         for i in range(len(edges) - 1):
-            mask = (x >= edges[i]) & (x < edges[i+1])
+            mask = (x >= edges[i]) & (x < edges[i + 1])
             if mask.sum() >= min_count:
                 vals = y[mask]
                 med = np.median(vals)
                 p16, p84 = np.percentile(vals, [16, 84])
-                centers.append((edges[i] + edges[i+1]) / 2)
+                centers.append((edges[i] + edges[i + 1]) / 2)
                 medians.append(med)
                 lo_err.append(med - p16)
                 hi_err.append(p84 - med)
                 counts.append(mask.sum())
-        return (np.array(centers), np.array(medians),
-                np.array(lo_err), np.array(hi_err), np.array(counts))
+        return (
+            np.array(centers),
+            np.array(medians),
+            np.array(lo_err),
+            np.array(hi_err),
+            np.array(counts),
+        )
 
-    def _fit_and_plot(ax, x, y, color="k", label="fit", ls="-", lw=2,
-                      x_is_log=False, weights=None):
+    def _fit_and_plot(
+        ax, x, y, color="k", label="fit", ls="-", lw=2, x_is_log=False, weights=None
+    ):
         """Fit log(y) = a*x + b. weights: higher = more trusted."""
         valid = np.isfinite(x) & np.isfinite(y) & (y > 0)
         if weights is not None:
@@ -620,22 +679,37 @@ def measure_line_intensity(
                 coeffs = np.polyfit(x_v, log_y, 1)
             x_grid = np.linspace(x_v.min(), x_v.max(), 100)
             y_fit = 10 ** np.polyval(coeffs, x_grid)
-            x_plot = 10 ** x_grid if x_is_log else x_grid
-            ax.plot(x_plot, y_fit * 100, ls=ls, color=color, lw=lw,
-                    alpha=0.8, label=label, zorder=4)
+            x_plot = 10**x_grid if x_is_log else x_grid
+            ax.plot(
+                x_plot,
+                y_fit * 100,
+                ls=ls,
+                color=color,
+                lw=lw,
+                alpha=0.8,
+                label=label,
+                zorder=4,
+            )
             return coeffs
         except Exception:
             return None
 
-    def _scatter_weighted(ax, df_sub, x_col, y_col, c_col, cmap_name,
-                          x_is_log=False, **kwargs):
+    def _scatter_weighted(
+        ax, df_sub, x_col, y_col, c_col, cmap_name, x_is_log=False, **kwargs
+    ):
         """Scatter with point size proportional to n_sources."""
         ns = df_sub["n_sources"].values.astype(float)
         sizes = 10 + 60 * (ns / max(ns.max(), 1)) ** 0.5
         x_vals = df_sub[x_col].values
-        return ax.scatter(x_vals, df_sub[y_col].values * 100,
-                          c=df_sub[c_col].values, cmap=cmap_name,
-                          s=sizes, alpha=0.7, **kwargs)
+        return ax.scatter(
+            x_vals,
+            df_sub[y_col].values * 100,
+            c=df_sub[c_col].values,
+            cmap=cmap_name,
+            s=sizes,
+            alpha=0.7,
+            **kwargs,
+        )
 
     # ────────────────────────────────────────────────────────────────
     # ROW 1: Tomographic, classical deficit, CII-SFR
@@ -644,8 +718,10 @@ def measure_line_intensity(
     # Panel 1: L_line/L_FIR vs redshift (colored by band)
     ax = axes[0, 0]
     band_colors = {
-        "PACS_160": "C0", "SPIRE_250": "C1",
-        "SPIRE_350": "C2", "SPIRE_500": "C3",
+        "PACS_160": "C0",
+        "SPIRE_250": "C1",
+        "SPIRE_350": "C2",
+        "SPIRE_500": "C3",
         "SCUBA2_850": "C4",
     }
     for band, color in band_colors.items():
@@ -654,7 +730,9 @@ def measure_line_intensity(
             ax.scatter(
                 df_det.loc[bm, "z"],
                 df_det.loc[bm, "l_line_over_l_ir"] * 100,
-                c=color, s=30, alpha=0.7,
+                c=color,
+                s=30,
+                alpha=0.7,
                 label=band.replace("_", " "),
             )
     if valid_ratio.any():
@@ -665,15 +743,28 @@ def measure_line_intensity(
             z_edges,
         )
         if len(zc) > 0:
-            ax.errorbar(zc, zm * 100, yerr=[zlo * 100, zhi * 100],
-                        fmt="ks", ms=9, mfc="white", mew=2,
-                        capsize=3, elinewidth=1.5, zorder=5,
-                        label="Binned median")
-        _fit_and_plot(ax,
-                      df_det.loc[valid_ratio, "z"].values,
-                      df_det.loc[valid_ratio, "l_line_over_l_ir"].values,
-                      color="k", label="Fit (weighted)", ls="--",
-                      weights=df_det.loc[valid_ratio, "n_sources"].values.astype(float))
+            ax.errorbar(
+                zc,
+                zm * 100,
+                yerr=[zlo * 100, zhi * 100],
+                fmt="ks",
+                ms=9,
+                mfc="white",
+                mew=2,
+                capsize=3,
+                elinewidth=1.5,
+                zorder=5,
+                label="Binned median",
+            )
+        _fit_and_plot(
+            ax,
+            df_det.loc[valid_ratio, "z"].values,
+            df_det.loc[valid_ratio, "l_line_over_l_ir"].values,
+            color="k",
+            label="Fit (weighted)",
+            ls="--",
+            weights=df_det.loc[valid_ratio, "n_sources"].values.astype(float),
+        )
     ax.set_xlabel("Redshift")
     ax.set_ylabel(f"L$_{{{line}}}$ / L$_{{FIR}}$ (%)")
     ax.set_title(f"{line} intensity vs redshift")
@@ -688,13 +779,16 @@ def measure_line_intensity(
         sc = ax.scatter(
             df_det.loc[valid_ratio, "l_ir"],
             df_det.loc[valid_ratio, "l_line_over_l_ir"] * 100,
-            c=df_det.loc[valid_ratio, "z"], cmap=cmap,
-            s=sizes, alpha=0.7,
+            c=df_det.loc[valid_ratio, "z"],
+            cmap=cmap,
+            s=sizes,
+            alpha=0.7,
         )
         plt.colorbar(sc, ax=ax, label="Redshift")
         lir_edges = np.logspace(
             np.floor(np.log10(df_det.loc[valid_ratio, "l_ir"].min())),
-            np.ceil(np.log10(df_det.loc[valid_ratio, "l_ir"].max())), 8,
+            np.ceil(np.log10(df_det.loc[valid_ratio, "l_ir"].max())),
+            8,
         )
         lc, lm, llo, lhi, _ = _binned_stats(
             df_det.loc[valid_ratio, "l_ir"].values,
@@ -702,23 +796,41 @@ def measure_line_intensity(
             lir_edges,
         )
         if len(lc) > 0:
-            ax.errorbar(lc, lm * 100, yerr=[llo * 100, lhi * 100],
-                        fmt="ks", ms=9, mfc="white", mew=2,
-                        capsize=3, elinewidth=1.5, zorder=5)
+            ax.errorbar(
+                lc,
+                lm * 100,
+                yerr=[llo * 100, lhi * 100],
+                fmt="ks",
+                ms=9,
+                mfc="white",
+                mew=2,
+                capsize=3,
+                elinewidth=1.5,
+                zorder=5,
+            )
         fit_w = df_det.loc[valid_ratio, "n_sources"].values.astype(float)
-        coeffs = _fit_and_plot(ax,
-                               np.log10(df_det.loc[valid_ratio, "l_ir"].values),
-                               df_det.loc[valid_ratio, "l_line_over_l_ir"].values,
-                               color="navy", label="Deficit fit", ls="-",
-                               x_is_log=True, weights=fit_w)
+        coeffs = _fit_and_plot(
+            ax,
+            np.log10(df_det.loc[valid_ratio, "l_ir"].values),
+            df_det.loc[valid_ratio, "l_line_over_l_ir"].values,
+            color="navy",
+            label="Deficit fit",
+            ls="-",
+            x_is_log=True,
+            weights=fit_w,
+        )
         if coeffs is not None:
-            ax.text(0.05, 0.05, f"slope = {coeffs[0]:.2f}",
-                    transform=ax.transAxes, fontsize=9,
-                    bbox=dict(fc="white", alpha=0.8))
+            ax.text(
+                0.05,
+                0.05,
+                f"slope = {coeffs[0]:.2f}",
+                transform=ax.transAxes,
+                fontsize=9,
+                bbox=dict(fc="white", alpha=0.8),
+            )
         lir_ref = np.logspace(10, 13, 50)
         cii_pct = 0.5 * (lir_ref / 1e11) ** (-0.35)
-        ax.plot(lir_ref, cii_pct, "r--", lw=1.5, alpha=0.5,
-                label="D-S+17 (approx)")
+        ax.plot(lir_ref, cii_pct, "r--", lw=1.5, alpha=0.5, label="D-S+17 (approx)")
         ax.legend(fontsize=7)
     ax.set_xscale("log")
     ax.set_xlabel("L$_{IR}$ (L$_\\odot$)")
@@ -733,13 +845,15 @@ def measure_line_intensity(
         sc = ax.scatter(
             df_det.loc[valid_ll, "sfr"],
             df_det.loc[valid_ll, "l_line"],
-            c=df_det.loc[valid_ll, "z"], cmap=cmap, s=30, alpha=0.7,
+            c=df_det.loc[valid_ll, "z"],
+            cmap=cmap,
+            s=30,
+            alpha=0.7,
         )
         plt.colorbar(sc, ax=ax, label="Redshift")
         sfr_grid = np.logspace(-1, 3, 50)
-        l_cii_dl14 = 10**(1.0 * np.log10(sfr_grid) + 7.06)
-        ax.plot(sfr_grid, l_cii_dl14, "r--", lw=2, alpha=0.6,
-                label="De Looze+2014")
+        l_cii_dl14 = 10 ** (1.0 * np.log10(sfr_grid) + 7.06)
+        ax.plot(sfr_grid, l_cii_dl14, "r--", lw=2, alpha=0.6, label="De Looze+2014")
         ax.legend(fontsize=8)
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -754,14 +868,19 @@ def measure_line_intensity(
 
     # Panel 4: L_line/L_FIR vs Sigma_SFR (2D surface fit)
     ax = axes[1, 0]
-    has_sigma = "log_sigma_sfr" in df_det.columns and np.isfinite(df_det["log_sigma_sfr"]).any()
+    has_sigma = (
+        "log_sigma_sfr" in df_det.columns and np.isfinite(df_det["log_sigma_sfr"]).any()
+    )
     if has_sigma and valid_ratio.any():
         valid_s = valid_ratio & np.isfinite(df_det["log_sigma_sfr"])
         if valid_s.any():
             sc = ax.scatter(
                 df_det.loc[valid_s, "log_sigma_sfr"],
                 df_det.loc[valid_s, "l_line_over_l_ir"] * 100,
-                c=df_det.loc[valid_s, "z"], cmap=cmap, s=30, alpha=0.5,
+                c=df_det.loc[valid_s, "z"],
+                cmap=cmap,
+                s=30,
+                alpha=0.5,
             )
             plt.colorbar(sc, ax=ax, label="Redshift")
             sig_edges = np.arange(-2, 2.5, 0.5)
@@ -771,10 +890,19 @@ def measure_line_intensity(
                 sig_edges,
             )
             if len(sc_) > 0:
-                ax.errorbar(sc_, sm * 100, yerr=[slo * 100, shi * 100],
-                            fmt="ks", ms=9, mfc="white", mew=2,
-                            capsize=3, elinewidth=1.5, zorder=5,
-                            label="All z")
+                ax.errorbar(
+                    sc_,
+                    sm * 100,
+                    yerr=[slo * 100, shi * 100],
+                    fmt="ks",
+                    ms=9,
+                    mfc="white",
+                    mew=2,
+                    capsize=3,
+                    elinewidth=1.5,
+                    zorder=5,
+                    label="All z",
+                )
             # Joint 2D fit: log(L_line/L_IR) = a*log_sigma + b*z + c
             sig_v = df_det.loc[valid_s, "log_sigma_sfr"].values
             z_v = df_det.loc[valid_s, "z"].values
@@ -793,8 +921,10 @@ def measure_line_intensity(
 
                     # Weighted R²
                     pred = X @ c2d
-                    ss_res = np.sum(w**2 * (log_r - pred)**2)
-                    ss_tot = np.sum(w**2 * (log_r - np.average(log_r, weights=w**2))**2)
+                    ss_res = np.sum(w**2 * (log_r - pred) ** 2)
+                    ss_tot = np.sum(
+                        w**2 * (log_r - np.average(log_r, weights=w**2)) ** 2
+                    )
                     r_sq = 1 - ss_res / ss_tot if ss_tot > 0 else 0
 
                     sig_grid = np.linspace(sig_v.min(), sig_v.max(), 100)
@@ -802,25 +932,45 @@ def measure_line_intensity(
                     z_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
                     for z_fix, zcol in zip(z_show, z_colors):
                         y_fit = 10 ** (a_sig * sig_grid + b_z * z_fix + c_int)
-                        ax.plot(sig_grid, y_fit * 100, "-", color=zcol, lw=2,
-                                alpha=0.8, label=f"z={z_fix:.1f}", zorder=4)
+                        ax.plot(
+                            sig_grid,
+                            y_fit * 100,
+                            "-",
+                            color=zcol,
+                            lw=2,
+                            alpha=0.8,
+                            label=f"z={z_fix:.1f}",
+                            zorder=4,
+                        )
 
                     # Black fit through binned medians
                     if len(sc_) >= 3:
                         valid_med = sm > 0
                         if valid_med.sum() >= 2:
-                            med_coeffs = np.polyfit(sc_[valid_med], np.log10(sm[valid_med]), 1)
-                            ax.plot(sc_[valid_med],
-                                    10**np.polyval(med_coeffs, sc_[valid_med]) * 100,
-                                    "k-", lw=2.5, alpha=0.9, zorder=6,
-                                    label="Median fit")
+                            med_coeffs = np.polyfit(
+                                sc_[valid_med], np.log10(sm[valid_med]), 1
+                            )
+                            ax.plot(
+                                sc_[valid_med],
+                                10 ** np.polyval(med_coeffs, sc_[valid_med]) * 100,
+                                "k-",
+                                lw=2.5,
+                                alpha=0.9,
+                                zorder=6,
+                                label="Median fit",
+                            )
 
-                    ax.text(0.03, 0.95,
-                            f"log(L/L_IR) = {a_sig:.2f} log$\\Sigma$ "
-                            f"{b_z:+.2f} z {c_int:+.2f}\n"
-                            f"R$^2$ = {r_sq:.3f}  (N={pos.sum()})",
-                            transform=ax.transAxes, fontsize=7, va="top",
-                            bbox=dict(fc="white", alpha=0.9))
+                    ax.text(
+                        0.03,
+                        0.95,
+                        f"log(L/L_IR) = {a_sig:.2f} log$\\Sigma$ "
+                        f"{b_z:+.2f} z {c_int:+.2f}\n"
+                        f"R$^2$ = {r_sq:.3f}  (N={pos.sum()})",
+                        transform=ax.transAxes,
+                        fontsize=7,
+                        va="top",
+                        bbox=dict(fc="white", alpha=0.9),
+                    )
                 except np.linalg.LinAlgError:
                     pass
             ax.legend(fontsize=7, loc="upper right")
@@ -834,10 +984,12 @@ def measure_line_intensity(
     ax = axes[1, 1]
     has_Z = "metallicity" in df_det.columns and np.isfinite(df_det["metallicity"]).any()
     if has_sigma and has_Z and valid_ratio.any():
-        valid_szm = (valid_ratio
-                     & np.isfinite(df_det["log_sigma_sfr"])
-                     & np.isfinite(df_det["metallicity"])
-                     & (df_det["metallicity"] > 0))
+        valid_szm = (
+            valid_ratio
+            & np.isfinite(df_det["log_sigma_sfr"])
+            & np.isfinite(df_det["metallicity"])
+            & (df_det["metallicity"] > 0)
+        )
         if valid_szm.sum() >= 6:
             sig_v = df_det.loc[valid_szm, "log_sigma_sfr"].values
             z_v = df_det.loc[valid_szm, "z"].values
@@ -854,8 +1006,10 @@ def measure_line_intensity(
 
                 # Weighted R²
                 pred = X @ c3
-                ss_res = np.sum(w_v**2 * (log_r - pred)**2)
-                ss_tot = np.sum(w_v**2 * (log_r - np.average(log_r, weights=w_v**2))**2)
+                ss_res = np.sum(w_v**2 * (log_r - pred) ** 2)
+                ss_tot = np.sum(
+                    w_v**2 * (log_r - np.average(log_r, weights=w_v**2)) ** 2
+                )
                 r_sq_3 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
 
                 # Scatter points
@@ -863,20 +1017,27 @@ def measure_line_intensity(
                     sc = ax.scatter(
                         df_det.loc[valid_szm, "log_sigma_sfr"],
                         df_det.loc[valid_szm, "l_line_over_l_ir"] * 100,
-                        c=logZ_v, cmap="viridis", s=30, alpha=0.5,
+                        c=logZ_v,
+                        cmap="viridis",
+                        s=30,
+                        alpha=0.5,
                     )
                     plt.colorbar(sc, ax=ax, label="log(Z)")
                 else:
                     sc = ax.scatter(
                         df_det.loc[valid_szm, "log_sigma_sfr"],
                         df_det.loc[valid_szm, "l_line_over_l_ir"] * 100,
-                        c=z_v, cmap="plasma", s=30, alpha=0.5,
+                        c=z_v,
+                        cmap="plasma",
+                        s=30,
+                        alpha=0.5,
                     )
                     plt.colorbar(sc, ax=ax, label="Redshift")
 
                 sig_grid = np.linspace(sig_v.min(), sig_v.max(), 100)
 
                 from matplotlib.lines import Line2D as _Line2D
+
                 if surface_color_by == "metallicity":
                     # Color = metallicity, linestyle = redshift
                     Z_show = np.array([0.004, 0.008, 0.02, 0.04])
@@ -885,20 +1046,39 @@ def measure_line_intensity(
                     line_styles = ["-", "--", ":"]
                     for logZ_fix, zcol in zip(np.log10(Z_show), Z_colors):
                         for z_fix, ls in zip(z_lines, line_styles):
-                            y_fit = 10 ** (a_sig * sig_grid + b_Z * logZ_fix + c_z * z_fix + d_int)
-                            ax.plot(sig_grid, y_fit * 100, ls=ls, color=zcol,
-                                    lw=2, alpha=0.8, zorder=4)
+                            y_fit = 10 ** (
+                                a_sig * sig_grid + b_Z * logZ_fix + c_z * z_fix + d_int
+                            )
+                            ax.plot(
+                                sig_grid,
+                                y_fit * 100,
+                                ls=ls,
+                                color=zcol,
+                                lw=2,
+                                alpha=0.8,
+                                zorder=4,
+                            )
                     style_handles = [
                         _Line2D([0], [0], color="gray", ls=ls, lw=1.5, label=f"z={zf}")
                         for zf, ls in zip(z_lines, line_styles)
                     ]
                     color_handles = [
-                        _Line2D([0], [0], color=zcol, ls="-", lw=3,
-                               label=f"Z={10**logZf:.3f}")
+                        _Line2D(
+                            [0],
+                            [0],
+                            color=zcol,
+                            ls="-",
+                            lw=3,
+                            label=f"Z={10**logZf:.3f}",
+                        )
                         for logZf, zcol in zip(np.log10(Z_show), Z_colors)
                     ]
-                    ax.legend(handles=color_handles + style_handles,
-                              fontsize=6, loc="upper right", ncol=2)
+                    ax.legend(
+                        handles=color_handles + style_handles,
+                        fontsize=6,
+                        loc="upper right",
+                        ncol=2,
+                    )
                 else:
                     # Color = redshift, linestyle = metallicity
                     z_show = [0.5, 1.5, 2.5, 3.5]
@@ -908,9 +1088,18 @@ def measure_line_intensity(
                     Z_labels = ["0.2 Z_sun", "Z_sun"]
                     for z_fix, zcol in zip(z_show, z_colors):
                         for logZf, ls in zip(np.log10(Z_lines), Z_styles):
-                            y_fit = 10 ** (a_sig * sig_grid + b_Z * logZf + c_z * z_fix + d_int)
-                            ax.plot(sig_grid, y_fit * 100, ls=ls, color=zcol,
-                                    lw=2, alpha=0.8, zorder=4)
+                            y_fit = 10 ** (
+                                a_sig * sig_grid + b_Z * logZf + c_z * z_fix + d_int
+                            )
+                            ax.plot(
+                                sig_grid,
+                                y_fit * 100,
+                                ls=ls,
+                                color=zcol,
+                                lw=2,
+                                alpha=0.8,
+                                zorder=4,
+                            )
                     style_handles = [
                         _Line2D([0], [0], color="gray", ls=ls, lw=1.5, label=zlbl)
                         for ls, zlbl in zip(Z_styles, Z_labels)
@@ -919,20 +1108,35 @@ def measure_line_intensity(
                         _Line2D([0], [0], color=zcol, ls="-", lw=3, label=f"z={zf}")
                         for zf, zcol in zip(z_show, z_colors)
                     ]
-                    ax.legend(handles=color_handles + style_handles,
-                              fontsize=6, loc="upper right", ncol=2)
+                    ax.legend(
+                        handles=color_handles + style_handles,
+                        fontsize=6,
+                        loc="upper right",
+                        ncol=2,
+                    )
 
-                ax.text(0.03, 0.95,
-                        f"log(L/L_IR) = {a_sig:.2f} log$\Sigma$ "
-                        f"{b_Z:+.2f} logZ {c_z:+.2f} z {d_int:+.1f}\n"
-                        f"R$^2$ = {r_sq_3:.3f}  (N={len(sig_v)})",
-                        transform=ax.transAxes, fontsize=7, va="top",
-                        bbox=dict(fc="white", alpha=0.9))
+                ax.text(
+                    0.03,
+                    0.95,
+                    f"log(L/L_IR) = {a_sig:.2f} log$\Sigma$ "
+                    f"{b_Z:+.2f} logZ {c_z:+.2f} z {d_int:+.1f}\n"
+                    f"R$^2$ = {r_sq_3:.3f}  (N={len(sig_v)})",
+                    transform=ax.transAxes,
+                    fontsize=7,
+                    va="top",
+                    bbox=dict(fc="white", alpha=0.9),
+                )
             except np.linalg.LinAlgError:
                 pass
     elif has_sigma and valid_ratio.any():
-        ax.text(0.5, 0.5, "Add 'metallicity' to\nbin_property_columns",
-                transform=ax.transAxes, ha="center", fontsize=10)
+        ax.text(
+            0.5,
+            0.5,
+            "Add 'metallicity' to\nbin_property_columns",
+            transform=ax.transAxes,
+            ha="center",
+            fontsize=10,
+        )
     ax.set_xlabel("log $\Sigma_{SFR}$ (M$_\odot$/yr/kpc$^2$)")
     ax.set_ylabel(f"L$_{{{line}}}$ / L$_{{FIR}}$ (%)")
     ax.set_title(f"3-variable surface ($\Sigma$, Z, z)")
@@ -944,7 +1148,9 @@ def measure_line_intensity(
     ax = axes[1, 2]
     has_Z = "metallicity" in df_det.columns and np.isfinite(df_det["metallicity"]).any()
     has_ssfr = "log_ssfr" in df_det.columns and np.isfinite(df_det["log_ssfr"]).any()
-    has_sigma = "log_sigma_sfr" in df_det.columns and np.isfinite(df_det["log_sigma_sfr"]).any()
+    has_sigma = (
+        "log_sigma_sfr" in df_det.columns and np.isfinite(df_det["log_sigma_sfr"]).any()
+    )
 
     # Diagnostic
     print(f"\n  Panel 6 (Liang+2024) diagnostics:")
@@ -954,16 +1160,26 @@ def measure_line_intensity(
         n_finite = np.isfinite(df_det["log_ssfr"]).sum()
         print(f"    log_ssfr: {n_finite}/{len(df_det)} finite values")
         if n_finite > 0:
-            print(f"    log_ssfr range: [{df_det['log_ssfr'].min():.2f}, {df_det['log_ssfr'].max():.2f}]")
+            print(
+                f"    log_ssfr range: [{df_det['log_ssfr'].min():.2f}, {df_det['log_ssfr'].max():.2f}]"
+            )
     else:
         print(f"    log_ssfr NOT in columns")
-        print(f"    Available columns with 'ss': {[c for c in df_det.columns if 'ss' in c.lower()]}")
+        print(
+            f"    Available columns with 'ss': {[c for c in df_det.columns if 'ss' in c.lower()]}"
+        )
 
     if has_sigma and valid_ratio.any() and (has_Z or has_ssfr):
         # Split at z = 2 (cosmic noon boundary)
         z_split = 2.0
-        lo_z = valid_ratio & (df_det["z"] < z_split) & np.isfinite(df_det["log_sigma_sfr"])
-        hi_z = valid_ratio & (df_det["z"] >= z_split) & np.isfinite(df_det["log_sigma_sfr"])
+        lo_z = (
+            valid_ratio & (df_det["z"] < z_split) & np.isfinite(df_det["log_sigma_sfr"])
+        )
+        hi_z = (
+            valid_ratio
+            & (df_det["z"] >= z_split)
+            & np.isfinite(df_det["log_sigma_sfr"])
+        )
 
         def _weighted_r2(X, y, w):
             """Weighted R2 from design matrix X, log(y), weights w."""
@@ -972,16 +1188,18 @@ def measure_line_intensity(
                 yw = y * w
                 c, _, _, _ = np.linalg.lstsq(Xw, yw, rcond=None)
                 pred = X @ c
-                ss_res = np.sum(w**2 * (y - pred)**2)
-                ss_tot = np.sum(w**2 * (y - np.average(y, weights=w**2))**2)
+                ss_res = np.sum(w**2 * (y - pred) ** 2)
+                ss_tot = np.sum(w**2 * (y - np.average(y, weights=w**2)) ** 2)
                 return 1 - ss_res / ss_tot if ss_tot > 0 else 0, c
             except Exception:
                 return np.nan, None
 
         results = {}  # {(regime, model): (R2, coeffs)}
 
-        for label, mask, z_label in [("z < 2", lo_z, "Low-z\n(H$_2$-rich)"),
-                                      ("z >= 2", hi_z, "High-z\n(H$_2$-poor)")]:
+        for label, mask, z_label in [
+            ("z < 2", lo_z, "Low-z\n(H$_2$-rich)"),
+            ("z >= 2", hi_z, "High-z\n(H$_2$-poor)"),
+        ]:
             if mask.sum() < 6:
                 continue
             sig = df_det.loc[mask, "log_sigma_sfr"].values
@@ -1004,8 +1222,9 @@ def measure_line_intensity(
                 ssfr = df_det.loc[mask, "log_ssfr"].values[pos]
                 valid_ss = np.isfinite(ssfr)
                 if valid_ss.sum() >= 6:
-                    X2 = np.column_stack([sig_p[valid_ss], ssfr[valid_ss],
-                                          np.ones(valid_ss.sum())])
+                    X2 = np.column_stack(
+                        [sig_p[valid_ss], ssfr[valid_ss], np.ones(valid_ss.sum())]
+                    )
                     r2_2, c2 = _weighted_r2(X2, log_r[valid_ss], w_p[valid_ss])
                     results[(label, "$\Sigma$ + sSFR")] = r2_2
                 else:
@@ -1017,8 +1236,7 @@ def measure_line_intensity(
                 valid_Z = np.isfinite(Z) & (Z > 0)
                 if valid_Z.sum() >= 6:
                     logZ = np.log10(Z[valid_Z])
-                    X3 = np.column_stack([sig_p[valid_Z], logZ,
-                                          np.ones(valid_Z.sum())])
+                    X3 = np.column_stack([sig_p[valid_Z], logZ, np.ones(valid_Z.sum())])
                     r2_3, c3 = _weighted_r2(X3, log_r[valid_Z], w_p[valid_Z])
                     results[(label, "$\Sigma$ + Z")] = r2_3
                 else:
@@ -1037,41 +1255,67 @@ def measure_line_intensity(
             for j, (model, color) in enumerate(zip(models, model_colors)):
                 vals = [results.get((reg, model), np.nan) for reg in regimes]
                 offset = (j - (n_models - 1) / 2) * width
-                bars = ax.bar(x_pos + offset, 
-                              [v if np.isfinite(v) else 0 for v in vals],
-                              width, label=model, color=color, alpha=0.85)
+                bars = ax.bar(
+                    x_pos + offset,
+                    [v if np.isfinite(v) else 0 for v in vals],
+                    width,
+                    label=model,
+                    color=color,
+                    alpha=0.85,
+                )
                 for bar, val in zip(bars, vals):
                     if np.isfinite(val):
-                        ax.text(bar.get_x() + bar.get_width()/2,
-                                bar.get_height() + 0.005,
-                                f"{val:.3f}", ha="center", fontsize=7,
-                                fontweight="bold")
+                        ax.text(
+                            bar.get_x() + bar.get_width() / 2,
+                            bar.get_height() + 0.005,
+                            f"{val:.3f}",
+                            ha="center",
+                            fontsize=7,
+                            fontweight="bold",
+                        )
 
             ax.set_xticks(x_pos)
-            ax.set_xticklabels([f"z < {z_split:.0f}\n(N={lo_z.sum()})",
-                                f"z >= {z_split:.0f}\n(N={hi_z.sum()})"],
-                               fontsize=9)
+            ax.set_xticklabels(
+                [
+                    f"z < {z_split:.0f}\n(N={lo_z.sum()})",
+                    f"z >= {z_split:.0f}\n(N={hi_z.sum()})",
+                ],
+                fontsize=9,
+            )
             ax.set_ylabel("Weighted R$^2$")
-            ax.set_ylim(0, max(v for v in results.values() if np.isfinite(v)) * 1.3 + 0.01)
+            ax.set_ylim(
+                0, max(v for v in results.values() if np.isfinite(v)) * 1.3 + 0.01
+            )
             ax.legend(fontsize=7, loc="upper right")
             ax.grid(True, alpha=0.15, axis="y")
 
             # Liang+2024 prediction annotation
-            ax.text(0.03, 0.95,
-                    "Liang+2024 prediction:\n"
-                    "sSFR dominates at low-z\n"
-                    "Z dominates at high-z",
-                    transform=ax.transAxes, fontsize=7, va="top",
-                    style="italic",
-                    bbox=dict(fc="lightyellow", alpha=0.9))
+            ax.text(
+                0.03,
+                0.95,
+                "Liang+2024 prediction:\n"
+                "sSFR dominates at low-z\n"
+                "Z dominates at high-z",
+                transform=ax.transAxes,
+                fontsize=7,
+                va="top",
+                style="italic",
+                bbox=dict(fc="lightyellow", alpha=0.9),
+            )
     else:
         missing = []
         if not has_ssfr:
             missing.append("log_ssfr")
         if not has_Z:
             missing.append("metallicity")
-        ax.text(0.5, 0.5, f"Need {' + '.join(missing)}\nin bin_property_columns",
-                transform=ax.transAxes, ha="center", fontsize=10)
+        ax.text(
+            0.5,
+            0.5,
+            f"Need {' + '.join(missing)}\nin bin_property_columns",
+            transform=ax.transAxes,
+            ha="center",
+            fontsize=10,
+        )
     ax.set_title("Liang+2024 regime test", fontsize=10)
 
     # ────────────────────────────────────────────────────────────────
@@ -1081,12 +1325,20 @@ def measure_line_intensity(
     # Panel 7: L_line (absolute) vs Sigma_SFR
     ax = axes[2, 0]
     if has_sigma and valid_ratio.any():
-        valid_sl = valid_ratio & np.isfinite(df_det["log_sigma_sfr"]) & np.isfinite(df_det["l_line"]) & (df_det["l_line"] > 0)
+        valid_sl = (
+            valid_ratio
+            & np.isfinite(df_det["log_sigma_sfr"])
+            & np.isfinite(df_det["l_line"])
+            & (df_det["l_line"] > 0)
+        )
         if valid_sl.any():
             sc = ax.scatter(
                 df_det.loc[valid_sl, "log_sigma_sfr"],
                 df_det.loc[valid_sl, "l_line"],
-                c=df_det.loc[valid_sl, "z"], cmap=cmap, s=30, alpha=0.7,
+                c=df_det.loc[valid_sl, "z"],
+                cmap=cmap,
+                s=30,
+                alpha=0.7,
             )
             plt.colorbar(sc, ax=ax, label="Redshift")
             # Manual fit (can't use _fit_and_plot, it multiplies by 100)
@@ -1096,11 +1348,23 @@ def measure_line_intensity(
             try:
                 coeffs = np.polyfit(x_f, np.log10(y_f), 1, w=np.sqrt(w_f))
                 x_grid = np.linspace(x_f.min(), x_f.max(), 100)
-                ax.plot(x_grid, 10 ** np.polyval(coeffs, x_grid),
-                        "-", color="navy", lw=2, alpha=0.8, label="Fit")
-                ax.text(0.05, 0.05, f"slope = {coeffs[0]:.2f}",
-                        transform=ax.transAxes, fontsize=9,
-                        bbox=dict(fc="white", alpha=0.8))
+                ax.plot(
+                    x_grid,
+                    10 ** np.polyval(coeffs, x_grid),
+                    "-",
+                    color="navy",
+                    lw=2,
+                    alpha=0.8,
+                    label="Fit",
+                )
+                ax.text(
+                    0.05,
+                    0.05,
+                    f"slope = {coeffs[0]:.2f}",
+                    transform=ax.transAxes,
+                    fontsize=9,
+                    bbox=dict(fc="white", alpha=0.8),
+                )
             except Exception:
                 pass
             ax.legend(fontsize=8)
@@ -1112,14 +1376,19 @@ def measure_line_intensity(
 
     # Panel 8: L_line/L_FIR vs M*
     ax = axes[2, 1]
-    has_mass = "stellar_mass" in df_det.columns and np.isfinite(df_det["stellar_mass"]).any()
+    has_mass = (
+        "stellar_mass" in df_det.columns and np.isfinite(df_det["stellar_mass"]).any()
+    )
     if has_mass and valid_ratio.any():
         valid_m = valid_ratio & np.isfinite(df_det["stellar_mass"])
         if valid_m.any():
             sc = ax.scatter(
                 df_det.loc[valid_m, "stellar_mass"],
                 df_det.loc[valid_m, "l_line_over_l_ir"] * 100,
-                c=df_det.loc[valid_m, "z"], cmap=cmap, s=30, alpha=0.7,
+                c=df_det.loc[valid_m, "z"],
+                cmap=cmap,
+                s=30,
+                alpha=0.7,
             )
             plt.colorbar(sc, ax=ax, label="Redshift")
             mass_edges = np.arange(9.0, 12.0, 0.5)
@@ -1129,14 +1398,26 @@ def measure_line_intensity(
                 mass_edges,
             )
             if len(mc) > 0:
-                ax.errorbar(mc, mm * 100, yerr=[mlo * 100, mhi * 100],
-                            fmt="ks", ms=9, mfc="white", mew=2,
-                            capsize=3, elinewidth=1.5, zorder=5)
-            _fit_and_plot(ax,
-                          df_det.loc[valid_m, "stellar_mass"].values,
-                          df_det.loc[valid_m, "l_line_over_l_ir"].values,
-                          color="navy", label="Fit",
-                          weights=df_det.loc[valid_m, "n_sources"].values.astype(float))
+                ax.errorbar(
+                    mc,
+                    mm * 100,
+                    yerr=[mlo * 100, mhi * 100],
+                    fmt="ks",
+                    ms=9,
+                    mfc="white",
+                    mew=2,
+                    capsize=3,
+                    elinewidth=1.5,
+                    zorder=5,
+                )
+            _fit_and_plot(
+                ax,
+                df_det.loc[valid_m, "stellar_mass"].values,
+                df_det.loc[valid_m, "l_line_over_l_ir"].values,
+                color="navy",
+                label="Fit",
+                weights=df_det.loc[valid_m, "n_sources"].values.astype(float),
+            )
     ax.set_xlabel("log M$_*$ (M$_\\odot$)")
     ax.set_ylabel(f"L$_{{{line}}}$ / L$_{{FIR}}$ (%)")
     ax.set_title(f"Deficit vs M$_*$")
@@ -1146,10 +1427,12 @@ def measure_line_intensity(
     ax = axes[2, 2]
     has_Z = "metallicity" in df_det.columns and np.isfinite(df_det["metallicity"]).any()
     if has_sigma and has_Z and valid_ratio.any():
-        valid_szm = (valid_ratio
-                     & np.isfinite(df_det["log_sigma_sfr"])
-                     & np.isfinite(df_det["metallicity"])
-                     & (df_det["metallicity"] > 0))
+        valid_szm = (
+            valid_ratio
+            & np.isfinite(df_det["log_sigma_sfr"])
+            & np.isfinite(df_det["metallicity"])
+            & (df_det["metallicity"] > 0)
+        )
         if valid_szm.sum() >= 6:
             sig_v = df_det.loc[valid_szm, "log_sigma_sfr"].values
             z_v = df_det.loc[valid_szm, "z"].values
@@ -1162,10 +1445,14 @@ def measure_line_intensity(
             X_sz = np.column_stack([sig_v, z_v, np.ones(len(sig_v))])
             r2_sz = np.nan
             try:
-                c_sz, _, _, _ = np.linalg.lstsq(X_sz * w_v[:, None], log_r * w_v, rcond=None)
+                c_sz, _, _, _ = np.linalg.lstsq(
+                    X_sz * w_v[:, None], log_r * w_v, rcond=None
+                )
                 pred = X_sz @ c_sz
-                ss_res = np.sum(w_v**2 * (log_r - pred)**2)
-                ss_tot = np.sum(w_v**2 * (log_r - np.average(log_r, weights=w_v**2))**2)
+                ss_res = np.sum(w_v**2 * (log_r - pred) ** 2)
+                ss_tot = np.sum(
+                    w_v**2 * (log_r - np.average(log_r, weights=w_v**2)) ** 2
+                )
                 r2_sz = 1 - ss_res / ss_tot if ss_tot > 0 else 0
             except Exception:
                 c_sz = [np.nan, np.nan, np.nan]
@@ -1174,10 +1461,14 @@ def measure_line_intensity(
             X_sZ = np.column_stack([sig_v, logZ_v, np.ones(len(sig_v))])
             r2_sZ = np.nan
             try:
-                c_sZ, _, _, _ = np.linalg.lstsq(X_sZ * w_v[:, None], log_r * w_v, rcond=None)
+                c_sZ, _, _, _ = np.linalg.lstsq(
+                    X_sZ * w_v[:, None], log_r * w_v, rcond=None
+                )
                 pred = X_sZ @ c_sZ
-                ss_res = np.sum(w_v**2 * (log_r - pred)**2)
-                ss_tot = np.sum(w_v**2 * (log_r - np.average(log_r, weights=w_v**2))**2)
+                ss_res = np.sum(w_v**2 * (log_r - pred) ** 2)
+                ss_tot = np.sum(
+                    w_v**2 * (log_r - np.average(log_r, weights=w_v**2)) ** 2
+                )
                 r2_sZ = 1 - ss_res / ss_tot if ss_tot > 0 else 0
             except Exception:
                 c_sZ = [np.nan, np.nan, np.nan]
@@ -1186,10 +1477,14 @@ def measure_line_intensity(
             X_szZ = np.column_stack([sig_v, logZ_v, z_v, np.ones(len(sig_v))])
             r2_szZ = np.nan
             try:
-                c_szZ, _, _, _ = np.linalg.lstsq(X_szZ * w_v[:, None], log_r * w_v, rcond=None)
+                c_szZ, _, _, _ = np.linalg.lstsq(
+                    X_szZ * w_v[:, None], log_r * w_v, rcond=None
+                )
                 pred = X_szZ @ c_szZ
-                ss_res = np.sum(w_v**2 * (log_r - pred)**2)
-                ss_tot = np.sum(w_v**2 * (log_r - np.average(log_r, weights=w_v**2))**2)
+                ss_res = np.sum(w_v**2 * (log_r - pred) ** 2)
+                ss_tot = np.sum(
+                    w_v**2 * (log_r - np.average(log_r, weights=w_v**2)) ** 2
+                )
                 r2_szZ = 1 - ss_res / ss_tot if ss_tot > 0 else 0
             except Exception:
                 c_szZ = [np.nan, np.nan, np.nan, np.nan]
@@ -1207,20 +1502,48 @@ def measure_line_intensity(
             x_pos = np.arange(len(models))
             width = 0.25
 
-            bars_sig = ax.bar(x_pos - width, coeff_sigma, width,
-                              label="$\\Sigma_{SFR}$ coeff", color="C0", alpha=0.8)
-            bars_z = ax.bar(x_pos, [v if np.isfinite(v) else 0 for v in coeff_z], width,
-                            label="z coeff", color="C3", alpha=0.8)
-            bars_Z = ax.bar(x_pos + width, [v if np.isfinite(v) else 0 for v in coeff_Z], width,
-                            label="log(Z) coeff", color="C2", alpha=0.8)
+            bars_sig = ax.bar(
+                x_pos - width,
+                coeff_sigma,
+                width,
+                label="$\\Sigma_{SFR}$ coeff",
+                color="C0",
+                alpha=0.8,
+            )
+            bars_z = ax.bar(
+                x_pos,
+                [v if np.isfinite(v) else 0 for v in coeff_z],
+                width,
+                label="z coeff",
+                color="C3",
+                alpha=0.8,
+            )
+            bars_Z = ax.bar(
+                x_pos + width,
+                [v if np.isfinite(v) else 0 for v in coeff_Z],
+                width,
+                label="log(Z) coeff",
+                color="C2",
+                alpha=0.8,
+            )
 
             # Annotate values
-            for bars, vals in [(bars_sig, coeff_sigma), (bars_z, coeff_z), (bars_Z, coeff_Z)]:
+            for bars, vals in [
+                (bars_sig, coeff_sigma),
+                (bars_z, coeff_z),
+                (bars_Z, coeff_Z),
+            ]:
                 for bar, val in zip(bars, vals):
                     if np.isfinite(val) and abs(val) > 0.01:
-                        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height(),
-                                f"{val:.2f}", ha="center", va="bottom" if val > 0 else "top",
-                                fontsize=7, fontweight="bold")
+                        ax.text(
+                            bar.get_x() + bar.get_width() / 2,
+                            bar.get_height(),
+                            f"{val:.2f}",
+                            ha="center",
+                            va="bottom" if val > 0 else "top",
+                            fontsize=7,
+                            fontweight="bold",
+                        )
 
             ax.set_xticks(x_pos)
             ax.set_xticklabels(models, fontsize=8)
@@ -1233,27 +1556,41 @@ def measure_line_intensity(
             # Honest assessment
             dr2 = r2_szZ - r2_sz
             if np.isfinite(c_sz[1]) and np.isfinite(c_szZ[2]):
-                reduction = (1 - abs(c_szZ[2]) / abs(c_sz[1])) * 100 if c_sz[1] != 0 else 0
+                reduction = (
+                    (1 - abs(c_szZ[2]) / abs(c_sz[1])) * 100 if c_sz[1] != 0 else 0
+                )
                 if abs(dr2) < 0.02:
                     verdict = "Z and z are degenerate\n(carry same information)"
                 elif dr2 > 0.05:
                     verdict = f"Z adds {dr2:.3f} to R$^2$\n(independent information)"
                 else:
                     verdict = f"Z adds {dr2:.3f} to R$^2$\n(marginal improvement)"
-                ax.text(0.97, 0.95,
-                        f"z coeff: {c_sz[1]:.2f} $\\rightarrow$ {c_szZ[2]:.2f}\n"
-                        f"$\\Delta$R$^2$ = {dr2:+.3f}\n"
-                        f"{verdict}",
-                        transform=ax.transAxes, fontsize=7, ha="right", va="top",
-                        bbox=dict(fc="lightyellow", alpha=0.9))
+                ax.text(
+                    0.97,
+                    0.95,
+                    f"z coeff: {c_sz[1]:.2f} $\\rightarrow$ {c_szZ[2]:.2f}\n"
+                    f"$\\Delta$R$^2$ = {dr2:+.3f}\n"
+                    f"{verdict}",
+                    transform=ax.transAxes,
+                    fontsize=7,
+                    ha="right",
+                    va="top",
+                    bbox=dict(fc="lightyellow", alpha=0.9),
+                )
     else:
         missing = []
         if not has_sigma:
             missing.append("log_sigma_sfr")
         if not has_Z:
             missing.append("metallicity")
-        ax.text(0.5, 0.5, f"Need {' + '.join(missing)}\nin bin_property_columns",
-                transform=ax.transAxes, ha="center", fontsize=10)
+        ax.text(
+            0.5,
+            0.5,
+            f"Need {' + '.join(missing)}\nin bin_property_columns",
+            transform=ax.transAxes,
+            ha="center",
+            fontsize=10,
+        )
         ax.set_title("Metallicity decomposition")
     ax.grid(True, alpha=0.2)
 
@@ -1262,7 +1599,8 @@ def measure_line_intensity(
     fig.suptitle(
         f"{line} line intensity: {n_det} measurements, "
         f"{(~df['line_in_band']).sum()} controls  (tier >= {min_tier})",
-        fontsize=14, y=1.01,
+        fontsize=14,
+        y=1.01,
     )
     plt.tight_layout()
 
@@ -1282,18 +1620,31 @@ def measure_all_lines(wrapper, min_tier="B", split_filter=None):
     Returns a summary DataFrame sorted by L_line/L_FIR.
     """
     results = []
-    for line_name in ["[CII] 158", "[NII] 205", "[OI] 145", "[NII] 122",
-                      "[OIII] 88", "[OI] 63", "CO(5-4)", "CO(6-5)", "CO(7-6)"]:
+    for line_name in [
+        "[CII] 158",
+        "[NII] 205",
+        "[OI] 145",
+        "[NII] 122",
+        "[OIII] 88",
+        "[OI] 63",
+        "CO(5-4)",
+        "CO(6-5)",
+        "CO(7-6)",
+    ]:
         _, df = measure_line_intensity(
-            wrapper, line=line_name,
-            min_tier=min_tier, split_filter=split_filter,
+            wrapper,
+            line=line_name,
+            min_tier=min_tier,
+            split_filter=split_filter,
         )
         plt.close()
 
         if df is not None:
             df_det = df[df["line_in_band"]]
             valid = np.isfinite(df_det["excess_frac"])
-            valid_ratio = np.isfinite(df_det.get("l_line_over_l_ir", pd.Series())) & (df_det.get("l_line_over_l_ir", pd.Series()) > 0)
+            valid_ratio = np.isfinite(df_det.get("l_line_over_l_ir", pd.Series())) & (
+                df_det.get("l_line_over_l_ir", pd.Series()) > 0
+            )
 
             if valid.any():
                 ef = df_det.loc[valid, "excess_frac"]
@@ -1306,8 +1657,12 @@ def measure_all_lines(wrapper, min_tier="B", split_filter=None):
                     "significance": ef.mean() / sem if sem > 0 else 0,
                 }
                 if valid_ratio.any():
-                    row["median_L_line_L_FIR_pct"] = df_det.loc[valid_ratio, "l_line_over_l_ir"].median() * 100
-                    row["median_L_line_Lsun"] = df_det.loc[valid_ratio, "l_line"].median()
+                    row["median_L_line_L_FIR_pct"] = (
+                        df_det.loc[valid_ratio, "l_line_over_l_ir"].median() * 100
+                    )
+                    row["median_L_line_Lsun"] = df_det.loc[
+                        valid_ratio, "l_line"
+                    ].median()
                 results.append(row)
 
     if results:
@@ -1341,6 +1696,7 @@ if __name__ == "__main__":
 
 
 # ── SED + Residual Grid ─────────────────────────────────────────────────
+
 
 def plot_sed_residual_grid(
     wrapper,
@@ -1420,16 +1776,19 @@ def plot_sed_residual_grid(
     flux_scale = 1e3 if flux_unit == "mJy" else 1.0
 
     # Wavelengths from config
-    wavelengths = np.array([
-        wrapper.config.maps[m].wavelength for m in sr.map_names
-    ])
+    wavelengths = np.array([wrapper.config.maps[m].wavelength for m in sr.map_names])
     sort_idx = np.argsort(wavelengths)
     wavelengths = wavelengths[sort_idx]
 
     # Detect model frame (same logic as measure_line_intensity)
-    sample_sed = next((s for s in pr.sed_results.values()
-                       if s.greybody_fit_success
-                       and s.model_wavelengths is not None), None)
+    sample_sed = next(
+        (
+            s
+            for s in pr.sed_results.values()
+            if s.greybody_fit_success and s.model_wavelengths is not None
+        ),
+        None,
+    )
     model_is_rest = False
     if sample_sed is not None:
         mw = sample_sed.model_wavelengths
@@ -1441,21 +1800,28 @@ def plot_sed_residual_grid(
         ratio_shifted = model_peak * (1 + z_s) / data_peak
         if abs(ratio_shifted - 1.0) < abs(ratio_asis - 1.0):
             model_is_rest = True
-            print(f"Model is rest-frame (peak {model_peak:.0f} um x (1+z) "
-                  f"-> {model_peak*(1+z_s):.0f} um ~ data peak {data_peak:.0f} um)")
+            print(
+                f"Model is rest-frame (peak {model_peak:.0f} um x (1+z) "
+                f"-> {model_peak*(1+z_s):.0f} um ~ data peak {data_peak:.0f} um)"
+            )
 
     # Filter populations
     pop_ids = list(pr.sed_results.keys())
     if split_filter is not None:
         allowed = {f"split_{i}" for i in split_filter}
-        pop_ids = [p for p in pop_ids
-                   if _extract_pop_type(p) in allowed
-                   or _extract_pop_type(p) == "_all_"]
+        pop_ids = [
+            p
+            for p in pop_ids
+            if _extract_pop_type(p) in allowed or _extract_pop_type(p) == "_all_"
+        ]
 
     # Filter by tier
-    pop_ids = [p for p in pop_ids
-               if pr.sed_results[p].greybody_fit_success
-               and tier_rank.get(pr.sed_results[p].fit_quality_tier or "C", 2) <= min_rank]
+    pop_ids = [
+        p
+        for p in pop_ids
+        if pr.sed_results[p].greybody_fit_success
+        and tier_rank.get(pr.sed_results[p].fit_quality_tier or "C", 2) <= min_rank
+    ]
 
     parsed = {pid: _parse_bins(pid) for pid in pop_ids}
 
@@ -1489,11 +1855,13 @@ def plot_sed_residual_grid(
     print(f"Grid: {col_dim} (cols) x {row_dim or 'none'} (rows)")
 
     # Unique bins per axis
-    col_bins = sorted(set(parsed[p].get(col_dim) for p in pop_ids
-                          if col_dim in parsed[p]))
+    col_bins = sorted(
+        set(parsed[p].get(col_dim) for p in pop_ids if col_dim in parsed[p])
+    )
     if row_dim:
-        row_bins = sorted(set(parsed[p].get(row_dim) for p in pop_ids
-                              if row_dim in parsed[p]))
+        row_bins = sorted(
+            set(parsed[p].get(row_dim) for p in pop_ids if row_dim in parsed[p])
+        )
     else:
         row_bins = [None]
 
@@ -1515,22 +1883,35 @@ def plot_sed_residual_grid(
     max_pops_per_panel = 0
     for ri, row_bin in enumerate(row_bins):
         for ci, col_bin in enumerate(col_bins):
-            n_match = sum(1 for pid in pop_ids
-                          if parsed[pid].get(col_dim) == col_bin
-                          and (row_dim is None or row_bin is None
-                               or parsed[pid].get(row_dim) == row_bin))
+            n_match = sum(
+                1
+                for pid in pop_ids
+                if parsed[pid].get(col_dim) == col_bin
+                and (
+                    row_dim is None
+                    or row_bin is None
+                    or parsed[pid].get(row_dim) == row_bin
+                )
+            )
             max_pops_per_panel = max(max_pops_per_panel, n_match)
 
     needs_colorbar = max_pops_per_panel > 1
     right_margin = 0.88 if needs_colorbar else 0.97
 
-    outer_gs = gridspec.GridSpec(n_rows, n_cols, figure=fig,
-                                 hspace=0.12, wspace=0.18,
-                                 left=0.07, right=right_margin,
-                                 top=0.93, bottom=0.05)
+    outer_gs = gridspec.GridSpec(
+        n_rows,
+        n_cols,
+        figure=fig,
+        hspace=0.12,
+        wspace=0.18,
+        left=0.07,
+        right=right_margin,
+        top=0.93,
+        bottom=0.05,
+    )
 
     line_band_color = "#e74c3c"  # red for line-contaminated band
-    clean_color = "#2c3e50"      # dark for clean bands
+    clean_color = "#2c3e50"  # dark for clean bands
 
     # Colormap for overlapping SEDs (when multiple pops per panel)
     pop_cmap = None
@@ -1543,6 +1924,7 @@ def plot_sed_residual_grid(
             props = sed.bin_properties or {}
             if isinstance(props, str):
                 import ast as _ast
+
                 try:
                     props = _ast.literal_eval(props)
                 except (ValueError, SyntaxError):
@@ -1566,8 +1948,10 @@ def plot_sed_residual_grid(
         if color_vals:
             pop_norm = Normalize(vmin=min(color_vals), vmax=max(color_vals))
             pop_cmap = mcm.get_cmap("viridis")
-            print(f"Coloring overlapping SEDs by {color_by}: "
-                  f"[{min(color_vals):.2f}, {max(color_vals):.2f}]")
+            print(
+                f"Coloring overlapping SEDs by {color_by}: "
+                f"[{min(color_vals):.2f}, {max(color_vals):.2f}]"
+            )
 
     for ri, row_bin in enumerate(row_bins):
         for ci, col_bin in enumerate(col_bins):
@@ -1583,14 +1967,25 @@ def plot_sed_residual_grid(
 
             # Create split panel
             inner_gs = gridspec.GridSpecFromSubplotSpec(
-                4, 1, subplot_spec=outer_gs[ri, ci], hspace=0.0,
+                4,
+                1,
+                subplot_spec=outer_gs[ri, ci],
+                hspace=0.0,
             )
             ax_sed = fig.add_subplot(inner_gs[:3, 0])
             ax_res = fig.add_subplot(inner_gs[3, 0], sharex=ax_sed)
 
             if not matches:
-                ax_sed.text(0.5, 0.5, "—", ha="center", va="center",
-                            transform=ax_sed.transAxes, fontsize=14, color="gray")
+                ax_sed.text(
+                    0.5,
+                    0.5,
+                    "—",
+                    ha="center",
+                    va="center",
+                    transform=ax_sed.transAxes,
+                    fontsize=14,
+                    color="gray",
+                )
                 ax_sed.set_xlim(10, 1200)
                 ax_res.set_xlim(10, 1200)
                 plt.setp(ax_sed.get_xticklabels(), visible=False)
@@ -1607,6 +2002,7 @@ def plot_sed_residual_grid(
                     props = sed.bin_properties or {}
                     if isinstance(props, str):
                         import ast as _ast2
+
                         try:
                             props = _ast2.literal_eval(props)
                         except (ValueError, SyntaxError):
@@ -1636,8 +2032,15 @@ def plot_sed_residual_grid(
                     mw = sed.model_wavelengths
                     if model_is_rest:
                         mw = mw * (1 + z)
-                    ax_sed.plot(mw, sed.model_fluxes * flux_scale,
-                                "-", color=pop_color, alpha=0.6, lw=1.5, zorder=1)
+                    ax_sed.plot(
+                        mw,
+                        sed.model_fluxes * flux_scale,
+                        "-",
+                        color=pop_color,
+                        alpha=0.6,
+                        lw=1.5,
+                        zorder=1,
+                    )
 
                 # Data points
                 for j in range(len(sed.wavelengths)):
@@ -1653,8 +2056,12 @@ def plot_sed_residual_grid(
                         sed.wavelengths[j],
                         sed.flux_densities[j] * flux_scale,
                         yerr=sed.flux_errors[j] * flux_scale,
-                        fmt=marker, color=color, ms=ms,
-                        capsize=2, elinewidth=0.8, zorder=3,
+                        fmt=marker,
+                        color=color,
+                        ms=ms,
+                        capsize=2,
+                        elinewidth=0.8,
+                        zorder=3,
                     )
 
                 # Residuals
@@ -1676,17 +2083,24 @@ def plot_sed_residual_grid(
                                 marker = "o"
                                 ms = 5
                             ax_res.errorbar(
-                                sed.wavelengths[j], resid_pct,
+                                sed.wavelengths[j],
+                                resid_pct,
                                 yerr=err_pct,
-                                fmt=marker, color=color, ms=ms,
-                                capsize=2, elinewidth=0.8, zorder=3,
+                                fmt=marker,
+                                color=color,
+                                ms=ms,
+                                capsize=2,
+                                elinewidth=0.8,
+                                zorder=3,
                             )
 
                 # Mark line wavelength
-                ax_sed.axvline(lam_line_obs, color=line_band_color,
-                               ls=":", alpha=0.3, lw=1)
-                ax_res.axvline(lam_line_obs, color=line_band_color,
-                               ls=":", alpha=0.3, lw=1)
+                ax_sed.axvline(
+                    lam_line_obs, color=line_band_color, ls=":", alpha=0.3, lw=1
+                )
+                ax_res.axvline(
+                    lam_line_obs, color=line_band_color, ls=":", alpha=0.3, lw=1
+                )
 
             # Formatting
             ax_sed.set_xscale("log")
@@ -1719,10 +2133,16 @@ def plot_sed_residual_grid(
                 label_parts.append(f"T={T:.0f}K")
             label_parts.append(f"N={n_src:,}")
             label_parts.append(f"[{tier}]")
-            ax_sed.text(0.97, 0.95, " ".join(label_parts),
-                        transform=ax_sed.transAxes, fontsize=6,
-                        ha="right", va="top",
-                        bbox=dict(fc="white", alpha=0.8, pad=1))
+            ax_sed.text(
+                0.97,
+                0.95,
+                " ".join(label_parts),
+                transform=ax_sed.transAxes,
+                fontsize=6,
+                ha="right",
+                va="top",
+                bbox=dict(fc="white", alpha=0.8, pad=1),
+            )
 
             # Column header
             if ri == 0:
@@ -1744,16 +2164,36 @@ def plot_sed_residual_grid(
 
     # Legend
     from matplotlib.lines import Line2D
+
     legend_elements = [
-        Line2D([0], [0], marker="s", color=line_band_color, ls="none",
-               ms=7, label=f"{line} in band"),
-        Line2D([0], [0], marker="o", color="gray", ls="none",
-               ms=5, label="Continuum bands"),
-        Line2D([0], [0], color=line_band_color, ls=":", lw=1,
-               label=f"Obs. {line} wavelength"),
+        Line2D(
+            [0],
+            [0],
+            marker="s",
+            color=line_band_color,
+            ls="none",
+            ms=7,
+            label=f"{line} in band",
+        ),
+        Line2D(
+            [0], [0], marker="o", color="gray", ls="none", ms=5, label="Continuum bands"
+        ),
+        Line2D(
+            [0],
+            [0],
+            color=line_band_color,
+            ls=":",
+            lw=1,
+            label=f"Obs. {line} wavelength",
+        ),
     ]
-    fig.legend(handles=legend_elements, loc="upper center",
-               ncol=3, fontsize=8, bbox_to_anchor=(0.5, 0.99))
+    fig.legend(
+        handles=legend_elements,
+        loc="upper center",
+        ncol=3,
+        fontsize=8,
+        bbox_to_anchor=(0.5, 0.99),
+    )
 
     # Colorbar when multiple pops per panel
     if needs_colorbar and pop_cmap and pop_norm:
@@ -1775,12 +2215,20 @@ def plot_sed_residual_grid(
             row_label = _dim_label(row_dim)
         except Exception:
             row_label = row_dim
-        fig.text(0.01, 0.5, row_label, va="center", rotation=90,
-                 fontsize=10, fontweight="bold")
+        fig.text(
+            0.01,
+            0.5,
+            row_label,
+            va="center",
+            rotation=90,
+            fontsize=10,
+            fontweight="bold",
+        )
 
     fig.suptitle(
         f"{line} | {len(pop_ids)} pops, tier >= {min_tier}",
-        fontsize=10, y=1.00,
+        fontsize=10,
+        y=1.00,
     )
 
     if save_path:

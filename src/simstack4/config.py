@@ -78,7 +78,7 @@ class BeamConfig:
 
     fwhm: float
     area_sr: float | None = None  # Make this optional
-    psf_file: str | None = None   # Optional path to measured PSF FITS file
+    psf_file: str | None = None  # Optional path to measured PSF FITS file
 
     def __post_init__(self):
         """Expand environment variables in psf_file path"""

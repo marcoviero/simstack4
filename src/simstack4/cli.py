@@ -32,55 +32,42 @@ Examples:
 
   # Convert old INI config to TOML
   simstack4 --convert-config old_config.ini new_config.toml
-        """
+        """,
     )
 
     parser.add_argument(
-        "config_file",
-        nargs="?",
-        help="Path to TOML configuration file"
+        "config_file", nargs="?", help="Path to TOML configuration file"
     )
 
     parser.add_argument(
-        "--version",
-        action="version",
-        version=f"Simstack4 {__version__}"
+        "--version", action="version", version=f"Simstack4 {__version__}"
     )
 
     parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Enable verbose logging"
+        "--verbose", "-v", action="store_true", help="Enable verbose logging"
     )
 
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug logging"
-    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
-    parser.add_argument(
-        "--log-file",
-        help="Write logs to specified file"
-    )
+    parser.add_argument("--log-file", help="Write logs to specified file")
 
     parser.add_argument(
         "--check-system",
         action="store_true",
-        help="Check system requirements and environment"
+        help="Check system requirements and environment",
     )
 
     parser.add_argument(
         "--convert-config",
         nargs=2,
         metavar=("INPUT", "OUTPUT"),
-        help="Convert old INI config to new TOML format"
+        help="Convert old INI config to new TOML format",
     )
 
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate configuration without running stacking"
+        help="Validate configuration without running stacking",
     )
 
     return parser
@@ -161,18 +148,15 @@ def main() -> int:
         # Run stacking
         logger.info("Initializing SimstackWrapper...")
         simstack = SimstackWrapper(
-            config=config,
-            read_maps=True,
-            read_catalog=True,
-            stack_automatically=True
+            config=config, read_maps=True, read_catalog=True, stack_automatically=True
         )
 
         elapsed_time = time.time() - start_time
         logger.info(f"Stacking completed successfully in {elapsed_time:.1f}s")
 
         # Basic results summary
-        if hasattr(simstack, 'results_dict') and simstack.results_dict:
-            n_bands = len(simstack.results_dict.get('band_results_dict', {}))
+        if hasattr(simstack, "results_dict") and simstack.results_dict:
+            n_bands = len(simstack.results_dict.get("band_results_dict", {}))
             logger.info(f"Results saved for {n_bands} bands")
 
         return 0
@@ -187,6 +171,7 @@ def main() -> int:
         logger.error(f"Unexpected error: {e}")
         if args.debug:
             import traceback
+
             traceback.print_exc()
         return 1
 

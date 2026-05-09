@@ -10,6 +10,7 @@ Greybody : Core greybody model and fitter.
 SEDResults : Dataclass for per-population SED fit results.
 DerivedQuantities : Dataclass for derived physical quantities.
 """
+
 import pdb
 from dataclasses import dataclass
 from typing import Any
@@ -19,6 +20,7 @@ from scipy.optimize import curve_fit
 
 try:
     import emcee
+
     HAS_EMCEE = True
 except ImportError:
     HAS_EMCEE = False
@@ -27,6 +29,7 @@ from .cosmology import CosmologyCalculator
 from .utils import setup_logging
 
 logger = setup_logging()
+
 
 @dataclass
 class SEDResults:
@@ -61,7 +64,9 @@ class SEDResults:
     mcmc_percentiles: dict | None = None  # Percentiles from MCMC
 
     # Fit quality metadata
-    fit_quality_tier: str | None = None  # "A" (data), "B" (assisted), "C" (prior-dominated)
+    fit_quality_tier: str | None = (
+        None  # "A" (data), "B" (assisted), "C" (prior-dominated)
+    )
     sed_snr: float | None = None  # Median SNR across positive bands
     prior_center: float | None = None  # T_rest prior center used (K)
     prior_sigma: float | None = None  # T_rest prior sigma used (K)
@@ -116,8 +121,8 @@ class Greybody:
         beta_min: float = 0.5,
         beta_max: float = 2.5,
         # --- SNR thresholds for fit quality tiers ---
-        snr_high: float = 5.0,   # Tier A: data-driven
-        snr_low: float = 1.0,    # Tier C: prior-dominated
+        snr_high: float = 5.0,  # Tier A: data-driven
+        snr_low: float = 1.0,  # Tier C: prior-dominated
         # --- Prior sigma scaling ---
         snr_sigma_clip_min: float = 0.3,  # Floor for σ_eff / σ_base
         snr_sigma_clip_max: float = 2.0,  # Ceiling for σ_eff / σ_base
@@ -157,7 +162,9 @@ class Greybody:
         self.use_mcmc = use_mcmc and HAS_EMCEE
         self.mcmc_iterations = mcmc_iterations
         self.mcmc_burn_in = mcmc_burn_in
-        self.temperature_prior = temperature_prior.lower() if isinstance(temperature_prior, str) else "flat"
+        self.temperature_prior = (
+            temperature_prior.lower() if isinstance(temperature_prior, str) else "flat"
+        )
 
         # PAH model state (set per-population before fitting)
         self.use_pah = False
@@ -394,7 +401,10 @@ class Greybody:
             T_mid = (self.T_rest_min + self.T_rest_max) / 2
             if 20 <= temperature <= 45:
                 log_p_temp = 0.0
-            elif self.T_rest_min <= temperature < 20 or 45 < temperature <= self.T_rest_max:
+            elif (
+                self.T_rest_min <= temperature < 20
+                or 45 < temperature <= self.T_rest_max
+            ):
                 log_p_temp = -0.5 * ((temperature - T_mid) / 15) ** 2
             else:
                 log_p_temp = -np.inf
@@ -456,9 +466,7 @@ class Greybody:
             amp_trial = np.clip(
                 amp_trial, self.amplitude_min + 3.5, self.amplitude_max + 1.5
             )
-            temp_trial = np.clip(
-                temp_trial, self.T_rest_min + 1, self.T_rest_max - 2
-            )
+            temp_trial = np.clip(temp_trial, self.T_rest_min + 1, self.T_rest_max - 2)
 
             test_prob = self.log_posterior(
                 [amp_trial, temp_trial], wavelengths, fluxes, flux_errors, redshift
@@ -529,9 +537,7 @@ class Greybody:
                 sampler.run_mcmc(pos, effective_iterations, progress=True)
                 total_steps = effective_iterations
             except Exception as progress_error:
-                logger.info(
-                    f"Progress bar failed ({progress_error}), running without"
-                )
+                logger.info(f"Progress bar failed ({progress_error}), running without")
                 sampler.run_mcmc(pos, effective_iterations, progress=False)
                 total_steps = effective_iterations
 
@@ -627,8 +633,7 @@ class Greybody:
 
         return inflated_errors
 
-    def fit_sed(self, wavelengths, fluxes, flux_errors, redshift,
-                prior_override=None):
+    def fit_sed(self, wavelengths, fluxes, flux_errors, redshift, prior_override=None):
         """
         Fit greybody model in the rest frame.
 
@@ -735,7 +740,7 @@ class Greybody:
                 template = self.greybody_model(
                     wave_rest_fit[pos], 0.0, T_rest, beta_val
                 )
-                w = 1.0 / error_fit[pos]**2
+                w = 1.0 / error_fit[pos] ** 2
                 denom = np.sum(template**2 * w)
                 if denom <= 0:
                     return self.amplitude_min, 1.0
@@ -760,9 +765,7 @@ class Greybody:
             if fit_quality_tier == "C" and T_center is not None and self.fix_beta:
                 temperature_rest = T_center
                 beta = self.beta_fixed
-                amplitude, amplitude_err = _solve_amplitude_at_T(
-                    temperature_rest, beta
-                )
+                amplitude, amplitude_err = _solve_amplitude_at_T(temperature_rest, beta)
                 temperature_err = T_sigma  # Error is the prior width
                 beta_err = 0.0
 
@@ -800,9 +803,13 @@ class Greybody:
                     template_full = self.greybody_model(
                         wave, 0.0, temp, self.beta_fixed
                     )
-                    template_pos = template_full[pos_mask] if np.any(pos_mask) else template_full
+                    template_pos = (
+                        template_full[pos_mask] if np.any(pos_mask) else template_full
+                    )
                     w = 1.0 / error_pos**2
-                    x = np.sum(flux_pos * template_pos * w) / np.sum(template_pos**2 * w)
+                    x = np.sum(flux_pos * template_pos * w) / np.sum(
+                        template_pos**2 * w
+                    )
                     x = max(x, 1e-40)
                     return template_full * x
 
@@ -825,9 +832,7 @@ class Greybody:
 
                 # Step 2: analytical amplitude at fitted T
                 beta = self.beta_fixed
-                amplitude, amplitude_err = _solve_amplitude_at_T(
-                    temperature_rest, beta
-                )
+                amplitude, amplitude_err = _solve_amplitude_at_T(temperature_rest, beta)
                 beta_err = 0.0
 
                 logger.info(
@@ -985,13 +990,17 @@ class Greybody:
         except Exception as e:
             logger.warning(f"Greybody fit failed: {e}")
             return {
-                "fit_success": False, "reason": str(e),
-                "sed_snr": sed_snr, "fit_quality_tier": fit_quality_tier,
+                "fit_success": False,
+                "reason": str(e),
+                "sed_snr": sed_snr,
+                "fit_quality_tier": fit_quality_tier,
             }
         finally:
             self._prior_override = None
 
-    def _pah_flux(self, wavelength_um, amplitude, z, log_stellar_mass, temperature=30.0):
+    def _pah_flux(
+        self, wavelength_um, amplitude, z, log_stellar_mass, temperature=30.0
+    ):
         """
         PAH + warm dust emission for the Wien side of the SED.
 
@@ -1027,7 +1036,7 @@ class Greybody:
         # Fit from PACS 100 excess in analyze_warm_dust.py
         # Set to None to disable warm dust; fill in after fitting.
         _warm_coeffs = None  # e.g. np.array([0.05, 0.10, -2.5])
-        #_warm_coeffs = np.array([-0.159, -0.264, 0.237, 1.438])
+        # _warm_coeffs = np.array([-0.159, -0.264, 0.237, 1.438])
         _warm_coeffs = np.array([-0.467, 0.033, 4.434])
 
         # Warm dust template: log-normal peaking at 25um rest
@@ -1045,17 +1054,20 @@ class Greybody:
         ]
         # ──────────────────────────────────────────────────────────────
 
-        A = 10 ** amplitude
+        A = 10**amplitude
 
         # PAH template strength in MIPS 24um band (for empirical model)
         try:
             from scipy.special import erf
+
             pah_strength = 0.0
             for lam_c, rel_s, fwhm in _pah_features[:5]:
                 lam_obs = lam_c * (1 + z)
                 sigma_obs = fwhm * (1 + z) / 2.355
-                frac = 0.5 * (erf((30.0 - lam_obs) / (sigma_obs * 1.4142))
-                              - erf((20.5 - lam_obs) / (sigma_obs * 1.4142)))
+                frac = 0.5 * (
+                    erf((30.0 - lam_obs) / (sigma_obs * 1.4142))
+                    - erf((20.5 - lam_obs) / (sigma_obs * 1.4142))
+                )
                 pah_strength += rel_s * max(frac, 0)
         except ImportError:
             pah_strength = 0.5
@@ -1063,7 +1075,7 @@ class Greybody:
         # Predicted f_24 / f_FIR_peak (direct observable, no conversion)
         a, b, c, d = _pah_coeffs
         log_ratio = a * log_stellar_mass + b * z + c * pah_strength + d
-        peak_flux_ratio = 10 ** log_ratio
+        peak_flux_ratio = 10**log_ratio
 
         # ── PAH feature spectrum (rest frame) ────────────────────────
         pah_spec = np.zeros_like(wavelength_um, dtype=float)
@@ -1077,21 +1089,25 @@ class Greybody:
             # Predict warm dust amplitude from physical properties
             if len(_warm_coeffs) == 3:
                 # log10(f_warm/f_peak) = a*logM* + b*z + c
-                log_warm = (_warm_coeffs[0] * log_stellar_mass
-                            + _warm_coeffs[1] * z
-                            + _warm_coeffs[2])
+                log_warm = (
+                    _warm_coeffs[0] * log_stellar_mass
+                    + _warm_coeffs[1] * z
+                    + _warm_coeffs[2]
+                )
             elif len(_warm_coeffs) == 4:
                 # log10(f_warm/f_peak) = a*logM* + b*z + c*logSigma_SFR + d
                 # log_sigma_sfr stored as self._pah_log_sigma_sfr if available
-                log_sigma = getattr(self, '_pah_log_sigma_sfr', 0.0) or 0.0
-                log_warm = (_warm_coeffs[0] * log_stellar_mass
-                            + _warm_coeffs[1] * z
-                            + _warm_coeffs[2] * log_sigma
-                            + _warm_coeffs[3])
+                log_sigma = getattr(self, "_pah_log_sigma_sfr", 0.0) or 0.0
+                log_warm = (
+                    _warm_coeffs[0] * log_stellar_mass
+                    + _warm_coeffs[1] * z
+                    + _warm_coeffs[2] * log_sigma
+                    + _warm_coeffs[3]
+                )
             else:
                 log_warm = -99  # effectively zero
 
-            warm_ratio = 10 ** log_warm
+            warm_ratio = 10**log_warm
 
             # Log-normal template: peaks at _warm_peak, dies by 50um
             log_lam = np.log(wavelength_um / _warm_peak)
@@ -1100,7 +1116,7 @@ class Greybody:
         # ── Combined template ────────────────────────────────────────
         # Greybody peak flux (for scaling)
         nu_scale = self.c * 1e6 / wavelength_um
-        gb_flux = A * nu_scale ** 1.8 * self.black(nu_scale, temperature)[0] / 1000.0
+        gb_flux = A * nu_scale**1.8 * self.black(nu_scale, temperature)[0] / 1000.0
         gb_peak = np.max(gb_flux)
         if gb_peak <= 0:
             return np.zeros_like(wavelength_um)
@@ -1117,10 +1133,16 @@ class Greybody:
         flux = pah_flux + warm_flux
 
         # Diagnostic (enable with fitter._pah_debug = True)
-        if hasattr(self, '_pah_debug') and self._pah_debug:
-            print(f"  _pah_flux: z={z:.2f}, logM*={log_stellar_mass:.1f}, T={temperature:.0f}K")
+        if hasattr(self, "_pah_debug") and self._pah_debug:
+            print(
+                f"  _pah_flux: z={z:.2f}, logM*={log_stellar_mass:.1f}, T={temperature:.0f}K"
+            )
             print(f"    PAH f24/fpeak = {peak_flux_ratio:.4f}")
-            print(f"    PAH peak / GB peak = {pah_flux.max() / gb_peak:.4f}" if gb_peak > 0 else "")
+            print(
+                f"    PAH peak / GB peak = {pah_flux.max() / gb_peak:.4f}"
+                if gb_peak > 0
+                else ""
+            )
             if _warm_coeffs is not None:
                 print(f"    Warm dust f/fpeak = {warm_ratio:.4f}")
                 print(f"    Warm peak / GB peak = {warm_flux.max() / gb_peak:.4f}")
@@ -1128,8 +1150,10 @@ class Greybody:
                 for test_lam in [60, 80, 100]:
                     idx = np.argmin(np.abs(wavelength_um - test_lam))
                     if idx < len(warm_flux):
-                        print(f"    Warm at rest {test_lam}um: "
-                              f"{warm_flux[idx] / gb_flux[idx] * 100:.2f}% of greybody")
+                        print(
+                            f"    Warm at rest {test_lam}um: "
+                            f"{warm_flux[idx] / gb_flux[idx] * 100:.2f}% of greybody"
+                        )
 
         return flux
 
@@ -1145,7 +1169,9 @@ class Greybody:
     # (vs self.use_pah = True which uses the additive _pah_flux approach)
     # ══════════════════════════════════════════════════════════════════════
 
-    def _physical_wien_flux(self, wavelength_um, amplitude, z, log_stellar_mass, temperature=30.0):
+    def _physical_wien_flux(
+        self, wavelength_um, amplitude, z, log_stellar_mass, temperature=30.0
+    ):
         """
         Physical Wien-side model: warm dust continuum + PAH features.
 
@@ -1197,7 +1223,7 @@ class Greybody:
         # Calibrated from PACS excess above SPIRE-only greybody fits.
         # Set to None to disable (falls back to power-law in greybody_model).
         _warm_coeffs = None  # e.g. np.array([0.05, 0.10, -2.5])
-        #_warm_coeffs = np.array([-0.159, -0.264, 0.237, 1.438])
+        # _warm_coeffs = np.array([-0.159, -0.264, 0.237, 1.438])
         _warm_coeffs = np.array([-0.467, 0.033, 4.434])
         # With Sigma_SFR: np.array([a_M, a_z, a_sigma, const])
 
@@ -1206,11 +1232,11 @@ class Greybody:
         _warm_sigma_log = 0.30  # log-normal width → FWHM ~15um, dies by 50um
         # ──────────────────────────────────────────────────────────────
 
-        A = 10 ** amplitude
+        A = 10**amplitude
 
         # Greybody peak flux (reference for scaling)
         nu_scale = self.c * 1e6 / wavelength_um
-        gb_flux = A * nu_scale ** 1.8 * self.black(nu_scale, temperature)[0] / 1000.0
+        gb_flux = A * nu_scale**1.8 * self.black(nu_scale, temperature)[0] / 1000.0
         gb_peak = np.max(gb_flux)
         if gb_peak <= 0:
             return np.zeros_like(wavelength_um)
@@ -1220,20 +1246,24 @@ class Greybody:
 
         if _warm_coeffs is not None:
             # Predict amplitude from catalog properties
-            log_sigma = getattr(self, '_pah_log_sigma_sfr', None)
+            log_sigma = getattr(self, "_pah_log_sigma_sfr", None)
             if len(_warm_coeffs) == 4 and log_sigma is not None:
-                log_warm = (_warm_coeffs[0] * log_stellar_mass
-                            + _warm_coeffs[1] * z
-                            + _warm_coeffs[2] * log_sigma
-                            + _warm_coeffs[3])
+                log_warm = (
+                    _warm_coeffs[0] * log_stellar_mass
+                    + _warm_coeffs[1] * z
+                    + _warm_coeffs[2] * log_sigma
+                    + _warm_coeffs[3]
+                )
             elif len(_warm_coeffs) == 3:
-                log_warm = (_warm_coeffs[0] * log_stellar_mass
-                            + _warm_coeffs[1] * z
-                            + _warm_coeffs[2])
+                log_warm = (
+                    _warm_coeffs[0] * log_stellar_mass
+                    + _warm_coeffs[1] * z
+                    + _warm_coeffs[2]
+                )
             else:
                 log_warm = -99
 
-            warm_peak_ratio = 10 ** log_warm  # f_warm_peak / f_gb_peak
+            warm_peak_ratio = 10**log_warm  # f_warm_peak / f_gb_peak
 
             # Log-normal template
             log_lam = np.log(wavelength_um / _warm_peak_um)
@@ -1246,12 +1276,15 @@ class Greybody:
 
         try:
             from scipy.special import erf
+
             pah_strength = 0.0
             for lam_c, rel_s, fwhm in _pah_features:
                 lam_obs = lam_c * (1 + z)
                 sigma_obs = fwhm * (1 + z) / 2.355
-                frac = 0.5 * (erf((30.0 - lam_obs) / (sigma_obs * 1.4142))
-                              - erf((20.5 - lam_obs) / (sigma_obs * 1.4142)))
+                frac = 0.5 * (
+                    erf((30.0 - lam_obs) / (sigma_obs * 1.4142))
+                    - erf((20.5 - lam_obs) / (sigma_obs * 1.4142))
+                )
                 pah_strength += rel_s * max(frac, 0)
         except ImportError:
             pah_strength = 0.5
@@ -1271,8 +1304,10 @@ class Greybody:
         flux = warm_flux + pah_flux
 
         # Diagnostic
-        if hasattr(self, '_pah_debug') and self._pah_debug:
-            print(f"  _physical_wien: z={z:.2f}, logM*={log_stellar_mass:.1f}, T={temperature:.0f}K")
+        if hasattr(self, "_pah_debug") and self._pah_debug:
+            print(
+                f"  _physical_wien: z={z:.2f}, logM*={log_stellar_mass:.1f}, T={temperature:.0f}K"
+            )
             print(f"    PAH peak / GB peak = {pah_flux.max() / gb_peak:.4f}")
             if _warm_coeffs is not None:
                 print(f"    Warm peak / GB peak = {warm_flux.max() / gb_peak:.4f}")
@@ -1281,15 +1316,19 @@ class Greybody:
                     idx = np.argmin(np.abs(wavelength_um - test_lam))
                     if idx < len(wavelength_um):
                         gb_at = gb_flux[idx] if gb_flux[idx] > 0 else 1e-99
-                        print(f"    Warm at rest {label}: "
-                              f"{warm_flux[idx] / gb_at * 100:.3f}% of greybody")
+                        print(
+                            f"    Warm at rest {label}: "
+                            f"{warm_flux[idx] / gb_at * 100:.3f}% of greybody"
+                        )
             else:
                 print(f"    Warm dust: DISABLED (_warm_coeffs = None)")
                 print(f"    → Using power-law Wien fallback in greybody_model")
 
         return flux
 
-    def _pah_flux_0(self, wavelength_um, amplitude, z, log_stellar_mass, temperature=30.0):
+    def _pah_flux_0(
+        self, wavelength_um, amplitude, z, log_stellar_mass, temperature=30.0
+    ):
         """
         PAH + warm dust emission for the Wien side of the SED.
 
@@ -1341,17 +1380,20 @@ class Greybody:
         _warm_frac = 0.3  # fraction of mid-IR in warm continuum vs features
         # ──────────────────────────────────────────────────────────────
 
-        A = 10 ** amplitude
+        A = 10**amplitude
 
         # PAH template strength in MIPS 24um band (for empirical model)
         try:
             from scipy.special import erf
+
             pah_strength = 0.0
             for lam_c, rel_s, fwhm in _pah_features[:5]:
                 lam_obs = lam_c * (1 + z)
                 sigma_obs = fwhm * (1 + z) / 2.355
-                frac = 0.5 * (erf((30.0 - lam_obs) / (sigma_obs * 1.4142))
-                              - erf((20.5 - lam_obs) / (sigma_obs * 1.4142)))
+                frac = 0.5 * (
+                    erf((30.0 - lam_obs) / (sigma_obs * 1.4142))
+                    - erf((20.5 - lam_obs) / (sigma_obs * 1.4142))
+                )
                 pah_strength += rel_s * max(frac, 0)
         except ImportError:
             pah_strength = 0.5
@@ -1359,7 +1401,7 @@ class Greybody:
         # Predicted f_24 / f_FIR_peak (direct observable, no conversion)
         a, b, c, d = _pah_coeffs
         log_ratio = a * log_stellar_mass + b * z + c * pah_strength + d
-        peak_flux_ratio = 10 ** log_ratio
+        peak_flux_ratio = 10**log_ratio
 
         # PAH feature spectrum (rest frame)
         pah_spec = np.zeros_like(wavelength_um, dtype=float)
@@ -1372,19 +1414,19 @@ class Greybody:
         nu = c_cgs / (wavelength_um * 1e-4)
         x = h * nu / (k_B * _T_warm)
         x = np.minimum(x, 500)
-        warm_bb = nu ** 1.5 * 2 * h * nu ** 3 / c_cgs ** 2 / (np.exp(x) - 1)
+        warm_bb = nu**1.5 * 2 * h * nu**3 / c_cgs**2 / (np.exp(x) - 1)
         if warm_bb.max() > 0 and pah_spec.max() > 0:
             warm_bb *= pah_spec.sum() / warm_bb.sum() * _warm_frac / (1 - _warm_frac)
 
         # Combined template
-        template = pah_spec #+ warm_bb
+        template = pah_spec  # + warm_bb
         if template.max() <= 0:
             return np.zeros_like(wavelength_um)
 
         # Scale: PAH peak = peak_flux_ratio × greybody peak
         # peak_flux_ratio is directly f24/fpeak from the empirical fit.
         nu_scale = self.c * 1e6 / wavelength_um
-        gb_flux = A * nu_scale ** 1.8 * self.black(nu_scale, temperature)[0] / 1000.0
+        gb_flux = A * nu_scale**1.8 * self.black(nu_scale, temperature)[0] / 1000.0
         gb_peak = np.max(gb_flux)
         if gb_peak <= 0:
             return np.zeros_like(wavelength_um)
@@ -1397,8 +1439,10 @@ class Greybody:
         flux = scale * template
 
         # Diagnostic (enable with fitter._pah_debug = True)
-        if hasattr(self, '_pah_debug') and self._pah_debug:
-            print(f"  _pah_flux: z={z:.2f}, logM*={log_stellar_mass:.1f}, T={temperature:.0f}K")
+        if hasattr(self, "_pah_debug") and self._pah_debug:
+            print(
+                f"  _pah_flux: z={z:.2f}, logM*={log_stellar_mass:.1f}, T={temperature:.0f}K"
+            )
             print(f"    f24/fpeak (predicted) = {peak_flux_ratio:.4f}")
             print(f"    GB peak = {gb_peak:.2e}, PAH peak = {flux.max():.2e}")
             print(f"    PAH peak / GB peak = {flux.max() / gb_peak:.4f}")
@@ -1406,7 +1450,12 @@ class Greybody:
         return flux
 
     def greybody_model(
-            self, wavelength_um, amplitude, temperature, beta=1.8, alpha=2.0,
+        self,
+        wavelength_um,
+        amplitude,
+        temperature,
+        beta=1.8,
+        alpha=2.0,
     ):
         """
         Modified blackbody (greybody) model with Wien-side extension.
@@ -1429,26 +1478,26 @@ class Greybody:
             Wien-side power-law slope.
         """
         nu_in = self.c * 1.0e6 / wavelength_um  # Hz
-        A = 10 ** amplitude
+        A = 10**amplitude
 
         # Transition frequency: Wien peak of modified blackbody
         nu_cut = (3.0 + beta + alpha) * self.k_B / self.h * temperature
 
         # Modified blackbody (Rayleigh-Jeans side)
-        graybody = A * nu_in ** beta * self.black(nu_in, temperature)[0] / 1000.0
+        graybody = A * nu_in**beta * self.black(nu_in, temperature)[0] / 1000.0
 
         # Wien side
         ind_cut = nu_in >= nu_cut
 
         # Original power-law Wien extension
         base = (
-                2.0
-                * (6.626) ** (-2.0 - beta - alpha)
-                * (1.38) ** (3.0 + beta + alpha)
-                / (2.99792458) ** 2.0
+            2.0
+            * (6.626) ** (-2.0 - beta - alpha)
+            * (1.38) ** (3.0 + beta + alpha)
+            / (2.99792458) ** 2.0
         )
         expo = 34.0 * (2.0 + beta + alpha) - 23.0 * (3.0 + beta + alpha) - 16.0 + 26.0
-        K = base * 10.0 ** expo
+        K = base * 10.0**expo
         w_num = A * K * (temperature * (3.0 + beta + alpha)) ** (3.0 + beta + alpha)
         w_den = np.exp(3.0 + beta + alpha) - 1.0
         w_div = w_num / w_den
@@ -1463,27 +1512,31 @@ class Greybody:
         # "additive"  — power-law + PAH features on top (_pah_flux)
         # "physical"  — warm dust + PAH REPLACES power-law (_physical_wien_flux)
         #
-        _wm = getattr(self, 'wien_mode', 'powerlaw')
-        _has_pop = (getattr(self, '_pah_z', None) is not None
-                    and getattr(self, '_pah_log_stellar_mass', None) is not None)
+        _wm = getattr(self, "wien_mode", "powerlaw")
+        _has_pop = (
+            getattr(self, "_pah_z", None) is not None
+            and getattr(self, "_pah_log_stellar_mass", None) is not None
+        )
 
-        if (
-                self.use_pah and _has_pop
-        ) or (
-                _wm == "additive" and _has_pop
-        ):
+        if (self.use_pah and _has_pop) or (_wm == "additive" and _has_pop):
             # Additive: power-law Wien stays, PAH features added on top
             pah_flux = self._pah_flux_0(
-                wavelength_um, amplitude,
-                self._pah_z, self._pah_log_stellar_mass, temperature,
+                wavelength_um,
+                amplitude,
+                self._pah_z,
+                self._pah_log_stellar_mass,
+                temperature,
             )
             flux_density = flux_density + pah_flux
 
         elif _wm == "physical" and _has_pop:
             # Physical Wien: warm dust + PAH replaces power-law
             wien_flux = self._physical_wien_flux(
-                wavelength_um, amplitude,
-                self._pah_z, self._pah_log_stellar_mass, temperature,
+                wavelength_um,
+                amplitude,
+                self._pah_z,
+                self._pah_log_stellar_mass,
+                temperature,
             )
             # Replace power-law on Wien side, keep greybody on RJ side
             flux_density[ind_cut] = np.maximum(wien_flux[ind_cut], 1e-99)
@@ -1492,7 +1545,6 @@ class Greybody:
             flux_density[blend] = flux_density[blend] + wien_flux[blend]
 
         return flux_density
-
 
     def black(self, nu_in, T):
         """
@@ -1571,8 +1623,7 @@ class Greybody:
                 dL_dtemp = (L_plus_t - L_minus_t) / (2 * delta_temp)
 
                 L_IR_error = np.sqrt(
-                    (dL_damp * amplitude_err) ** 2
-                    + (dL_dtemp * temperature_err) ** 2
+                    (dL_damp * amplitude_err) ** 2 + (dL_dtemp * temperature_err) ** 2
                 )
             except Exception as e:
                 logger.warning(f"L_IR error propagation failed: {e}, using 15%")
@@ -1688,8 +1739,6 @@ class Greybody:
         exponent = self.h * nu / (self.k_B * T)
         exponent = np.clip(exponent, 0, 700)
         return (2 * self.h * nu**3 / self.c**2) / (np.exp(exponent) - 1)
-
-
 
 
 # Backwards-compatible alias

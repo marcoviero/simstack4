@@ -24,6 +24,7 @@ logger = setup_logging()
 @dataclass
 class CosmologyResults:
     """Container for cosmological calculation results"""
+
     redshift: Union[float, np.ndarray]
     luminosity_distance: Union[float, np.ndarray]  # Mpc
     angular_diameter_distance: Union[float, np.ndarray]  # Mpc
@@ -35,13 +36,13 @@ class CosmologyResults:
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for easy access"""
         return {
-            'redshift': self.redshift,
-            'luminosity_distance_mpc': self.luminosity_distance,
-            'angular_diameter_distance_mpc': self.angular_diameter_distance,
-            'comoving_distance_mpc': self.comoving_distance,
-            'lookback_time_gyr': self.lookback_time,
-            'age_at_z_gyr': self.age_at_z,
-            'h_factor': self.h_factor
+            "redshift": self.redshift,
+            "luminosity_distance_mpc": self.luminosity_distance,
+            "angular_diameter_distance_mpc": self.angular_diameter_distance,
+            "comoving_distance_mpc": self.comoving_distance,
+            "lookback_time_gyr": self.lookback_time,
+            "age_at_z_gyr": self.age_at_z,
+            "h_factor": self.h_factor,
         }
 
 
@@ -70,7 +71,9 @@ class CosmologyCalculator:
         self.omega_lambda = self.cosmo.Ode0
 
         logger.info(f"Cosmology initialized: {cosmology.value}")
-        logger.info(f"H0 = {self.h0:.1f} km/s/Mpc, Ωm = {self.omega_m:.3f}, ΩΛ = {self.omega_lambda:.3f}")
+        logger.info(
+            f"H0 = {self.h0:.1f} km/s/Mpc, Ωm = {self.omega_m:.3f}, ΩΛ = {self.omega_lambda:.3f}"
+        )
 
     def _get_cosmology(self, cosmology: Cosmology) -> FlatLambdaCDM:
         """Get astropy cosmology object"""
@@ -81,7 +84,9 @@ class CosmologyCalculator:
         else:
             raise CosmologyError(f"Unknown cosmology: {cosmology}")
 
-    def calculate_distances(self, redshift: Union[float, np.ndarray]) -> CosmologyResults:
+    def calculate_distances(
+        self, redshift: Union[float, np.ndarray]
+    ) -> CosmologyResults:
         """
         Calculate all cosmological distances for given redshift(s)
 
@@ -112,7 +117,7 @@ class CosmologyCalculator:
 
         # Calculate h-factor correction (commonly used in IR luminosity studies)
         # This accounts for the h^-2 scaling of luminosity
-        h_factor = (self.h / 0.7)**(-2)
+        h_factor = (self.h / 0.7) ** (-2)
 
         # Return scalar if input was scalar
         if np.isscalar(redshift):
@@ -123,7 +128,7 @@ class CosmologyCalculator:
                 comoving_distance=float(com_dist[0]),
                 lookback_time=float(lookback[0]),
                 age_at_z=float(age_at_z[0]),
-                h_factor=float(h_factor)
+                h_factor=float(h_factor),
             )
         else:
             return CosmologyResults(
@@ -133,10 +138,12 @@ class CosmologyCalculator:
                 comoving_distance=com_dist,
                 lookback_time=lookback,
                 age_at_z=age_at_z,
-                h_factor=np.full_like(z, h_factor)
+                h_factor=np.full_like(z, h_factor),
             )
 
-    def luminosity_distance(self, redshift: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
+    def luminosity_distance(
+        self, redshift: Union[float, np.ndarray]
+    ) -> Union[float, np.ndarray]:
         """
         Calculate luminosity distance in Mpc
 
@@ -149,7 +156,9 @@ class CosmologyCalculator:
         results = self.calculate_distances(redshift)
         return results.luminosity_distance
 
-    def angular_diameter_distance(self, redshift: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
+    def angular_diameter_distance(
+        self, redshift: Union[float, np.ndarray]
+    ) -> Union[float, np.ndarray]:
         """
         Calculate angular diameter distance in Mpc
 
@@ -162,9 +171,12 @@ class CosmologyCalculator:
         results = self.calculate_distances(redshift)
         return results.angular_diameter_distance
 
-    def flux_to_luminosity(self, flux_jy: Union[float, np.ndarray],
-                          redshift: Union[float, np.ndarray],
-                          rest_wavelength_um: float) -> Union[float, np.ndarray]:
+    def flux_to_luminosity(
+        self,
+        flux_jy: Union[float, np.ndarray],
+        redshift: Union[float, np.ndarray],
+        rest_wavelength_um: float,
+    ) -> Union[float, np.ndarray]:
         """
         Convert observed flux to rest-frame luminosity
 
@@ -184,7 +196,7 @@ class CosmologyCalculator:
 
         # K-correction factor (assumes S_nu ~ nu^-alpha with alpha ~ 1-2)
         # For IR: K = (1+z)^(1+alpha), with alpha ~ 1 for typical SED shapes
-        k_correction = (1 + redshift)**2
+        k_correction = (1 + redshift) ** 2
 
         # Convert flux to luminosity
         # L = 4π D_L^2 * S_obs * K / (1+z)
@@ -206,9 +218,12 @@ class CosmologyCalculator:
 
         return lum_l_sun
 
-    def luminosity_to_flux(self, luminosity_l_sun: Union[float, np.ndarray],
-                          redshift: Union[float, np.ndarray],
-                          rest_wavelength_um: float) -> Union[float, np.ndarray]:
+    def luminosity_to_flux(
+        self,
+        luminosity_l_sun: Union[float, np.ndarray],
+        redshift: Union[float, np.ndarray],
+        rest_wavelength_um: float,
+    ) -> Union[float, np.ndarray]:
         """
         Convert rest-frame luminosity to observed flux
 
@@ -229,7 +244,7 @@ class CosmologyCalculator:
         lum_cgs = luminosity_l_sun * l_sun_cgs
 
         # K-correction (inverse of flux_to_luminosity)
-        k_correction = (1 + redshift)**2
+        k_correction = (1 + redshift) ** 2
 
         # Calculate observed flux
         flux_cgs = lum_cgs * (1 + redshift) / (4 * np.pi * d_l_cm**2 * k_correction)
@@ -239,8 +254,9 @@ class CosmologyCalculator:
 
         return flux_jy
 
-    def comoving_volume_element(self, redshift: Union[float, np.ndarray],
-                               sky_area_deg2: float = 1.0) -> Union[float, np.ndarray]:
+    def comoving_volume_element(
+        self, redshift: Union[float, np.ndarray], sky_area_deg2: float = 1.0
+    ) -> Union[float, np.ndarray]:
         """
         Calculate comoving volume element dV/dz per unit sky area
 
@@ -256,13 +272,13 @@ class CosmologyCalculator:
         d_c = results.comoving_distance  # Mpc
 
         # Convert sky area to steradians
-        sky_area_sr = sky_area_deg2 * (np.pi / 180)**2
+        sky_area_sr = sky_area_deg2 * (np.pi / 180) ** 2
 
         # Hubble parameter at redshift z
-        h_z = self.cosmo.H(redshift).to(u.km/u.s/u.Mpc).value
+        h_z = self.cosmo.H(redshift).to(u.km / u.s / u.Mpc).value
 
         # Volume element: dV = c * D_C²(z) * dΩ * dz / H(z)
-        c_km_s = const.c.to(u.km/u.s).value
+        c_km_s = const.c.to(u.km / u.s).value
 
         dv_dz = c_km_s * d_c**2 * sky_area_sr / h_z
 
@@ -276,8 +292,8 @@ class CosmologyCalculator:
             "h": self.h,
             "Omega_m": self.omega_m,
             "Omega_lambda": self.omega_lambda,
-            "Omega_k": getattr(self.cosmo, 'Ok0', 0.0),
-            "age_universe_Gyr": self.cosmo.age(0).to(u.Gyr).value
+            "Omega_k": getattr(self.cosmo, "Ok0", 0.0),
+            "age_universe_Gyr": self.cosmo.age(0).to(u.Gyr).value,
         }
 
     def print_cosmology_summary(self) -> None:
@@ -289,13 +305,14 @@ class CosmologyCalculator:
         print(f"H₀ = {summary['H0_km_s_Mpc']:.1f} km/s/Mpc (h = {summary['h']:.3f})")
         print(f"Ωₘ = {summary['Omega_m']:.3f}")
         print(f"ΩΛ = {summary['Omega_lambda']:.3f}")
-        if summary['Omega_k'] != 0:
+        if summary["Omega_k"] != 0:
             print(f"Ωₖ = {summary['Omega_k']:.3f}")
         print(f"Age of Universe = {summary['age_universe_Gyr']:.2f} Gyr")
 
 
-def calculate_redshift_bins_distances(redshift_bins: list,
-                                     cosmology: Cosmology = Cosmology.PLANCK18) -> Dict[str, np.ndarray]:
+def calculate_redshift_bins_distances(
+    redshift_bins: list, cosmology: Cosmology = Cosmology.PLANCK18
+) -> Dict[str, np.ndarray]:
     """
     Calculate distances for redshift bin centers and edges
 
@@ -324,13 +341,14 @@ def calculate_redshift_bins_distances(redshift_bins: list,
         "d_a_centers_mpc": results_centers.angular_diameter_distance,
         "d_a_edges_mpc": results_edges.angular_diameter_distance,
         "lookback_centers_gyr": results_centers.lookback_time,
-        "lookback_edges_gyr": results_edges.lookback_time
+        "lookback_edges_gyr": results_edges.lookback_time,
     }
 
 
 # Convenience function for quick distance calculations
-def quick_luminosity_distance(redshift: Union[float, np.ndarray],
-                             cosmology: Cosmology = Cosmology.PLANCK18) -> Union[float, np.ndarray]:
+def quick_luminosity_distance(
+    redshift: Union[float, np.ndarray], cosmology: Cosmology = Cosmology.PLANCK18
+) -> Union[float, np.ndarray]:
     """
     Quick luminosity distance calculation
 

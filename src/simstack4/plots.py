@@ -16,6 +16,7 @@ try:
     import matplotlib.colors as mcolors
     from matplotlib.patches import Rectangle
     import matplotlib.gridspec as gridspec
+
     HAS_MATPLOTLIB = True
 except ImportError:
     HAS_MATPLOTLIB = False
@@ -23,6 +24,7 @@ except ImportError:
 
 try:
     import seaborn as sns
+
     HAS_SEABORN = True
 except ImportError:
     HAS_SEABORN = False
@@ -67,93 +69,103 @@ logger = logging.getLogger(__name__)
 
 # ── Font sizes ────────────────────────────────────────────────────────────
 FONT = {
-    "suptitle":     14,
-    "col_header":   12,
-    "row_label":    12,
-    "axis_label":   12,
-    "tick":         11,
-    "legend":       15,
-    "empty_cell":   14,
-    "colorbar":     12,
+    "suptitle": 14,
+    "col_header": 12,
+    "row_label": 12,
+    "axis_label": 12,
+    "tick": 11,
+    "legend": 15,
+    "empty_cell": 14,
+    "colorbar": 12,
     "colorbar_tick": 11,
 }
 
 # ── Marker / line styling ────────────────────────────────────────────────
 STYLE = {
-    "marker_size":          10,
-    "marker_alpha":         0.85,
-    "marker_fillstyle":     "none",     # open circles
-    "marker_edgewidth":     0.7,
-    "capsize":              2,
-    "marker_lw":            1.2,
-    "model_lw":             1.8,
-    "model_alpha":          0.6,
-    "prior_lw":             1.4,
-    "prior_alpha":          0.7,
-    "prior_color":          "0.45",
-    "upper_limit_ms":       3,
-    "upper_limit_alpha":    0.4,
-    "legend_handle_lw":     2,
-    "grid_alpha":           0.15,
+    "marker_size": 10,
+    "marker_alpha": 0.85,
+    "marker_fillstyle": "none",  # open circles
+    "marker_edgewidth": 0.7,
+    "capsize": 2,
+    "marker_lw": 1.2,
+    "model_lw": 1.8,
+    "model_alpha": 0.6,
+    "prior_lw": 1.4,
+    "prior_alpha": 0.7,
+    "prior_color": "0.45",
+    "upper_limit_ms": 3,
+    "upper_limit_alpha": 0.4,
+    "legend_handle_lw": 2,
+    "grid_alpha": 0.15,
 }
 
 # ── Layout ───────────────────────────────────────────────────────────────
 LAYOUT = {
-    "panel_width":   3.2,      # inches per column
-    "panel_height":  2.8,      # inches per row
-    "fig_pad_w":     1.0,      # extra width (inches)
-    "fig_pad_h":     0.8,      # extra height (inches)
-    "hspace":        0.04,
-    "wspace":        0.04,
+    "panel_width": 3.2,  # inches per column
+    "panel_height": 2.8,  # inches per row
+    "fig_pad_w": 1.0,  # extra width (inches)
+    "fig_pad_h": 0.8,  # extra height (inches)
+    "hspace": 0.04,
+    "wspace": 0.04,
     "col_header_pad": 4,
-    "row_label_pad":  18,
-    "suptitle_y":     1.01,
-    "lam_model_pad_lo": 0.3,   # model lam grid extends to lam_min x this
-    "lam_model_pad_hi": 1.5,   # model lam grid extends to lam_max x this
-    "xlim_pad_lo":      0.5,   # x-axis extends to lam_min x this
-    "xlim_pad_hi":      1.5,   # x-axis extends to lam_max x this
-    "n_model_points":   120,
+    "row_label_pad": 18,
+    "suptitle_y": 1.01,
+    "lam_model_pad_lo": 0.3,  # model lam grid extends to lam_min x this
+    "lam_model_pad_hi": 1.5,  # model lam grid extends to lam_max x this
+    "xlim_pad_lo": 0.5,  # x-axis extends to lam_min x this
+    "xlim_pad_hi": 1.5,  # x-axis extends to lam_max x this
+    "n_model_points": 120,
 }
 
 # ── Colorbar ─────────────────────────────────────────────────────────────
 CBAR = {
-    "fraction":  0.02,
-    "pad":       0.02,
-    "aspect":    30,
-    "right":     0.88,    # subplots_adjust right when cbar present
+    "fraction": 0.02,
+    "pad": 0.02,
+    "aspect": 30,
+    "right": 0.88,  # subplots_adjust right when cbar present
 }
 
 # ── Type colours for population splits ───────────────────────────────────
 TYPE_COLORS = {
-    "sfg":        "#1f77b4",   # blue (star-forming)
-    "quiescent":  "#d62728",   # red  (quiescent)
-    "agn":        "#2ca02c",   # green
-    "dusty":      "#ff7f0e",   # orange
-    "split_0":    "#1f77b4",   # blue  (complete SF)
-    "split_1":    "#ff7f0e",   # orange (incomplete SF)
-    "split_2":    "#d62728",   # red   (quiescent)
-    "split_3":    "#2ca02c",   # green (starburst)
+    "sfg": "#1f77b4",  # blue (star-forming)
+    "quiescent": "#d62728",  # red  (quiescent)
+    "agn": "#2ca02c",  # green
+    "dusty": "#ff7f0e",  # orange
+    "split_0": "#1f77b4",  # blue  (complete SF)
+    "split_1": "#ff7f0e",  # orange (incomplete SF)
+    "split_2": "#d62728",  # red   (quiescent)
+    "split_3": "#2ca02c",  # green (starburst)
 }
 _EXTRA_COLORS = [
-    "#9467bd", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
 ]
 
 # Type-specific sequential cmaps for extra-dimension gradients
 _TYPE_CMAPS = {
-    "sfg":        cm.winter,
-    "quiescent":  cm.autumn,
-    "agn":        cm.Greens,
-    "dusty":      cm.Oranges,
-    "split_0":    cm.winter,
-    "split_1":    cm.Wistia,
-    "split_2":    cm.autumn,
-    "split_3":    cm.summer,
+    "sfg": cm.winter,
+    "quiescent": cm.autumn,
+    "agn": cm.Greens,
+    "dusty": cm.Oranges,
+    "split_0": cm.winter,
+    "split_1": cm.Wistia,
+    "split_2": cm.autumn,
+    "split_3": cm.summer,
 }
 
 # Short display names for type labels
 _TYPE_SHORT = {
-    "split_0": "cSF", "split_1": "iSF", "split_2": "QT", "split_3": "SB",
-    "sfg": "SF", "quiescent": "Q", "agn": "AGN",
+    "split_0": "cSF",
+    "split_1": "iSF",
+    "split_2": "QT",
+    "split_3": "SB",
+    "sfg": "SF",
+    "quiescent": "Q",
+    "agn": "AGN",
 }
 
 # Dimension label pretty-printing
@@ -232,15 +244,17 @@ def _dim_label(dim: str) -> str:
     return _DIM_LABELS.get(dim, dim.replace("_", " "))
 
 
-def _solve_amplitude_at_T(greybody_fitter, wave_rest, fluxes, errors,
-                           T_rest, beta):
+def _solve_amplitude_at_T(greybody_fitter, wave_rest, fluxes, errors, T_rest, beta):
     """
     Analytically solve for log10(A) at fixed T and beta.
 
     Returns (log10_A, success_bool).
     """
     template = greybody_fitter.greybody_model(
-        wave_rest, 0.0, T_rest, beta,
+        wave_rest,
+        0.0,
+        T_rest,
+        beta,
     )
     w = 1.0 / errors**2
     denom = np.sum(template**2 * w)
@@ -254,9 +268,9 @@ def _solve_amplitude_at_T(greybody_fitter, wave_rest, fluxes, errors,
 
 def _set_pah_state(fitter, z, log_stellar_mass):
     """Set PAH state on fitter for the current population."""
-    if hasattr(fitter, '_pah_z'):
+    if hasattr(fitter, "_pah_z"):
         fitter._pah_z = z
-    if hasattr(fitter, '_pah_log_stellar_mass'):
+    if hasattr(fitter, "_pah_log_stellar_mass"):
         fitter._pah_log_stellar_mass = log_stellar_mass
 
 
@@ -322,9 +336,7 @@ def plot_sed_grid(
     sr = getattr(wrapper, "stacking_results", None)
     pr = getattr(wrapper, "processed_results", None)
     if sr is None or pr is None:
-        raise ValueError(
-            "wrapper must have stacking_results and processed_results"
-        )
+        raise ValueError("wrapper must have stacking_results and processed_results")
 
     sed_results = pr.sed_results
     if not sed_results:
@@ -334,9 +346,7 @@ def plot_sed_grid(
     flux_label = f"Flux Density ({flux_unit})"
 
     # ── wavelengths from config ───────────────────────────────────────────
-    wavelengths = np.array([
-        wrapper.config.maps[m].wavelength for m in sr.map_names
-    ])
+    wavelengths = np.array([wrapper.config.maps[m].wavelength for m in sr.map_names])
     sort_idx = np.argsort(wavelengths)
     wavelengths = wavelengths[sort_idx]
     map_names_sorted = [sr.map_names[i] for i in sort_idx]
@@ -344,9 +354,7 @@ def plot_sed_grid(
     print(f"📡 Wavelengths: {wavelengths} µm  ({len(wavelengths)} bands)")
 
     # ── population label → stacking array index ──────────────────────────
-    pop_label_to_idx = {
-        label: i for i, label in enumerate(sr.population_labels)
-    }
+    pop_label_to_idx = {label: i for i, label in enumerate(sr.population_labels)}
 
     # ── parse every population ID ────────────────────────────────────────
     pop_ids = list(sed_results.keys())
@@ -354,21 +362,26 @@ def plot_sed_grid(
     # Apply split filter if specified
     if split_filter is not None:
         allowed = {f"split_{i}" for i in split_filter}
-        pop_ids = [pid for pid in pop_ids
-                   if _extract_pop_type(pid) in allowed
-                   or _extract_pop_type(pid) == "_all_"]
+        pop_ids = [
+            pid
+            for pid in pop_ids
+            if _extract_pop_type(pid) in allowed or _extract_pop_type(pid) == "_all_"
+        ]
         print(f"Split filter: keeping {allowed} → {len(pop_ids)} populations")
 
     parsed = {pid: _parse_bins(pid) for pid in pop_ids}
-    types  = {pid: _extract_pop_type(pid) for pid in pop_ids}
+    types = {pid: _extract_pop_type(pid) for pid in pop_ids}
     unique_types = sorted(set(types.values()))
     has_type_split = unique_types != ["_all_"]
 
     if has_type_split:
-        type_counts = {t: sum(1 for v in types.values() if v == t)
-                       for t in unique_types}
-        print(f"🏷️  Population types: "
-              f"{', '.join(f'{t}: {n}' for t, n in type_counts.items())}")
+        type_counts = {
+            t: sum(1 for v in types.values() if v == t) for t in unique_types
+        }
+        print(
+            f"🏷️  Population types: "
+            f"{', '.join(f'{t}: {n}' for t, n in type_counts.items())}"
+        )
     else:
         print(f"📊 {len(pop_ids)} populations (no type split)")
 
@@ -382,15 +395,25 @@ def plot_sed_grid(
     if len(all_dims) < 2:
         print("⚠️  < 2 binning dimensions — falling back to simple plot")
         return _plot_sed_simple(
-            wrapper, sr, pr, wavelengths, map_names_sorted,
-            pop_label_to_idx, flux_scale, flux_label,
-            show_errors, show_model, show_prior, ylim,
+            wrapper,
+            sr,
+            pr,
+            wavelengths,
+            map_names_sorted,
+            pop_label_to_idx,
+            flux_scale,
+            flux_label,
+            show_errors,
+            show_model,
+            show_prior,
+            ylim,
         )
 
     if col_dim is None or row_dim is None:
-        ranked = sorted(all_dims, key=lambda d: (
-            _DIM_PRIORITY.index(d) if d in _DIM_PRIORITY else 99
-        ))
+        ranked = sorted(
+            all_dims,
+            key=lambda d: (_DIM_PRIORITY.index(d) if d in _DIM_PRIORITY else 99),
+        )
         if col_dim is None:
             col_dim = ranked[0]
         if row_dim is None:
@@ -455,8 +478,12 @@ def plot_sed_grid(
         )
 
     fig, axes = plt.subplots(
-        n_rows, n_cols, figsize=figsize,
-        sharex=True, sharey=True, squeeze=False,
+        n_rows,
+        n_cols,
+        figsize=figsize,
+        sharex=True,
+        sharey=True,
+        squeeze=False,
     )
 
     # fine lam grid for model curves (observed frame)
@@ -472,15 +499,20 @@ def plot_sed_grid(
             ax = axes[ri, ci]
 
             cell_pops = [
-                pid for pid in pop_ids
-                if parsed[pid].get(col_dim) == cbin
-                and parsed[pid].get(row_dim) == rbin
+                pid
+                for pid in pop_ids
+                if parsed[pid].get(col_dim) == cbin and parsed[pid].get(row_dim) == rbin
             ]
 
             if not cell_pops:
                 ax.text(
-                    0.5, 0.5, "—", ha="center", va="center",
-                    transform=ax.transAxes, fontsize=FONT["empty_cell"],
+                    0.5,
+                    0.5,
+                    "—",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                    fontsize=FONT["empty_cell"],
                     color="0.6",
                 )
             else:
@@ -496,44 +528,54 @@ def plot_sed_grid(
                     colour = colour_map.get(_colour_key(pid), "0.4")
 
                     # ── data points ──────────────────────────────────
-                    fluxes = np.array([
-                        sr.flux_densities[m][idx] for m in map_names_sorted
-                    ]) * flux_scale
-                    errors = np.array([
-                        sr.flux_errors[m][idx] for m in map_names_sorted
-                    ]) * flux_scale
+                    fluxes = (
+                        np.array([sr.flux_densities[m][idx] for m in map_names_sorted])
+                        * flux_scale
+                    )
+                    errors = (
+                        np.array([sr.flux_errors[m][idx] for m in map_names_sorted])
+                        * flux_scale
+                    )
 
                     det = fluxes > 0
 
                     if np.any(det):
                         if show_errors:
                             ax.errorbar(
-                                wavelengths[det], fluxes[det],
+                                wavelengths[det],
+                                fluxes[det],
                                 yerr=errors[det],
-                                fmt="o", color=colour,
+                                fmt="o",
+                                color=colour,
                                 ms=STYLE["marker_size"],
                                 mfc="none",
                                 mew=STYLE["marker_edgewidth"],
                                 capsize=STYLE["capsize"],
                                 lw=STYLE["marker_lw"],
-                                alpha=STYLE["marker_alpha"], zorder=3,
+                                alpha=STYLE["marker_alpha"],
+                                zorder=3,
                             )
                         else:
                             ax.plot(
-                                wavelengths[det], fluxes[det],
-                                "o", color=colour,
+                                wavelengths[det],
+                                fluxes[det],
+                                "o",
+                                color=colour,
                                 ms=STYLE["marker_size"],
                                 mfc="none",
                                 mew=STYLE["marker_edgewidth"],
-                                alpha=STYLE["marker_alpha"], zorder=3,
+                                alpha=STYLE["marker_alpha"],
+                                zorder=3,
                             )
 
                     # ── upper limits ─────────────────────────────────
                     nondet = (~det) & (errors > 0)
                     if np.any(nondet):
                         ax.plot(
-                            wavelengths[nondet], 2 * errors[nondet],
-                            "v", color=colour,
+                            wavelengths[nondet],
+                            2 * errors[nondet],
+                            "v",
+                            color=colour,
                             ms=STYLE["upper_limit_ms"],
                             alpha=STYLE["upper_limit_alpha"],
                         )
@@ -552,16 +594,21 @@ def plot_sed_grid(
                             _set_pah_state(pr.greybody_fitter, z, sed.median_mass)
                             model_flux = (
                                 pr.greybody_fitter.greybody_model(
-                                    lam_rest, sed.amplitude,
-                                    sed.dust_temperature_rest_frame, beta,
+                                    lam_rest,
+                                    sed.amplitude,
+                                    sed.dust_temperature_rest_frame,
+                                    beta,
                                 )
                                 * flux_scale
                             )
                             ax.plot(
-                                lam_obs_model, model_flux,
-                                "-", color=colour,
+                                lam_obs_model,
+                                model_flux,
+                                "-",
+                                color=colour,
                                 lw=STYLE["model_lw"],
-                                alpha=STYLE["model_alpha"], zorder=2,
+                                alpha=STYLE["model_alpha"],
+                                zorder=2,
                             )
                         except Exception as e:
                             logger.debug(f"Model failed for {pid}: {e}")
@@ -569,23 +616,20 @@ def plot_sed_grid(
                     # ── Temperature-prior overlay ──────────────────────
                     if show_prior and not prior_plotted:
                         z = sed.median_redshift
-                        beta = (sed.emissivity_index or 1.8)
+                        beta = sed.emissivity_index or 1.8
                         try:
-                            T_prior, _ = (
-                                pr.greybody_fitter
-                                .temperature_prior_relation(z)
+                            T_prior, _ = pr.greybody_fitter.temperature_prior_relation(
+                                z
                             )
 
                             # Solve amplitude analytically at T_prior
                             # using this population's data (in Jy)
-                            fluxes_jy = np.array([
-                                sr.flux_densities[m][idx]
-                                for m in map_names_sorted
-                            ])
-                            errors_jy = np.array([
-                                sr.flux_errors[m][idx]
-                                for m in map_names_sorted
-                            ])
+                            fluxes_jy = np.array(
+                                [sr.flux_densities[m][idx] for m in map_names_sorted]
+                            )
+                            errors_jy = np.array(
+                                [sr.flux_errors[m][idx] for m in map_names_sorted]
+                            )
                             wave_rest_data = wavelengths / (1.0 + z)
 
                             # Only use positive detections for scaling
@@ -596,22 +640,29 @@ def plot_sed_grid(
                                     wave_rest_data[pos],
                                     fluxes_jy[pos],
                                     errors_jy[pos],
-                                    T_prior, beta,
+                                    T_prior,
+                                    beta,
                                 )
 
                                 if ok:
                                     lam_rest = lam_obs_model / (1.0 + z)
-                                    _set_pah_state(pr.greybody_fitter, z, sed.median_mass)
+                                    _set_pah_state(
+                                        pr.greybody_fitter, z, sed.median_mass
+                                    )
                                     prior_flux = (
                                         pr.greybody_fitter.greybody_model(
-                                            lam_rest, A_prior,
-                                            T_prior, beta,
+                                            lam_rest,
+                                            A_prior,
+                                            T_prior,
+                                            beta,
                                         )
                                         * flux_scale
                                     )
                                     ax.plot(
-                                        lam_obs_model, prior_flux,
-                                        "--", color=STYLE["prior_color"],
+                                        lam_obs_model,
+                                        prior_flux,
+                                        "--",
+                                        color=STYLE["prior_color"],
                                         lw=STYLE["prior_lw"],
                                         alpha=STYLE["prior_alpha"],
                                         zorder=1,
@@ -644,8 +695,7 @@ def plot_sed_grid(
                     label = " ".join(parts) if parts else "—"
 
                     legend_handles.append(
-                        Line2D([0], [0], color=colour,
-                               lw=STYLE["legend_handle_lw"])
+                        Line2D([0], [0], color=colour, lw=STYLE["legend_handle_lw"])
                     )
                     legend_labels.append(label)
 
@@ -657,8 +707,13 @@ def plot_sed_grid(
                         _first_sed.median_redshift
                     )
                     legend_handles.append(
-                        Line2D([0], [0], color=STYLE["prior_color"],
-                               lw=STYLE["prior_lw"], ls="--")
+                        Line2D(
+                            [0],
+                            [0],
+                            color=STYLE["prior_color"],
+                            lw=STYLE["prior_lw"],
+                            ls="--",
+                        )
                     )
                     _pname = getattr(pr.greybody_fitter, "temperature_prior", "prior")
                     legend_labels.append(f"{_pname} T_rf={_T_prior:.0f}K")
@@ -669,10 +724,14 @@ def plot_sed_grid(
                     else:
                         fontsize = fontsize_legend
                     ax.legend(
-                        legend_handles, legend_labels,
-                        loc="upper left", fontsize=fontsize,
-                        framealpha=0.7, edgecolor="0.8",
-                        handlelength=1.2, borderpad=0.3,
+                        legend_handles,
+                        legend_labels,
+                        loc="upper left",
+                        fontsize=fontsize,
+                        framealpha=0.7,
+                        edgecolor="0.8",
+                        handlelength=1.2,
+                        borderpad=0.3,
                         labelspacing=0.3,
                     )
 
@@ -686,7 +745,9 @@ def plot_sed_grid(
             )
             ax.grid(True, alpha=STYLE["grid_alpha"], which="both")
             ax.tick_params(
-                labelsize=FONT["tick"], which="both", direction="in",
+                labelsize=FONT["tick"],
+                which="both",
+                direction="in",
             )
 
             if ri == 0:
@@ -717,11 +778,12 @@ def plot_sed_grid(
     n_pops = len(pop_ids)
     title = f"SED Grid — {n_pops} populations"
     if has_type_split:
-        counts = {t: sum(1 for v in types.values() if v == t)
-                  for t in unique_types}
-        title += "  (" + ", ".join(
-            f"{_TYPE_SHORT.get(t, t)}: {n}" for t, n in counts.items()
-        ) + ")"
+        counts = {t: sum(1 for v in types.values() if v == t) for t in unique_types}
+        title += (
+            "  ("
+            + ", ".join(f"{_TYPE_SHORT.get(t, t)}: {n}" for t, n in counts.items())
+            + ")"
+        )
     fig.suptitle(title, fontsize=FONT["suptitle"], y=LAYOUT["suptitle_y"])
 
     fig.tight_layout()
@@ -731,10 +793,13 @@ def plot_sed_grid(
         from matplotlib.colors import Normalize
 
         ed = extra_dims[0]
-        ed_bins = sorted(set(
-            parsed[pid].get(ed) for pid in pop_ids
-            if parsed[pid].get(ed) is not None
-        ))
+        ed_bins = sorted(
+            set(
+                parsed[pid].get(ed)
+                for pid in pop_ids
+                if parsed[pid].get(ed) is not None
+            )
+        )
 
         if len(ed_bins) >= 2:
             mids = [0.5 * (lo + hi) for lo, hi in ed_bins]
@@ -751,12 +816,15 @@ def plot_sed_grid(
             sm.set_array([])
 
             plt.subplots_adjust(
-                hspace=LAYOUT["hspace"], wspace=LAYOUT["wspace"],
+                hspace=LAYOUT["hspace"],
+                wspace=LAYOUT["wspace"],
                 right=CBAR["right"],
             )
             cbar = fig.colorbar(
-                sm, ax=axes,
-                fraction=CBAR["fraction"], pad=CBAR["pad"],
+                sm,
+                ax=axes,
+                fraction=CBAR["fraction"],
+                pad=CBAR["pad"],
                 aspect=CBAR["aspect"],
             )
             cbar.set_label(_dim_label(ed), fontsize=FONT["colorbar"])
@@ -765,18 +833,23 @@ def plot_sed_grid(
             cbar.set_ticklabels([f"{m:.1f}" for m in mids])
         else:
             plt.subplots_adjust(
-                hspace=LAYOUT["hspace"], wspace=LAYOUT["wspace"],
+                hspace=LAYOUT["hspace"],
+                wspace=LAYOUT["wspace"],
             )
     else:
         plt.subplots_adjust(
-            hspace=LAYOUT["hspace"], wspace=LAYOUT["wspace"],
+            hspace=LAYOUT["hspace"],
+            wspace=LAYOUT["wspace"],
         )
 
     if save_path is not None:
         save_path = Path(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(
-            save_path, dpi=dpi, bbox_inches="tight", facecolor="white",
+            save_path,
+            dpi=dpi,
+            bbox_inches="tight",
+            facecolor="white",
         )
         print(f"💾 Saved to {save_path}")
 
@@ -787,8 +860,18 @@ def plot_sed_grid(
 # Fallback: simple single-panel plot
 # ---------------------------------------------------------------------------
 def _plot_sed_simple(
-    wrapper, sr, pr, wavelengths, map_names, pop_label_to_idx,
-    flux_scale, flux_label, show_errors, show_model, show_prior, ylim,
+    wrapper,
+    sr,
+    pr,
+    wavelengths,
+    map_names,
+    pop_label_to_idx,
+    flux_scale,
+    flux_label,
+    show_errors,
+    show_model,
+    show_prior,
+    ylim,
 ) -> plt.Figure:
     """Single-panel SED plot when < 2 binning dimensions."""
     fig, ax = plt.subplots(figsize=(9, 5))
@@ -810,12 +893,8 @@ def _plot_sed_simple(
 
         c = colors[k % len(colors)]
 
-        fluxes = np.array([
-            sr.flux_densities[m][idx] for m in map_names
-        ]) * flux_scale
-        errors = np.array([
-            sr.flux_errors[m][idx] for m in map_names
-        ]) * flux_scale
+        fluxes = np.array([sr.flux_densities[m][idx] for m in map_names]) * flux_scale
+        errors = np.array([sr.flux_errors[m][idx] for m in map_names]) * flux_scale
 
         det = fluxes > 0
         label = f"{pid.split('__')[0]}… N={sed.n_sources}"
@@ -823,23 +902,30 @@ def _plot_sed_simple(
         if np.any(det):
             if show_errors:
                 ax.errorbar(
-                    wavelengths[det], fluxes[det], yerr=errors[det],
-                    fmt="o", color=c,
+                    wavelengths[det],
+                    fluxes[det],
+                    yerr=errors[det],
+                    fmt="o",
+                    color=c,
                     ms=STYLE["marker_size"],
                     mfc="none",
                     mew=STYLE["marker_edgewidth"],
                     capsize=STYLE["capsize"] + 1,
                     lw=STYLE["marker_lw"] + 0.3,
-                    alpha=STYLE["marker_alpha"], label=label,
+                    alpha=STYLE["marker_alpha"],
+                    label=label,
                 )
             else:
                 ax.plot(
-                    wavelengths[det], fluxes[det],
-                    "o", color=c,
+                    wavelengths[det],
+                    fluxes[det],
+                    "o",
+                    color=c,
                     ms=STYLE["marker_size"],
                     mfc="none",
                     mew=STYLE["marker_edgewidth"],
-                    alpha=STYLE["marker_alpha"], label=label,
+                    alpha=STYLE["marker_alpha"],
+                    label=label,
                 )
 
             # Fitted model
@@ -854,12 +940,20 @@ def _plot_sed_simple(
                 try:
                     lam_rest = lam_obs_model / (1.0 + z)
                     _set_pah_state(pr.greybody_fitter, z, sed.median_mass)
-                    mf = pr.greybody_fitter.greybody_model(
-                        lam_rest, sed.amplitude,
-                        sed.dust_temperature_rest_frame, beta,
-                    ) * flux_scale
+                    mf = (
+                        pr.greybody_fitter.greybody_model(
+                            lam_rest,
+                            sed.amplitude,
+                            sed.dust_temperature_rest_frame,
+                            beta,
+                        )
+                        * flux_scale
+                    )
                     ax.plot(
-                        lam_obs_model, mf, "-", color=c,
+                        lam_obs_model,
+                        mf,
+                        "-",
+                        color=c,
                         lw=STYLE["model_lw"],
                         alpha=STYLE["model_alpha"],
                     )
@@ -871,33 +965,37 @@ def _plot_sed_simple(
                 z = sed.median_redshift
                 beta = sed.emissivity_index or 1.8
                 try:
-                    T_prior, _ = (
-                        pr.greybody_fitter
-                        .temperature_prior_relation(z)
-                    )
-                    fluxes_jy = np.array([
-                        sr.flux_densities[m][idx] for m in map_names
-                    ])
-                    errors_jy = np.array([
-                        sr.flux_errors[m][idx] for m in map_names
-                    ])
+                    T_prior, _ = pr.greybody_fitter.temperature_prior_relation(z)
+                    fluxes_jy = np.array([sr.flux_densities[m][idx] for m in map_names])
+                    errors_jy = np.array([sr.flux_errors[m][idx] for m in map_names])
                     wave_rest_data = wavelengths / (1.0 + z)
                     pos = fluxes_jy > 0
                     if np.sum(pos) >= 1:
                         A_prior, ok = _solve_amplitude_at_T(
                             pr.greybody_fitter,
-                            wave_rest_data[pos], fluxes_jy[pos],
-                            errors_jy[pos], T_prior, beta,
+                            wave_rest_data[pos],
+                            fluxes_jy[pos],
+                            errors_jy[pos],
+                            T_prior,
+                            beta,
                         )
                         if ok:
                             lam_rest = lam_obs_model / (1.0 + z)
                             _set_pah_state(pr.greybody_fitter, z, sed.median_mass)
-                            pf = pr.greybody_fitter.greybody_model(
-                                lam_rest, A_prior, T_prior, beta,
-                            ) * flux_scale
+                            pf = (
+                                pr.greybody_fitter.greybody_model(
+                                    lam_rest,
+                                    A_prior,
+                                    T_prior,
+                                    beta,
+                                )
+                                * flux_scale
+                            )
                             ax.plot(
-                                lam_obs_model, pf,
-                                "--", color=c,
+                                lam_obs_model,
+                                pf,
+                                "--",
+                                color=c,
                                 lw=STYLE["prior_lw"],
                                 alpha=STYLE["prior_alpha"] - 0.3,
                             )
@@ -911,8 +1009,7 @@ def _plot_sed_simple(
     ax.set_ylabel(flux_label, fontsize=FONT["axis_label"])
     ax.tick_params(labelsize=FONT["tick"])
     ax.grid(True, alpha=STYLE["grid_alpha"] + 0.05)
-    ax.legend(fontsize=FONT["legend"], bbox_to_anchor=(1.02, 1),
-              loc="upper left")
+    ax.legend(fontsize=FONT["legend"], bbox_to_anchor=(1.02, 1), loc="upper left")
     fig.tight_layout()
     return fig
 
@@ -1003,13 +1100,13 @@ def create_trf_redshift_plot(
 
         # Population type
         if "split_0" in pop_id:
-            row["pop_type_code"] = 0   # complete_sfg
+            row["pop_type_code"] = 0  # complete_sfg
         elif "split_1" in pop_id:
-            row["pop_type_code"] = 1   # incomplete_sfg
+            row["pop_type_code"] = 1  # incomplete_sfg
         elif "split_2" in pop_id:
-            row["pop_type_code"] = 2   # quiescent
+            row["pop_type_code"] = 2  # quiescent
         elif "split_3" in pop_id:
-            row["pop_type_code"] = 3   # starburst
+            row["pop_type_code"] = 3  # starburst
         else:
             row["pop_type_code"] = -1
 
@@ -1017,6 +1114,7 @@ def create_trf_redshift_plot(
         props = sed.bin_properties
         if isinstance(props, str):
             import ast as _ast
+
             try:
                 props = _ast.literal_eval(props)
             except (ValueError, SyntaxError):
@@ -1045,9 +1143,10 @@ def create_trf_redshift_plot(
                 row["beta_uv_bin"] = (lo + hi) / 2
 
         # Resolve: prefer prop over bin center
-        row["stellar_mass"] = row.get("stellar_mass_prop",
-                              row.get("stellar_mass_bin",
-                              getattr(sed, "median_mass", np.nan)))
+        row["stellar_mass"] = row.get(
+            "stellar_mass_prop",
+            row.get("stellar_mass_bin", getattr(sed, "median_mass", np.nan)),
+        )
         row["l_uv"] = row.get("l_uv_prop", row.get("l_uv_bin", np.nan))
         row["beta_uv"] = row.get("beta_uv_prop", row.get("beta_uv_bin", np.nan))
 
@@ -1080,15 +1179,17 @@ def create_trf_redshift_plot(
 
     print(f"T-z plot: {len(df_plot)} populations (tier ≥ {min_tier})")
     print(f"  z: {df_plot['redshift'].min():.2f} - {df_plot['redshift'].max():.2f}")
-    print(f"  T: {df_plot['T_rest_frame'].min():.0f} - {df_plot['T_rest_frame'].max():.0f} K")
+    print(
+        f"  T: {df_plot['T_rest_frame'].min():.0f} - {df_plot['T_rest_frame'].max():.0f} K"
+    )
 
     # ── color setup ──────────────────────────────────────────────────
     color_configs = {
         "stellar_mass": ("stellar_mass", "log10(M*/M_sun)", "viridis"),
-        "l_ir":         ("l_ir",         "log10(L_IR/L_sun)", "plasma"),
-        "l_uv":         ("l_uv",         "log10(L_UV/L_sun)", "viridis"),
-        "beta_uv":      ("beta_uv",      "β_UV", "coolwarm"),
-        "chi2":         ("chi2_reduced",  "chi^2_red", "coolwarm"),
+        "l_ir": ("l_ir", "log10(L_IR/L_sun)", "plasma"),
+        "l_uv": ("l_uv", "log10(L_UV/L_sun)", "viridis"),
+        "beta_uv": ("beta_uv", "β_UV", "coolwarm"),
+        "chi2": ("chi2_reduced", "chi^2_red", "coolwarm"),
     }
 
     if color_by in color_configs:
@@ -1123,13 +1224,16 @@ def create_trf_redshift_plot(
         elif color_by in ("l_ir", "l_uv"):
             boundaries = np.arange(
                 np.floor(np.nanmin(valid_vals)),
-                np.ceil(np.nanmax(valid_vals)) + 0.5, 0.5,
+                np.ceil(np.nanmax(valid_vals)) + 0.5,
+                0.5,
             )
         elif color_by == "beta_uv":
             boundaries = np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.5])
         else:
             n_disc = min(6, len(np.unique(valid_vals)))
-            boundaries = np.linspace(np.nanmin(valid_vals), np.nanmax(valid_vals), n_disc + 1)
+            boundaries = np.linspace(
+                np.nanmin(valid_vals), np.nanmax(valid_vals), n_disc + 1
+            )
 
         # Trim to data range
         boundaries = boundaries[
@@ -1149,17 +1253,29 @@ def create_trf_redshift_plot(
         ]
 
         scatter = ax.scatter(
-            df_plot["redshift"], df_plot["T_rest_frame"],
-            c=color_data, cmap=discrete_cmap, norm=norm,
-            s=80, alpha=0.85, edgecolors="k", linewidth=0.5, zorder=3,
+            df_plot["redshift"],
+            df_plot["T_rest_frame"],
+            c=color_data,
+            cmap=discrete_cmap,
+            norm=norm,
+            s=80,
+            alpha=0.85,
+            edgecolors="k",
+            linewidth=0.5,
+            zorder=3,
         )
 
         if show_errors and "T_error" in df_plot.columns:
             ax.errorbar(
-                df_plot["redshift"], df_plot["T_rest_frame"],
+                df_plot["redshift"],
+                df_plot["T_rest_frame"],
                 yerr=df_plot["T_error"],
-                fmt="none", color="gray", alpha=0.3,
-                capsize=2, elinewidth=0.8, zorder=1,
+                fmt="none",
+                color="gray",
+                alpha=0.3,
+                capsize=2,
+                elinewidth=0.8,
+                zorder=1,
             )
 
         cbar = plt.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
@@ -1172,15 +1288,25 @@ def create_trf_redshift_plot(
 
     else:
         ax.scatter(
-            df_plot["redshift"], df_plot["T_rest_frame"],
-            s=80, alpha=0.85, edgecolors="k", linewidth=0.5, zorder=3,
+            df_plot["redshift"],
+            df_plot["T_rest_frame"],
+            s=80,
+            alpha=0.85,
+            edgecolors="k",
+            linewidth=0.5,
+            zorder=3,
         )
         if show_errors and "T_error" in df_plot.columns:
             ax.errorbar(
-                df_plot["redshift"], df_plot["T_rest_frame"],
+                df_plot["redshift"],
+                df_plot["T_rest_frame"],
                 yerr=df_plot["T_error"],
-                fmt="none", color="gray", alpha=0.3,
-                capsize=2, elinewidth=0.8, zorder=1,
+                fmt="none",
+                color="gray",
+                alpha=0.3,
+                capsize=2,
+                elinewidth=0.8,
+                zorder=1,
             )
 
     # ── literature ───────────────────────────────────────────────────
@@ -1189,15 +1315,35 @@ def create_trf_redshift_plot(
         z_ext = np.linspace(0, 10, 150)
 
         T_schreiber = 32.9 + 4.60 * (z_lit - 2.0)
-        ax.plot(z_lit, T_schreiber, "--", color="green", linewidth=2,
-                label="Schreiber+18: T=23.7+4.6z", alpha=0.8)
+        ax.plot(
+            z_lit,
+            T_schreiber,
+            "--",
+            color="green",
+            linewidth=2,
+            label="Schreiber+18: T=23.7+4.6z",
+            alpha=0.8,
+        )
 
         T_viero = 20.9 + 5.9 * z_ext + 0.5 * z_ext**2
-        ax.plot(z_ext, T_viero, "--", color="purple", linewidth=2,
-                label="Viero+22: T=20.9+5.9z+0.5z^2", alpha=0.8)
+        ax.plot(
+            z_ext,
+            T_viero,
+            "--",
+            color="purple",
+            linewidth=2,
+            label="Viero+22: T=20.9+5.9z+0.5z^2",
+            alpha=0.8,
+        )
 
-        ax.axhline(32, color="gray", ls=":", lw=1, alpha=0.5,
-                   label="Drew & Casey 22: no evol. at fixed L_IR")
+        ax.axhline(
+            32,
+            color="gray",
+            ls=":",
+            lw=1,
+            alpha=0.5,
+            label="Drew & Casey 22: no evol. at fixed L_IR",
+        )
 
     # ── fit data ─────────────────────────────────────────────────────
     if fit_data and len(df_plot) >= 3:
@@ -1221,9 +1367,16 @@ def create_trf_redshift_plot(
             def quadratic(z, a, b, c_coeff):
                 return a + b * z + c_coeff * z**2
 
-            sigma_kw = dict(sigma=T_errors, absolute_sigma=True) if T_errors is not None else {}
+            sigma_kw = (
+                dict(sigma=T_errors, absolute_sigma=True)
+                if T_errors is not None
+                else {}
+            )
             popt, pcov = curve_fit(
-                quadratic, z_data, T_data, p0=[25, 3, 0.5],
+                quadratic,
+                z_data,
+                T_data,
+                p0=[25, 3, 0.5],
                 bounds=([10, -5, -1], [50, 20, 5]),
                 **sigma_kw,
             )
@@ -1236,13 +1389,21 @@ def create_trf_redshift_plot(
             r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
 
             z_fit = np.linspace(0, min(z_data.max() * 1.15, 11), 200)
-            ax.plot(z_fit, quadratic(z_fit, *popt), "-", color="black",
-                    linewidth=2.5, alpha=0.85,
-                    label=f"This work: T={a:.0f}+{b:.1f}z+{c_coeff:.2f}z^2 (R^2={r2:.2f})")
+            ax.plot(
+                z_fit,
+                quadratic(z_fit, *popt),
+                "-",
+                color="black",
+                linewidth=2.5,
+                alpha=0.85,
+                label=f"This work: T={a:.0f}+{b:.1f}z+{c_coeff:.2f}z^2 (R^2={r2:.2f})",
+            )
 
-            print(f"Quadratic fit: T = {a:.1f}+-{a_err:.1f} + "
-                  f"{b:.1f}+-{b_err:.1f}*z + {c_coeff:.2f}+-{c_err:.2f}*z^2  "
-                  f"(R^2={r2:.3f})")
+            print(
+                f"Quadratic fit: T = {a:.1f}+-{a_err:.1f} + "
+                f"{b:.1f}+-{b_err:.1f}*z + {c_coeff:.2f}+-{c_err:.2f}*z^2  "
+                f"(R^2={r2:.3f})"
+            )
 
         except Exception as e:
             print(f"Fit failed: {e}")
@@ -1267,17 +1428,19 @@ def create_trf_redshift_plot(
 
     if save_path is not None:
         from pathlib import Path as _P
+
         save_path = _P(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         dpi = 300 if save_path.suffix.lower() in [".png", ".jpg"] else 150
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight",
-                    facecolor="white", edgecolor="none")
+        plt.savefig(
+            save_path, dpi=dpi, bbox_inches="tight", facecolor="white", edgecolor="none"
+        )
 
     return fig, df_plot
 
 
-
 # ── IRX-beta reference curves ───────────────────────────────────────────────
+
 
 def _meurer99_irx(beta):
     """Meurer+99 IRX-beta relation (starburst/MW-like)."""
@@ -1294,6 +1457,7 @@ def _smc_irx(beta):
 
 
 # ── IRX-beta plot ───────────────────────────────────────────────────────────
+
 
 def create_lir_luv_beta_plot(
     wrapper,
@@ -1378,6 +1542,7 @@ def create_lir_luv_beta_plot(
         props = sed.bin_properties
         if isinstance(props, str):
             import ast
+
             try:
                 props = ast.literal_eval(props)
             except (ValueError, SyntaxError):
@@ -1422,36 +1587,42 @@ def create_lir_luv_beta_plot(
         if l_ir <= 0:
             continue
 
-        l_uv_linear = 10 ** luv_val
+        l_uv_linear = 10**luv_val
         irx = l_ir / l_uv_linear
 
-        rows.append({
-            "beta_uv": beta_bin,
-            "l_uv": luv_val,
-            "redshift": z_bin if z_bin is not None else sed.median_redshift,
-            "stellar_mass": mass_val if mass_val is not None else np.nan,
-            "irx": irx,
-            "l_ir": l_ir,
-            "n_sources": sed.n_sources,
-            "tier": tier,
-            "_luv_source": luv_source,
-            "_beta_source": beta_source,
-            # Store bin edges for grouping
-            **{f"_bin_{dim}": f"{lo}_{hi}"
-               for dim, (lo, hi) in bins.items()},
-        })
+        rows.append(
+            {
+                "beta_uv": beta_bin,
+                "l_uv": luv_val,
+                "redshift": z_bin if z_bin is not None else sed.median_redshift,
+                "stellar_mass": mass_val if mass_val is not None else np.nan,
+                "irx": irx,
+                "l_ir": l_ir,
+                "n_sources": sed.n_sources,
+                "tier": tier,
+                "_luv_source": luv_source,
+                "_beta_source": beta_source,
+                # Store bin edges for grouping
+                **{f"_bin_{dim}": f"{lo}_{hi}" for dim, (lo, hi) in bins.items()},
+            }
+        )
 
     if not rows:
         # Diagnostic: what did we find?
         sample_id = list(pr.sed_results.keys())[0] if pr.sed_results else "N/A"
         sample_sed = list(pr.sed_results.values())[0] if pr.sed_results else None
         sample_bins = _parse_bins(sample_id) if sample_id != "N/A" else {}
-        sample_props = (sample_sed.bin_properties
-                        if sample_sed and sample_sed.bin_properties else {})
+        sample_props = (
+            sample_sed.bin_properties
+            if sample_sed and sample_sed.bin_properties
+            else {}
+        )
         print(f"No populations with both beta_UV and L_UV data")
         print(f"  Sample population ID: {sample_id}")
         print(f"  Parsed binning dims: {list(sample_bins.keys())}")
-        print(f"  bin_properties keys: {list(sample_props.keys()) if isinstance(sample_props, dict) else type(sample_props).__name__}")
+        print(
+            f"  bin_properties keys: {list(sample_props.keys()) if isinstance(sample_props, dict) else type(sample_props).__name__}"
+        )
         print(f"  Need: 'beta' in binning dims + 'l_uv' in bin_properties or binning")
         return None
 
@@ -1459,10 +1630,14 @@ def create_lir_luv_beta_plot(
     n_luv_props = sum(1 for r in rows if r.get("_luv_source") == "bin_properties")
     n_beta_props = sum(1 for r in rows if r.get("_beta_source") == "bin_properties")
     n_total = len(rows)
-    print(f"  beta_UV source: {n_beta_props}/{n_total} from bin_properties, "
-          f"{n_total - n_beta_props} from bin center")
-    print(f"  L_UV source: {n_luv_props}/{n_total} from bin_properties, "
-          f"{n_total - n_luv_props} from bin center")
+    print(
+        f"  beta_UV source: {n_beta_props}/{n_total} from bin_properties, "
+        f"{n_total - n_beta_props} from bin center"
+    )
+    print(
+        f"  L_UV source: {n_luv_props}/{n_total} from bin_properties, "
+        f"{n_total - n_luv_props} from bin center"
+    )
 
     df = pd.DataFrame(rows)
     df = df.drop(columns=["_luv_source", "_beta_source"], errors="ignore")
@@ -1493,7 +1668,11 @@ def create_lir_luv_beta_plot(
         print(f"  Grouping by: {[c.replace('_bin_', '') for c in group_cols]}")
 
         def _weighted_agg(grp):
-            w = grp[weight_by].values if weight_by and weight_by in grp.columns else np.ones(len(grp))
+            w = (
+                grp[weight_by].values
+                if weight_by and weight_by in grp.columns
+                else np.ones(len(grp))
+            )
             w = np.where(np.isfinite(w) & (w > 0), w, 1.0)
             w_sum = w.sum()
 
@@ -1513,10 +1692,16 @@ def create_lir_luv_beta_plot(
                     else:
                         result[col] = np.nan
             result["n_pops"] = len(grp)
-            result["n_sources"] = grp["n_sources"].sum() if "n_sources" in grp.columns else len(grp)
+            result["n_sources"] = (
+                grp["n_sources"].sum() if "n_sources" in grp.columns else len(grp)
+            )
             return pd.Series(result)
 
-        df_avg = df.groupby(group_cols).apply(_weighted_agg, include_groups=False).reset_index(drop=True)
+        df_avg = (
+            df.groupby(group_cols)
+            .apply(_weighted_agg, include_groups=False)
+            .reset_index(drop=True)
+        )
         n_pre = len(df)
         df = df_avg
         df["irx_std"] = df["irx_std"].fillna(0)
@@ -1525,8 +1710,10 @@ def create_lir_luv_beta_plot(
         print(f"  {n_pre} → {len(df)} averaged points{wt_label}")
 
     # Clean up internal columns
-    df = df.drop(columns=[c for c in df.columns if c.startswith("_bin_") or c == "_dummy"],
-                 errors="ignore")
+    df = df.drop(
+        columns=[c for c in df.columns if c.startswith("_bin_") or c == "_dummy"],
+        errors="ignore",
+    )
 
     # ── prepare plot arrays ──────────────────────────────────────────
     beta_vals = df["beta_uv"].values
@@ -1564,29 +1751,60 @@ def create_lir_luv_beta_plot(
     valid = np.isfinite(color_vals)
     if np.any(valid):
         sc = ax.scatter(
-            beta_vals, irx_vals, c=color_vals,
-            cmap=cmap_name, s=80, alpha=0.85,
-            edgecolors="k", linewidth=0.5, zorder=3,
+            beta_vals,
+            irx_vals,
+            c=color_vals,
+            cmap=cmap_name,
+            s=80,
+            alpha=0.85,
+            edgecolors="k",
+            linewidth=0.5,
+            zorder=3,
         )
         cbar = plt.colorbar(sc, ax=ax, shrink=0.8)
         cbar.set_label(color_label, fontsize=13)
 
         if average_over and show_errors and irx_errs is not None:
             ax.errorbar(
-                beta_vals, irx_vals, yerr=irx_errs,
-                fmt="none", color="gray", alpha=0.4,
-                capsize=2, zorder=1,
+                beta_vals,
+                irx_vals,
+                yerr=irx_errs,
+                fmt="none",
+                color="gray",
+                alpha=0.4,
+                capsize=2,
+                zorder=1,
             )
     else:
-        ax.scatter(beta_vals, irx_vals, s=80, alpha=0.85,
-                   edgecolors="k", linewidth=0.5, zorder=3)
+        ax.scatter(
+            beta_vals,
+            irx_vals,
+            s=80,
+            alpha=0.85,
+            edgecolors="k",
+            linewidth=0.5,
+            zorder=3,
+        )
 
     # ── reference curves ─────────────────────────────────────────────
     beta_model = np.linspace(-2.5, 1.5, 100)
-    ax.plot(beta_model, _meurer99_irx(beta_model), "k--", lw=2, alpha=0.7,
-            label="Meurer+99 (MW-like)")
-    ax.plot(beta_model, _smc_irx(beta_model), "-.", color="brown", lw=2,
-            alpha=0.7, label="SMC-like (McLure+18)")
+    ax.plot(
+        beta_model,
+        _meurer99_irx(beta_model),
+        "k--",
+        lw=2,
+        alpha=0.7,
+        label="Meurer+99 (MW-like)",
+    )
+    ax.plot(
+        beta_model,
+        _smc_irx(beta_model),
+        "-.",
+        color="brown",
+        lw=2,
+        alpha=0.7,
+        label="SMC-like (McLure+18)",
+    )
 
     ax.legend(loc="upper left", fontsize=11, framealpha=0.9)
 
@@ -1594,7 +1812,7 @@ def create_lir_luv_beta_plot(
     ax.set_ylabel("IRX  (L_IR / L_UV)", fontsize=14)
     ax.set_yscale("log")
     ax.set_xlim(-2.2, 1.2)
-    ax.set_ylim(10 ** (-1.2), 10 ** 3.5)
+    ax.set_ylim(10 ** (-1.2), 10**3.5)
     ax.grid(True, alpha=0.2)
     ax.set_title(f"IRX–beta  ({len(df)} populations, tier ≥ {min_tier})", fontsize=15)
 
@@ -1602,16 +1820,19 @@ def create_lir_luv_beta_plot(
 
     if save_path is not None:
         from pathlib import Path as _P
+
         save_path = _P(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         dpi = 300 if save_path.suffix.lower() in [".png", ".jpg"] else 150
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight",
-                    facecolor="white", edgecolor="none")
+        plt.savefig(
+            save_path, dpi=dpi, bbox_inches="tight", facecolor="white", edgecolor="none"
+        )
 
     return fig
 
 
 # ── Schreiber+2015 Main Sequence ─────────────────────────────────────────
+
 
 def _schreiber15_log_sfr(log_mass, z):
     """
@@ -1646,6 +1867,7 @@ def _lir_to_sfr(lir):
 
 
 # ── L_IR vs Stellar Mass plot ────────────────────────────────────────────
+
 
 def create_lir_mass_plot(
     wrapper,
@@ -1735,6 +1957,7 @@ def create_lir_mass_plot(
         props = sed.bin_properties
         if isinstance(props, str):
             import ast as _ast
+
             try:
                 props = _ast.literal_eval(props)
             except (ValueError, SyntaxError):
@@ -1777,17 +2000,19 @@ def create_lir_mass_plot(
         if not np.isfinite(mass_val) or mass_val < 7:
             continue
 
-        rows.append({
-            "stellar_mass": mass_val,
-            "l_ir": l_ir,
-            "l_ir_err": l_ir_err or 0,
-            "sfr": _lir_to_sfr(l_ir),
-            "redshift": z_val,
-            "l_uv": luv_val if luv_val is not None else np.nan,
-            "beta_uv": beta_val if beta_val is not None else np.nan,
-            "n_sources": sed.n_sources,
-            "tier": tier,
-        })
+        rows.append(
+            {
+                "stellar_mass": mass_val,
+                "l_ir": l_ir,
+                "l_ir_err": l_ir_err or 0,
+                "sfr": _lir_to_sfr(l_ir),
+                "redshift": z_val,
+                "l_uv": luv_val if luv_val is not None else np.nan,
+                "beta_uv": beta_val if beta_val is not None else np.nan,
+                "n_sources": sed.n_sources,
+                "tier": tier,
+            }
+        )
 
     if not rows:
         print("No populations with L_IR and stellar mass")
@@ -1824,14 +2049,16 @@ def create_lir_mass_plot(
     elif color_by == "l_uv":
         boundaries = np.arange(
             np.floor(np.nanmin(color_data[valid_color])),
-            np.ceil(np.nanmax(color_data[valid_color])) + 0.5, 0.5,
+            np.ceil(np.nanmax(color_data[valid_color])) + 0.5,
+            0.5,
         )
     elif color_by == "beta_uv":
         boundaries = np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.5])
     else:
         boundaries = np.linspace(
             np.nanmin(color_data[valid_color]),
-            np.nanmax(color_data[valid_color]), 7,
+            np.nanmax(color_data[valid_color]),
+            7,
         )
 
     # Trim to data
@@ -1843,7 +2070,8 @@ def create_lir_mass_plot(
     if len(boundaries) < 2:
         boundaries = np.linspace(
             np.nanmin(color_data[valid_color]),
-            np.nanmax(color_data[valid_color]), 5,
+            np.nanmax(color_data[valid_color]),
+            5,
         )
 
     n_colors = max(len(boundaries) - 1, 1)
@@ -1851,8 +2079,7 @@ def create_lir_mass_plot(
     discrete_cmap = ListedColormap([base_cmap(i) for i in range(n_colors)])
     norm = BoundaryNorm(boundaries, discrete_cmap.N)
     bin_labels = [
-        f"{boundaries[i]:.1f}–{boundaries[i+1]:.1f}"
-        for i in range(len(boundaries) - 1)
+        f"{boundaries[i]:.1f}–{boundaries[i+1]:.1f}" for i in range(len(boundaries) - 1)
     ]
 
     # ── size setup ───────────────────────────────────────────────────
@@ -1861,7 +2088,8 @@ def create_lir_mass_plot(
         if np.any(valid) and data[valid].max() > data[valid].min():
             return np.where(
                 valid,
-                s_min + (s_max - s_min)
+                s_min
+                + (s_max - s_min)
                 * (data - np.nanmin(data[valid]))
                 / (np.nanmax(data[valid]) - np.nanmin(data[valid])),
                 s_min,
@@ -1891,11 +2119,19 @@ def create_lir_mass_plot(
 
     if edge_color_by is not None:
         _edge_configs = {
-            "beta_uv":      ("beta_uv",      "β_UV",            "coolwarm",
-                             np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.5])),
-            "l_uv":         ("l_uv",         "log10(L_UV/L_sun)", "viridis", None),
-            "redshift":     ("redshift",     "Redshift",         "plasma",
-                             np.array([0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0])),
+            "beta_uv": (
+                "beta_uv",
+                "β_UV",
+                "coolwarm",
+                np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.5]),
+            ),
+            "l_uv": ("l_uv", "log10(L_UV/L_sun)", "viridis", None),
+            "redshift": (
+                "redshift",
+                "Redshift",
+                "plasma",
+                np.array([0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0]),
+            ),
         }
         if edge_color_by in _edge_configs:
             _ecol, edge_label, _ecmap, _ebounds = _edge_configs[edge_color_by]
@@ -1906,7 +2142,8 @@ def create_lir_mass_plot(
                 if _ebounds is None:
                     _ebounds = np.arange(
                         np.floor(np.nanmin(_edata[_evalid])),
-                        np.ceil(np.nanmax(_edata[_evalid])) + 0.5, 0.5,
+                        np.ceil(np.nanmax(_edata[_evalid])) + 0.5,
+                        0.5,
                     )
                 _ebounds = _ebounds[
                     (_ebounds >= np.nanmin(_edata[_evalid]) - 0.5)
@@ -1924,10 +2161,16 @@ def create_lir_mass_plot(
     fig, ax = plt.subplots(figsize=figsize)
 
     scatter = ax.scatter(
-        df["stellar_mass"], df[y_col],
-        c=color_data, cmap=discrete_cmap, norm=norm,
-        s=sizes, alpha=0.85,
-        edgecolors=edge_colors, linewidth=edge_lw, zorder=3,
+        df["stellar_mass"],
+        df[y_col],
+        c=color_data,
+        cmap=discrete_cmap,
+        norm=norm,
+        s=sizes,
+        alpha=0.85,
+        edgecolors=edge_colors,
+        linewidth=edge_lw,
+        zorder=3,
     )
 
     if show_errors and y_err_col and y_err_col in df.columns:
@@ -1938,8 +2181,12 @@ def create_lir_mass_plot(
                 df["stellar_mass"].values[valid_err],
                 df[y_col].values[valid_err],
                 yerr=y_err[valid_err],
-                fmt="none", color="gray", alpha=0.3,
-                capsize=2, elinewidth=0.8, zorder=1,
+                fmt="none",
+                color="gray",
+                alpha=0.3,
+                capsize=2,
+                elinewidth=0.8,
+                zorder=1,
             )
 
     # Discrete colorbar
@@ -1956,20 +2203,32 @@ def create_lir_mass_plot(
     if edge_cmap_obj is not None and edge_norm_obj is not None and edge_label:
         _ebounds = edge_norm_obj.boundaries
         from matplotlib.lines import Line2D
+
         edge_handles = []
         for i in range(len(_ebounds) - 1):
             mid = (_ebounds[i] + _ebounds[i + 1]) / 2
             ec = edge_cmap_obj(edge_norm_obj(mid))
             edge_handles.append(
-                Line2D([0], [0], marker="o", color="none",
-                       markeredgecolor=ec, markeredgewidth=2,
-                       markerfacecolor="lightgray", markersize=8,
-                       label=f"{_ebounds[i]:.1f}–{_ebounds[i+1]:.1f}")
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markeredgecolor=ec,
+                    markeredgewidth=2,
+                    markerfacecolor="lightgray",
+                    markersize=8,
+                    label=f"{_ebounds[i]:.1f}–{_ebounds[i+1]:.1f}",
+                )
             )
         _edge_legend = ax.legend(
-            handles=edge_handles, title=f"Edge: {edge_label}",
-            loc="lower left", fontsize=8, title_fontsize=9,
-            framealpha=0.9, ncol=max(1, len(edge_handles) // 4),
+            handles=edge_handles,
+            title=f"Edge: {edge_label}",
+            loc="lower left",
+            fontsize=8,
+            title_fontsize=9,
+            framealpha=0.9,
+            ncol=max(1, len(edge_handles) // 4),
         )
 
     # ── main sequence overlay ────────────────────────────────────────
@@ -1981,15 +2240,13 @@ def create_lir_mass_plot(
         )
 
         # Get unique z bin centers
-        z_centers = sorted(set(
-            round((lo + hi) / 2, 2) for lo, hi in z_bin_edges
-        ))
+        z_centers = sorted(set(round((lo + hi) / 2, 2) for lo, hi in z_bin_edges))
         if not z_centers:
             z_centers = sorted(df["redshift"].unique())
 
         for z_c in z_centers:
             log_sfr_ms = _schreiber15_log_sfr(mass_grid, z_c)
-            sfr_ms = 10 ** log_sfr_ms
+            sfr_ms = 10**log_sfr_ms
 
             if quantity == "sfr":
                 y_ms = sfr_ms
@@ -1999,17 +2256,30 @@ def create_lir_mass_plot(
             # Color to match the redshift colorbar
             ms_color = discrete_cmap(norm(z_c))
             ax.plot(
-                mass_grid, y_ms, "--", color=ms_color, linewidth=1.8,
-                alpha=0.7, zorder=2,
-                label=f"MS z={z_c:.1f}" if z_c == z_centers[0] or z_c == z_centers[-1] else None,
+                mass_grid,
+                y_ms,
+                "--",
+                color=ms_color,
+                linewidth=1.8,
+                alpha=0.7,
+                zorder=2,
+                label=(
+                    f"MS z={z_c:.1f}"
+                    if z_c == z_centers[0] or z_c == z_centers[-1]
+                    else None
+                ),
             )
 
         # Add single legend entry for MS
         from matplotlib.lines import Line2D
+
         ms_handle = Line2D([0], [0], ls="--", color="gray", lw=1.8, alpha=0.7)
         ms_legend = ax.legend(
-            [ms_handle], ["Schreiber+15 MS"],
-            loc="lower right", fontsize=10, framealpha=0.9,
+            [ms_handle],
+            ["Schreiber+15 MS"],
+            loc="lower right",
+            fontsize=10,
+            framealpha=0.9,
         )
         # If edge color legend exists, keep both via add_artist
         if _edge_legend is not None:
@@ -2018,8 +2288,12 @@ def create_lir_mass_plot(
     # ── size legend ──────────────────────────────────────────────────
     if size_label and not isinstance(sizes, (int, float)):
         ax.text(
-            0.02, 0.02, f"Marker size ~ {size_label}",
-            transform=ax.transAxes, fontsize=9, alpha=0.7,
+            0.02,
+            0.02,
+            f"Marker size ~ {size_label}",
+            transform=ax.transAxes,
+            fontsize=9,
+            alpha=0.7,
             verticalalignment="bottom",
             bbox=dict(boxstyle="round", facecolor="white", alpha=0.7),
         )
@@ -2042,16 +2316,19 @@ def create_lir_mass_plot(
 
     if save_path is not None:
         from pathlib import Path as _P
+
         save_path = _P(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         dpi = 300 if save_path.suffix.lower() in [".png", ".jpg"] else 150
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight",
-                    facecolor="white", edgecolor="none")
+        plt.savefig(
+            save_path, dpi=dpi, bbox_inches="tight", facecolor="white", edgecolor="none"
+        )
 
     return fig, df
 
 
 # ── Gas mass scaling and DTG ─────────────────────────────────────────────
+
 
 def _tacconi20_log_mu_gas(log_mass, z, delta_ms=1.0):
     """
@@ -2079,15 +2356,18 @@ def _tacconi20_log_mu_gas(log_mass, z, delta_ms=1.0):
 
     # Tacconi+2020 Table 3, "all methods" row
     A = 0.06
-    B = -3.33      # curvature in (1+z)
-    C = 0.66       # center of z curvature
-    D = 0.53       # δMS slope
-    E = -0.35      # M* slope
-    F = 10.7       # M* pivot
+    B = -3.33  # curvature in (1+z)
+    C = 0.66  # center of z curvature
+    D = 0.53  # δMS slope
+    E = -0.35  # M* slope
+    F = 10.7  # M* pivot
 
-    log_mu = A + B * (np.log10(1 + z) - C) ** 2 \
-             + D * np.log10(np.maximum(delta_ms, 0.01)) \
-             + E * (log_mass - F)
+    log_mu = (
+        A
+        + B * (np.log10(1 + z) - C) ** 2
+        + D * np.log10(np.maximum(delta_ms, 0.01))
+        + E * (log_mass - F)
+    )
 
     return log_mu
 
@@ -2115,7 +2395,7 @@ def _estimate_gas_mass(log_mass, z, sfr, log_sfr_ms=None):
     if log_sfr_ms is None:
         log_sfr_ms = _schreiber15_log_sfr(log_mass, z)
 
-    sfr_ms = 10 ** log_sfr_ms
+    sfr_ms = 10**log_sfr_ms
     delta_ms = max(sfr / sfr_ms, 0.01) if sfr_ms > 0 else 1.0
 
     log_mu = _tacconi20_log_mu_gas(log_mass, z, delta_ms)
@@ -2125,6 +2405,7 @@ def _estimate_gas_mass(log_mass, z, sfr, log_sfr_ms=None):
 
 
 # ── T_dust vs DTG plot ───────────────────────────────────────────────────
+
 
 def create_tdust_dtg_plot(
     wrapper,
@@ -2207,6 +2488,7 @@ def create_tdust_dtg_plot(
         props = sed.bin_properties
         if isinstance(props, str):
             import ast as _ast
+
             try:
                 props = _ast.literal_eval(props)
             except (ValueError, SyntaxError):
@@ -2263,23 +2545,25 @@ def create_tdust_dtg_plot(
 
         dtg = m_dust / m_gas
 
-        rows.append({
-            "T_rest": sed.dust_temperature_rest_frame,
-            "T_error": sed.dust_temperature_error,
-            "log_dtg": np.log10(dtg),
-            "dtg": dtg,
-            "m_dust": m_dust,
-            "m_gas": m_gas,
-            "redshift": z_val,
-            "stellar_mass": mass_val,
-            "l_ir": l_ir,
-            "sfr": sfr,
-            "l_uv": luv_val if luv_val is not None else np.nan,
-            "beta_uv": beta_val if beta_val is not None else np.nan,
-            "n_sources": sed.n_sources,
-            "tier": tier,
-            **{k: v for k, v in _extra.items()},
-        })
+        rows.append(
+            {
+                "T_rest": sed.dust_temperature_rest_frame,
+                "T_error": sed.dust_temperature_error,
+                "log_dtg": np.log10(dtg),
+                "dtg": dtg,
+                "m_dust": m_dust,
+                "m_gas": m_gas,
+                "redshift": z_val,
+                "stellar_mass": mass_val,
+                "l_ir": l_ir,
+                "sfr": sfr,
+                "l_uv": luv_val if luv_val is not None else np.nan,
+                "beta_uv": beta_val if beta_val is not None else np.nan,
+                "n_sources": sed.n_sources,
+                "tier": tier,
+                **{k: v for k, v in _extra.items()},
+            }
+        )
 
     if not rows:
         print("No populations with both T_dust and M_dust")
@@ -2294,18 +2578,18 @@ def create_tdust_dtg_plot(
 
     # ── color setup ──────────────────────────────────────────────────
     color_configs = {
-        "redshift":      ("redshift",      "Redshift",               "plasma"),
-        "stellar_mass":  ("stellar_mass",  "log10(M*/M_sun)",        "viridis"),
-        "l_ir":          ("l_ir",          "log10(L_IR/L_sun)",      "plasma"),
-        "metallicity":   ("metallicity",   "Metallicity (Z)",        "viridis"),
-        "ebv":           ("ebv",           "E(B-V)",                 "YlOrRd"),
-        "log_sigma_sfr": ("log_sigma_sfr", "log Sigma_SFR",         "inferno"),
-        "sigma_sfr":     ("log_sigma_sfr", "log Sigma_SFR",         "inferno"),
-        "log_ssfr":      ("log_ssfr",      "log sSFR (yr^-1)",      "RdYlBu_r"),
-        "ssfr":          ("log_ssfr",      "log sSFR (yr^-1)",      "RdYlBu_r"),
-        "log_delta_ms":  ("log_delta_ms",  "log delta_MS",          "RdBu_r"),
-        "delta_ms":      ("log_delta_ms",  "log delta_MS",          "RdBu_r"),
-        "beta_uv":       ("beta_uv",       "beta_UV",               "coolwarm"),
+        "redshift": ("redshift", "Redshift", "plasma"),
+        "stellar_mass": ("stellar_mass", "log10(M*/M_sun)", "viridis"),
+        "l_ir": ("l_ir", "log10(L_IR/L_sun)", "plasma"),
+        "metallicity": ("metallicity", "Metallicity (Z)", "viridis"),
+        "ebv": ("ebv", "E(B-V)", "YlOrRd"),
+        "log_sigma_sfr": ("log_sigma_sfr", "log Sigma_SFR", "inferno"),
+        "sigma_sfr": ("log_sigma_sfr", "log Sigma_SFR", "inferno"),
+        "log_ssfr": ("log_ssfr", "log sSFR (yr^-1)", "RdYlBu_r"),
+        "ssfr": ("log_ssfr", "log sSFR (yr^-1)", "RdYlBu_r"),
+        "log_delta_ms": ("log_delta_ms", "log delta_MS", "RdBu_r"),
+        "delta_ms": ("log_delta_ms", "log delta_MS", "RdBu_r"),
+        "beta_uv": ("beta_uv", "beta_UV", "coolwarm"),
     }
 
     if color_by in color_configs:
@@ -2315,8 +2599,10 @@ def create_tdust_dtg_plot(
         elif col_name in df.columns:
             color_data = df[col_name].values.astype(float)
         else:
-            print(f"  color_by='{color_by}' maps to '{col_name}' "
-                  f"which is not in data. Need it in bin_property_columns.")
+            print(
+                f"  color_by='{color_by}' maps to '{col_name}' "
+                f"which is not in data. Need it in bin_property_columns."
+            )
             print(f"  Available: {[c for c in df.columns if not c.startswith('_')]}")
             color_data = df["redshift"].values.astype(float)
             color_label = "Redshift"
@@ -2335,21 +2621,25 @@ def create_tdust_dtg_plot(
 
     # Discrete boundaries
     _boundary_defaults = {
-        "redshift":      np.array([0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0]),
-        "stellar_mass":  np.array([8.5, 9.5, 10.0, 10.3, 10.6, 11.0, 12.0]),
-        "metallicity":   np.array([0.002, 0.005, 0.01, 0.02, 0.04]),
-        "ebv":           np.array([0.0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8]),
+        "redshift": np.array([0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0]),
+        "stellar_mass": np.array([8.5, 9.5, 10.0, 10.3, 10.6, 11.0, 12.0]),
+        "metallicity": np.array([0.002, 0.005, 0.01, 0.02, 0.04]),
+        "ebv": np.array([0.0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.8]),
         "log_sigma_sfr": np.array([-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0]),
-        "log_ssfr":      np.array([-11.0, -10.0, -9.5, -9.0, -8.5, -8.0]),
-        "log_delta_ms":  np.array([-1.0, -0.3, 0.0, 0.3, 0.6, 1.0]),
-        "beta_uv":       np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.5]),
+        "log_ssfr": np.array([-11.0, -10.0, -9.5, -9.0, -8.5, -8.0]),
+        "log_delta_ms": np.array([-1.0, -0.3, 0.0, 0.3, 0.6, 1.0]),
+        "beta_uv": np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.5]),
     }
 
     if color_by in _boundary_defaults:
         boundaries = _boundary_defaults[color_by]
     elif color_by in ("sigma_sfr", "ssfr", "delta_ms"):
         # Aliases
-        alias_map = {"sigma_sfr": "log_sigma_sfr", "ssfr": "log_ssfr", "delta_ms": "log_delta_ms"}
+        alias_map = {
+            "sigma_sfr": "log_sigma_sfr",
+            "ssfr": "log_ssfr",
+            "delta_ms": "log_delta_ms",
+        }
         boundaries = _boundary_defaults.get(alias_map[color_by], None)
     else:
         boundaries = None
@@ -2357,7 +2647,8 @@ def create_tdust_dtg_plot(
     if boundaries is None:
         boundaries = np.arange(
             np.floor(np.nanmin(color_data[valid_color])),
-            np.ceil(np.nanmax(color_data[valid_color])) + 0.5, 0.5,
+            np.ceil(np.nanmax(color_data[valid_color])) + 0.5,
+            0.5,
         )
 
     boundaries = boundaries[
@@ -2367,7 +2658,8 @@ def create_tdust_dtg_plot(
     if len(boundaries) < 2:
         boundaries = np.linspace(
             np.nanmin(color_data[valid_color]),
-            np.nanmax(color_data[valid_color]), 5,
+            np.nanmax(color_data[valid_color]),
+            5,
         )
 
     n_colors = max(len(boundaries) - 1, 1)
@@ -2375,25 +2667,36 @@ def create_tdust_dtg_plot(
     discrete_cmap = ListedColormap([base_cmap(i) for i in range(n_colors)])
     norm = BoundaryNorm(boundaries, discrete_cmap.N)
     bin_labels = [
-        f"{boundaries[i]:.1f}–{boundaries[i+1]:.1f}"
-        for i in range(len(boundaries) - 1)
+        f"{boundaries[i]:.1f}–{boundaries[i+1]:.1f}" for i in range(len(boundaries) - 1)
     ]
 
     # ── plot ──────────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=figsize)
 
     scatter = ax.scatter(
-        df["log_dtg"], df["T_rest"],
-        c=color_data, cmap=discrete_cmap, norm=norm,
-        s=80, alpha=0.85, edgecolors="k", linewidth=0.5, zorder=3,
+        df["log_dtg"],
+        df["T_rest"],
+        c=color_data,
+        cmap=discrete_cmap,
+        norm=norm,
+        s=80,
+        alpha=0.85,
+        edgecolors="k",
+        linewidth=0.5,
+        zorder=3,
     )
 
     if "T_error" in df.columns:
         ax.errorbar(
-            df["log_dtg"], df["T_rest"],
+            df["log_dtg"],
+            df["T_rest"],
             yerr=df["T_error"],
-            fmt="none", color="gray", alpha=0.3,
-            capsize=2, elinewidth=0.8, zorder=1,
+            fmt="none",
+            color="gray",
+            alpha=0.3,
+            capsize=2,
+            elinewidth=0.8,
+            zorder=1,
         )
 
     # Discrete colorbar
@@ -2411,14 +2714,14 @@ def create_tdust_dtg_plot(
     if show_parente:
         _beta_emis = 1.8
         _exp = 1.0 / (4 + _beta_emis)  # ~ 0.172
-        _C_cal = 25.0 / (0.01 ** 0.286 / 0.01) ** _exp  # calibration constant
+        _C_cal = 25.0 / (0.01**0.286 / 0.01) ** _exp  # calibration constant
 
         log_dtg_grid = np.linspace(
             df["log_dtg"].min() - 0.2,
             df["log_dtg"].max() + 0.2,
             100,
         )
-        dtg_grid = 10 ** log_dtg_grid
+        dtg_grid = 10**log_dtg_grid
 
         # Lines of constant Sigma_SFR
         sigma_sfr_values = [0.1, 1.0, 10.0, 100.0, 1000.0]
@@ -2439,17 +2742,24 @@ def create_tdust_dtg_plot(
         for sig, label, (ls, lw) in zip(
             sigma_sfr_values, sigma_sfr_labels, sigma_sfr_styles
         ):
-            T_model = _C_cal * (sig ** 0.286 / dtg_grid) ** _exp
+            T_model = _C_cal * (sig**0.286 / dtg_grid) ** _exp
             color = "darkred" if sig >= 1000 else "gray"
             alpha = 0.8 if sig >= 1000 else 0.6
             ax.plot(
-                log_dtg_grid, T_model, ls=ls, lw=lw,
-                color=color, alpha=alpha, zorder=2,
+                log_dtg_grid,
+                T_model,
+                ls=ls,
+                lw=lw,
+                color=color,
+                alpha=alpha,
+                zorder=2,
                 label=label,
             )
 
         ax.legend(
-            loc="upper right", fontsize=8, framealpha=0.9,
+            loc="upper right",
+            fontsize=8,
+            framealpha=0.9,
             title="Parente+26 model\nM☉/yr/kpc²",
             title_fontsize=8,
         )
@@ -2474,16 +2784,19 @@ def create_tdust_dtg_plot(
 
     if save_path is not None:
         from pathlib import Path as _P
+
         save_path = _P(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         dpi = 300 if save_path.suffix.lower() in [".png", ".jpg"] else 150
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight",
-                    facecolor="white", edgecolor="none")
+        plt.savefig(
+            save_path, dpi=dpi, bbox_inches="tight", facecolor="white", edgecolor="none"
+        )
 
     return fig, df
 
 
 # ── NUVrJ diagnostic plot ────────────────────────────────────────────────
+
 
 def create_nuvrj_plot(
     source,
@@ -2576,17 +2889,11 @@ def create_nuvrj_plot(
             ["mabs_nuv", "MNUV", "restframe_NUV", "NUV_abs", "abs_mag_nuv"], "NUV"
         )
     if r_col is None:
-        r_col = _find_col(
-            ["mabs_r", "Mr", "restframe_r", "r_abs", "abs_mag_r"], "r"
-        )
+        r_col = _find_col(["mabs_r", "Mr", "restframe_r", "r_abs", "abs_mag_r"], "r")
     if j_col is None:
-        j_col = _find_col(
-            ["mabs_j", "MJ", "restframe_J", "j_abs", "abs_mag_j"], "J"
-        )
+        j_col = _find_col(["mabs_j", "MJ", "restframe_J", "j_abs", "abs_mag_j"], "J")
     if z_col is None:
-        z_col = _find_col(
-            ["redshift", "zpdf_med", "zfinal", "z_best", "z"], "redshift"
-        )
+        z_col = _find_col(["redshift", "zpdf_med", "zfinal", "z_best", "z"], "redshift")
 
     # Report what was found
     print(f"NUVrJ columns: NUV={nuv_col}, r={r_col}, J={j_col}, z={z_col}")
@@ -2595,9 +2902,13 @@ def create_nuvrj_plot(
     for col, label in [(nuv_col, "NUV"), (r_col, "r"), (j_col, "J")]:
         if col is None or col not in catalog_df.columns:
             # Show candidates to help debug
-            mag_cols = [c for c in cols if any(
-                k in c.lower() for k in ["mag", "abs", "mabs", "nuv", "_r", "_j"]
-            )]
+            mag_cols = [
+                c
+                for c in cols
+                if any(
+                    k in c.lower() for k in ["mag", "abs", "mabs", "nuv", "_r", "_j"]
+                )
+            ]
             print(f"Column for {label} not found (tried '{col}').")
             print(f"  Candidate columns: {mag_cols[:20]}")
             return None
@@ -2663,8 +2974,12 @@ def create_nuvrj_plot(
                     continue
                 color, label, alpha = pop_colors.get(cls, ("gray", f"class {cls}", 0.2))
                 ax.scatter(
-                    x[clsmask], y[clsmask],
-                    c=color, s=2, alpha=alpha, rasterized=True,
+                    x[clsmask],
+                    y[clsmask],
+                    c=color,
+                    s=2,
+                    alpha=alpha,
+                    rasterized=True,
                     label=f"{label} ({clsmask.sum():,})",
                 )
         else:
@@ -2680,8 +2995,7 @@ def create_nuvrj_plot(
         rj_fill = np.linspace(-1, 3, 100)
         y_fill = np.maximum(3.0 * rj_fill + 1.0, 3.1)
         ax.fill_between(rj_fill, y_fill, 8, color="red", alpha=0.05)
-        ax.text(1.5, 5.5, "Quiescent", fontsize=9, color="red", alpha=0.7,
-                ha="center")
+        ax.text(1.5, 5.5, "Quiescent", fontsize=9, color="red", alpha=0.7, ha="center")
 
         ax.set_xlim(-0.5, 2.5)
         ax.set_ylim(0, 7)
@@ -2700,16 +3014,19 @@ def create_nuvrj_plot(
 
     if save_path is not None:
         from pathlib import Path as _P
+
         save_path = _P(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         dpi = 200 if save_path.suffix.lower() in [".png", ".jpg"] else 150
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight",
-                    facecolor="white", edgecolor="none")
+        plt.savefig(
+            save_path, dpi=dpi, bbox_inches="tight", facecolor="white", edgecolor="none"
+        )
 
     return fig
 
 
 # ── SFR comparison plot ──────────────────────────────────────────────────
+
 
 def create_sfr_comparison_plot(
     wrapper,
@@ -2791,6 +3108,7 @@ def create_sfr_comparison_plot(
         props = sed.bin_properties
         if isinstance(props, str):
             import ast as _ast
+
             try:
                 props = _ast.literal_eval(props)
             except (ValueError, SyntaxError):
@@ -2818,7 +3136,7 @@ def create_sfr_comparison_plot(
 
         # Convert if log
         if catalog_sfr_is_log:
-            sfr_catalog = 10 ** sfr_catalog
+            sfr_catalog = 10**sfr_catalog
 
         if sfr_catalog <= 0 or not np.isfinite(sfr_catalog):
             continue
@@ -2835,25 +3153,31 @@ def create_sfr_comparison_plot(
         if mass_val is None:
             mass_val = getattr(sed, "median_mass", np.nan)
 
-        rows.append({
-            "sfr_stacked": sfr_stacked,
-            "sfr_catalog": sfr_catalog,
-            "redshift": z_val,
-            "stellar_mass": mass_val if mass_val is not None else np.nan,
-            "beta_uv": beta_val if beta_val is not None else np.nan,
-            "l_uv": luv_val if luv_val is not None else np.nan,
-            "tier": tier,
-        })
+        rows.append(
+            {
+                "sfr_stacked": sfr_stacked,
+                "sfr_catalog": sfr_catalog,
+                "redshift": z_val,
+                "stellar_mass": mass_val if mass_val is not None else np.nan,
+                "beta_uv": beta_val if beta_val is not None else np.nan,
+                "l_uv": luv_val if luv_val is not None else np.nan,
+                "tier": tier,
+            }
+        )
 
     if not rows:
         print("No populations with both stacked and catalog SFR")
         # Diagnostic
         sample_sed = list(pr.sed_results.values())[0] if pr.sed_results else None
         if sample_sed and sample_sed.bin_properties:
-            print(f"  bin_properties keys: {list(sample_sed.bin_properties.keys()) if isinstance(sample_sed.bin_properties, dict) else type(sample_sed.bin_properties)}")
+            print(
+                f"  bin_properties keys: {list(sample_sed.bin_properties.keys()) if isinstance(sample_sed.bin_properties, dict) else type(sample_sed.bin_properties)}"
+            )
             print(f"  Looking for key containing '{catalog_sfr_key}'")
         else:
-            print("  No bin_properties found — add sfr column to bin_property_columns in TOML")
+            print(
+                "  No bin_properties found — add sfr column to bin_property_columns in TOML"
+            )
         return None, None
 
     df = pd.DataFrame(rows)
@@ -2861,12 +3185,24 @@ def create_sfr_comparison_plot(
 
     # ── color setup ──────────────────────────────────────────────────
     color_configs = {
-        "redshift":     ("redshift",     "Redshift",          "plasma",
-                         np.array([0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0])),
-        "stellar_mass": ("stellar_mass", "log10(M*/M_sun)",     "viridis",
-                         np.array([8.5, 9.5, 10.0, 10.3, 10.6, 11.0, 12.0])),
-        "beta_uv":      ("beta_uv",      "β_UV",             "coolwarm",
-                         np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.5])),
+        "redshift": (
+            "redshift",
+            "Redshift",
+            "plasma",
+            np.array([0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 6.0]),
+        ),
+        "stellar_mass": (
+            "stellar_mass",
+            "log10(M*/M_sun)",
+            "viridis",
+            np.array([8.5, 9.5, 10.0, 10.3, 10.6, 11.0, 12.0]),
+        ),
+        "beta_uv": (
+            "beta_uv",
+            "β_UV",
+            "coolwarm",
+            np.array([-2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.5]),
+        ),
     }
 
     col_name, color_label, cmap_name, boundaries = color_configs.get(
@@ -2882,7 +3218,8 @@ def create_sfr_comparison_plot(
     if len(boundaries) < 2:
         boundaries = np.linspace(
             np.nanmin(color_data[valid_color]),
-            np.nanmax(color_data[valid_color]), 5,
+            np.nanmax(color_data[valid_color]),
+            5,
         )
 
     n_colors = max(len(boundaries) - 1, 1)
@@ -2890,17 +3227,23 @@ def create_sfr_comparison_plot(
     discrete_cmap = ListedColormap([base_cmap(i) for i in range(n_colors)])
     norm = BoundaryNorm(boundaries, discrete_cmap.N)
     bin_labels = [
-        f"{boundaries[i]:.1f}–{boundaries[i+1]:.1f}"
-        for i in range(len(boundaries) - 1)
+        f"{boundaries[i]:.1f}–{boundaries[i+1]:.1f}" for i in range(len(boundaries) - 1)
     ]
 
     # ── plot ──────────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=figsize)
 
     scatter = ax.scatter(
-        df["sfr_catalog"], df["sfr_stacked"],
-        c=color_data, cmap=discrete_cmap, norm=norm,
-        s=60, alpha=0.85, edgecolors="k", linewidth=0.5, zorder=3,
+        df["sfr_catalog"],
+        df["sfr_stacked"],
+        c=color_data,
+        cmap=discrete_cmap,
+        norm=norm,
+        s=60,
+        alpha=0.85,
+        edgecolors="k",
+        linewidth=0.5,
+        zorder=3,
     )
 
     # 1:1 line
@@ -2920,11 +3263,14 @@ def create_sfr_comparison_plot(
         med_ratio = np.median(ratio[valid_r])
         scatter_dex = np.std(log_ratio[valid_r])
         ax.text(
-            0.05, 0.95,
+            0.05,
+            0.95,
             f"median SFR_stack/SFR_cat = {med_ratio:.2f}\n"
             f"scatter = {scatter_dex:.2f} dex\n"
             f"N = {len(df)}",
-            transform=ax.transAxes, fontsize=10, va="top",
+            transform=ax.transAxes,
+            fontsize=10,
+            va="top",
             bbox=dict(boxstyle="round", fc="white", alpha=0.9),
         )
 
@@ -2955,10 +3301,12 @@ def create_sfr_comparison_plot(
 
     if save_path is not None:
         from pathlib import Path as _P
+
         save_path = _P(save_path)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         dpi = 300 if save_path.suffix.lower() in [".png", ".jpg"] else 150
-        plt.savefig(save_path, dpi=dpi, bbox_inches="tight",
-                    facecolor="white", edgecolor="none")
+        plt.savefig(
+            save_path, dpi=dpi, bbox_inches="tight", facecolor="white", edgecolor="none"
+        )
 
     return fig, df

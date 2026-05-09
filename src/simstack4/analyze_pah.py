@@ -52,9 +52,9 @@ from pathlib import Path
 # ── PAH feature catalog ─────────────────────────────────────────────
 PAH_FEATURES = {
     # name: (rest_wavelength_um, relative_strength, fwhm_um)
-    "6.2 C-C":  (6.2,  0.40, 0.19),
-    "7.7 C-C":  (7.7,  1.00, 0.70),  # strongest
-    "8.6 C-H":  (8.6,  0.30, 0.34),
+    "6.2 C-C": (6.2, 0.40, 0.19),
+    "7.7 C-C": (7.7, 1.00, 0.70),  # strongest
+    "8.6 C-H": (8.6, 0.30, 0.34),
     "11.3 C-H": (11.3, 0.60, 0.24),
     "12.7 C-H": (12.7, 0.30, 0.45),
 }
@@ -136,8 +136,9 @@ def adaptive_pah_zbins(
         for name, (values, bins) in secondary.items():
             vals = np.asarray(values, dtype=float)
             bins = list(bins)
-            sec_dims.append({"name": name, "values": vals, "bins": bins,
-                             "n_bins": len(bins) - 1})
+            sec_dims.append(
+                {"name": name, "values": vals, "bins": bins, "n_bins": len(bins) - 1}
+            )
 
     def _min_count_in_zbin(z_lo, z_hi):
         """Count sources in the sparsest cell for a given z-bin."""
@@ -229,29 +230,35 @@ def adaptive_pah_zbins(
         print(f"  {n_bins} z-bins from z={z_min} to z={z_max}")
         print(f"  Total sources in range: {n_total:,}")
         if sec_dims:
-            dim_str = " x ".join(
-                f"{sd['name']}({sd['n_bins']})" for sd in sec_dims)
+            dim_str = " x ".join(f"{sd['name']}({sd['n_bins']})" for sd in sec_dims)
             print(f"  Secondary dimensions: {dim_str}")
             print(f"  Cells per z-bin: {n_cells_per_zbin}")
         print(f"  Min sources per cell: {min_sources}")
         print(f"  dz range: [{min_dz}, {max_dz}]")
         print()
 
-        features = {6.2: "6.2 C-C", 7.7: "7.7 C-C*", 8.6: "8.6 C-H",
-                     11.3: "11.3 C-H", 12.7: "12.7 C-H"}
+        features = {
+            6.2: "6.2 C-C",
+            7.7: "7.7 C-C*",
+            8.6: "8.6 C-H",
+            11.3: "11.3 C-H",
+            12.7: "12.7 C-H",
+        }
 
-        print(f"  {'z_lo':>6} {'z_hi':>6} {'dz':>5} {'N_min':>7} {'N_tot':>7} "
-              f"{'rest_lam':>8} {'R':>5} {'PAH feature':>14}")
+        print(
+            f"  {'z_lo':>6} {'z_hi':>6} {'dz':>5} {'N_min':>7} {'N_tot':>7} "
+            f"{'rest_lam':>8} {'R':>5} {'PAH feature':>14}"
+        )
         print(f"  {'-'*68}")
 
         for i in range(len(edges) - 1):
-            z_lo, z_hi = edges[i], edges[i+1]
+            z_lo, z_hi = edges[i], edges[i + 1]
             dz = z_hi - z_lo
             z_mid = (z_lo + z_hi) / 2
             n_min = _min_count_in_zbin(z_lo, z_hi)
             n_tot = int(((z >= z_lo) & (z < z_hi) & z_mask).sum())
             rest_lam = 24 / (1 + z_mid)
-            dlam = 24 / (1+z_lo) - 24 / (1+z_hi)
+            dlam = 24 / (1 + z_lo) - 24 / (1 + z_hi)
             R = rest_lam / dlam if dlam > 0 else 999
 
             feat = ""
@@ -260,8 +267,10 @@ def adaptive_pah_zbins(
                     feat = fname
 
             flag = " !" if n_min < min_sources * 0.5 else ""
-            print(f"  {z_lo:6.3f} {z_hi:6.3f} {dz:5.3f} {n_min:7,} {n_tot:7,} "
-                  f"{rest_lam:7.1f}um {R:5.0f}  {feat}{flag}")
+            print(
+                f"  {z_lo:6.3f} {z_hi:6.3f} {dz:5.3f} {n_min:7,} {n_tot:7,} "
+                f"{rest_lam:7.1f}um {R:5.0f}  {feat}{flag}"
+            )
 
         print(f"\n  Edges for TOML:")
         print(f"  bins = {edges}")
@@ -297,8 +306,11 @@ def _pah_template_in_band(z, band_lo=20.5, band_hi=30.0, n_nu=500):
         # Fraction of Gaussian profile within the band
         # Integrate Gaussian over [band_lo, band_hi]
         from scipy.special import erf
-        frac = 0.5 * (erf((band_hi - lam_obs) / (sigma * np.sqrt(2)))
-                       - erf((band_lo - lam_obs) / (sigma * np.sqrt(2))))
+
+        frac = 0.5 * (
+            erf((band_hi - lam_obs) / (sigma * np.sqrt(2)))
+            - erf((band_lo - lam_obs) / (sigma * np.sqrt(2)))
+        )
         contrib = strength * max(frac, 0)
         total += contrib
         if contrib > max_contrib:
@@ -348,9 +360,14 @@ def measure_pah_excess(
     min_rank = tier_rank.get(min_tier.upper(), 2)
 
     # Detect model wavelength frame
-    sample_sed = next((s for s in pr.sed_results.values()
-                       if s.greybody_fit_success
-                       and s.model_wavelengths is not None), None)
+    sample_sed = next(
+        (
+            s
+            for s in pr.sed_results.values()
+            if s.greybody_fit_success and s.model_wavelengths is not None
+        ),
+        None,
+    )
     model_is_rest = False
     if sample_sed is not None:
         mw = sample_sed.model_wavelengths
@@ -393,6 +410,7 @@ def measure_pah_excess(
         props = sed.bin_properties or {}
         if isinstance(props, str):
             import ast
+
             try:
                 props = ast.literal_eval(props)
             except (ValueError, SyntaxError):
@@ -457,6 +475,7 @@ def measure_pah_excess(
 
         # Luminosity at 24um
         from astropy.cosmology import Planck18
+
         dl_cm = Planck18.luminosity_distance(z).to("cm").value
         # nu * L_nu at 24um observed
         c_cgs = 2.998e10
@@ -470,29 +489,31 @@ def measure_pah_excess(
         # PAH template prediction
         pah_strength, dominant_feature = _pah_template_in_band(z)
 
-        rows.append({
-            "pop_id": pop_id,
-            "z": z,
-            "l_ir": l_ir,
-            "log_l_ir": np.log10(l_ir),
-            "T_dust": T_dust,
-            "n_sources": sed.n_sources,
-            "tier": tier,
-            "f_24": f_data,
-            "f_24_model": f_model,
-            "f_24_err": f_err,
-            "f_peak": f_peak,
-            "pah_flux": pah_flux,
-            "f24_to_fpeak": f_data / f_peak if f_peak > 0 else np.nan,
-            "f24_to_fpeak_err": f_err / f_peak if f_peak > 0 else np.nan,
-            "l_24": l_24_lsun,
-            "log_l_24": np.log10(l_24_lsun) if l_24_lsun > 0 else np.nan,
-            "l_24_to_l_ir": l_24_lsun / l_ir if l_ir > 0 else np.nan,
-            "excess_snr": excess_snr,
-            "pah_template": pah_strength,
-            "dominant_feature": dominant_feature or "",
-            **extra,
-        })
+        rows.append(
+            {
+                "pop_id": pop_id,
+                "z": z,
+                "l_ir": l_ir,
+                "log_l_ir": np.log10(l_ir),
+                "T_dust": T_dust,
+                "n_sources": sed.n_sources,
+                "tier": tier,
+                "f_24": f_data,
+                "f_24_model": f_model,
+                "f_24_err": f_err,
+                "f_peak": f_peak,
+                "pah_flux": pah_flux,
+                "f24_to_fpeak": f_data / f_peak if f_peak > 0 else np.nan,
+                "f24_to_fpeak_err": f_err / f_peak if f_peak > 0 else np.nan,
+                "l_24": l_24_lsun,
+                "log_l_24": np.log10(l_24_lsun) if l_24_lsun > 0 else np.nan,
+                "l_24_to_l_ir": l_24_lsun / l_ir if l_ir > 0 else np.nan,
+                "excess_snr": excess_snr,
+                "pah_template": pah_strength,
+                "dominant_feature": dominant_feature or "",
+                **extra,
+            }
+        )
 
     if not rows:
         print("No populations with 24um data")
@@ -508,8 +529,10 @@ def measure_pah_excess(
     print(f"  Populations measured: {valid.sum()}")
     print(f"  f_24 / f_FIR_peak:")
     print(f"    median = {df.loc[valid, 'f24_to_fpeak'].median():.3f}")
-    print(f"    range  = [{df.loc[valid, 'f24_to_fpeak'].min():.3f}, "
-          f"{df.loc[valid, 'f24_to_fpeak'].max():.3f}]")
+    print(
+        f"    range  = [{df.loc[valid, 'f24_to_fpeak'].min():.3f}, "
+        f"{df.loc[valid, 'f24_to_fpeak'].max():.3f}]"
+    )
     print(f"  L_24 / L_IR:")
     ll = df.loc[valid, "l_24_to_l_ir"]
     print(f"    median = {ll.median():.3f} ({ll.median()*100:.1f}%)")
@@ -518,16 +541,18 @@ def measure_pah_excess(
     print(f"\n  By redshift (peak features labeled):")
     z_edges = np.arange(0.5, min(df["z"].max() + 0.5, 12), 0.3)
     for i in range(len(z_edges) - 1):
-        zbin = valid & (df["z"] >= z_edges[i]) & (df["z"] < z_edges[i+1])
+        zbin = valid & (df["z"] >= z_edges[i]) & (df["z"] < z_edges[i + 1])
         if zbin.sum() > 0:
             med = df.loc[zbin, "f24_to_fpeak"].median()
             l24_med = df.loc[zbin, "l_24_to_l_ir"].median()
-            z_mid = (z_edges[i] + z_edges[i+1]) / 2
+            z_mid = (z_edges[i] + z_edges[i + 1]) / 2
             _, feat = _pah_template_in_band(z_mid)
             feat_str = f"  ({feat})" if feat else ""
-            print(f"    z={z_edges[i]:.1f}-{z_edges[i+1]:.1f}: "
-                  f"f24/fPeak = {med:.3f}, L24/LIR = {l24_med:.3f}  "
-                  f"N={zbin.sum()}{feat_str}")
+            print(
+                f"    z={z_edges[i]:.1f}-{z_edges[i+1]:.1f}: "
+                f"f24/fPeak = {med:.3f}, L24/LIR = {l24_med:.3f}  "
+                f"N={zbin.sum()}{feat_str}"
+            )
 
     # ── 6-panel figure ───────────────────────────────────────────────
     fig, axes = plt.subplots(2, 3, figsize=(18, 11))
@@ -535,9 +560,14 @@ def measure_pah_excess(
     # Panel 1: f24/fPeak vs redshift with PAH template overlay
     ax = axes[0, 0]
     if valid.any():
-        sc = ax.scatter(df.loc[valid, "z"], df.loc[valid, "f24_to_fpeak"],
-                        c=df.loc[valid, "stellar_mass"], cmap="viridis",
-                        s=30, alpha=0.7)
+        sc = ax.scatter(
+            df.loc[valid, "z"],
+            df.loc[valid, "f24_to_fpeak"],
+            c=df.loc[valid, "stellar_mass"],
+            cmap="viridis",
+            s=30,
+            alpha=0.7,
+        )
         plt.colorbar(sc, ax=ax, label="log M$_*$")
 
         # PAH template curve
@@ -547,8 +577,9 @@ def measure_pah_excess(
         if pah_curve.max() > 0:
             scale = df.loc[valid, "f24_to_fpeak"].median() / pah_curve.mean()
             ax2 = ax.twinx()
-            ax2.plot(z_grid, pah_curve * scale, "r-", lw=2, alpha=0.7,
-                     label="PAH template")
+            ax2.plot(
+                z_grid, pah_curve * scale, "r-", lw=2, alpha=0.7, label="PAH template"
+            )
             ax2.set_ylabel("PAH template (scaled)", color="r", fontsize=9)
             ax2.tick_params(axis="y", labelcolor="r")
 
@@ -557,9 +588,17 @@ def measure_pah_excess(
                 z_feat = MIPS_BAND["center"] / lam - 1
                 if 0.3 < z_feat < 4.0:
                     ax.axvline(z_feat, color="r", ls=":", alpha=0.3, lw=1)
-                    ax.text(z_feat, ax.get_ylim()[1] * 0.95,
-                            f"{lam:.1f}$\\mu$m", fontsize=6, rotation=90,
-                            va="top", ha="right", color="r", alpha=0.7)
+                    ax.text(
+                        z_feat,
+                        ax.get_ylim()[1] * 0.95,
+                        f"{lam:.1f}$\\mu$m",
+                        fontsize=6,
+                        rotation=90,
+                        va="top",
+                        ha="right",
+                        color="r",
+                        alpha=0.7,
+                    )
 
     ax.set_xlabel("Redshift")
     ax.set_ylabel("f$_{24}$ / f$_{FIR,peak}$")
@@ -573,23 +612,38 @@ def measure_pah_excess(
     if has_mass and valid_lr.any():
         valid_m = valid_lr & np.isfinite(df["stellar_mass"])
         if valid_m.any():
-            sc = ax.scatter(df.loc[valid_m, "stellar_mass"],
-                            df.loc[valid_m, "l_24_to_l_ir"],
-                            c=df.loc[valid_m, "z"], cmap="plasma",
-                            s=30, alpha=0.7)
+            sc = ax.scatter(
+                df.loc[valid_m, "stellar_mass"],
+                df.loc[valid_m, "l_24_to_l_ir"],
+                c=df.loc[valid_m, "z"],
+                cmap="plasma",
+                s=30,
+                alpha=0.7,
+            )
             plt.colorbar(sc, ax=ax, label="Redshift")
 
             # Binned medians
             mass_edges = np.arange(9.0, 12.0, 0.5)
             for i in range(len(mass_edges) - 1):
-                mbin = valid_m & (df["stellar_mass"] >= mass_edges[i]) & (df["stellar_mass"] < mass_edges[i+1])
+                mbin = (
+                    valid_m
+                    & (df["stellar_mass"] >= mass_edges[i])
+                    & (df["stellar_mass"] < mass_edges[i + 1])
+                )
                 if mbin.sum() > 2:
                     med = df.loc[mbin, "l_24_to_l_ir"].median()
                     p16, p84 = np.percentile(df.loc[mbin, "l_24_to_l_ir"], [16, 84])
-                    ax.errorbar((mass_edges[i] + mass_edges[i+1]) / 2, med,
-                                yerr=[[med - p16], [p84 - med]],
-                                fmt="ks", ms=9, mfc="white", mew=2,
-                                capsize=3, zorder=5)
+                    ax.errorbar(
+                        (mass_edges[i] + mass_edges[i + 1]) / 2,
+                        med,
+                        yerr=[[med - p16], [p84 - med]],
+                        fmt="ks",
+                        ms=9,
+                        mfc="white",
+                        mew=2,
+                        capsize=3,
+                        zorder=5,
+                    )
     ax.set_xlabel("log M$_*$ (M$_\\odot$)")
     ax.set_ylabel("L$_{24}$ / L$_{IR}$")
     ax.set_title("PAH fraction vs M$_*$ (Z proxy)")
@@ -598,10 +652,14 @@ def measure_pah_excess(
     # Panel 3: L_24/L_IR vs L_IR
     ax = axes[0, 2]
     if valid_lr.any():
-        sc = ax.scatter(df.loc[valid_lr, "l_ir"],
-                        df.loc[valid_lr, "l_24_to_l_ir"],
-                        c=df.loc[valid_lr, "z"], cmap="plasma",
-                        s=30, alpha=0.7)
+        sc = ax.scatter(
+            df.loc[valid_lr, "l_ir"],
+            df.loc[valid_lr, "l_24_to_l_ir"],
+            c=df.loc[valid_lr, "z"],
+            cmap="plasma",
+            s=30,
+            alpha=0.7,
+        )
         plt.colorbar(sc, ax=ax, label="Redshift")
     ax.set_xscale("log")
     ax.set_xlabel("L$_{IR}$ (L$_\\odot$)")
@@ -612,10 +670,14 @@ def measure_pah_excess(
     # Panel 4: Correlation between measured f24/fPeak and PAH template
     ax = axes[1, 0]
     if valid.any():
-        sc = ax.scatter(df.loc[valid, "pah_template"],
-                        df.loc[valid, "f24_to_fpeak"],
-                        c=df.loc[valid, "z"], cmap="plasma",
-                        s=30, alpha=0.7)
+        sc = ax.scatter(
+            df.loc[valid, "pah_template"],
+            df.loc[valid, "f24_to_fpeak"],
+            c=df.loc[valid, "z"],
+            cmap="plasma",
+            s=30,
+            alpha=0.7,
+        )
         plt.colorbar(sc, ax=ax, label="Redshift")
 
         # Fit
@@ -627,16 +689,31 @@ def measure_pah_excess(
             try:
                 coeffs = np.polyfit(x[valid_f], y[valid_f], 1, w=w[valid_f])
                 x_grid = np.linspace(0, x.max(), 100)
-                ax.plot(x_grid, np.polyval(coeffs, x_grid),
-                        "k--", lw=2, label=f"slope={coeffs[0]:.3f}")
+                ax.plot(
+                    x_grid,
+                    np.polyval(coeffs, x_grid),
+                    "k--",
+                    lw=2,
+                    label=f"slope={coeffs[0]:.3f}",
+                )
                 # R²
                 pred = np.polyval(coeffs, x[valid_f])
-                ss_res = np.sum(w[valid_f]**2 * (y[valid_f] - pred)**2)
-                ss_tot = np.sum(w[valid_f]**2 * (y[valid_f] - np.average(y[valid_f], weights=w[valid_f]**2))**2)
+                ss_res = np.sum(w[valid_f] ** 2 * (y[valid_f] - pred) ** 2)
+                ss_tot = np.sum(
+                    w[valid_f] ** 2
+                    * (y[valid_f] - np.average(y[valid_f], weights=w[valid_f] ** 2))
+                    ** 2
+                )
                 r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
-                ax.text(0.05, 0.95, f"R$^2$ = {r2:.3f}",
-                        transform=ax.transAxes, fontsize=10, va="top",
-                        bbox=dict(fc="white", alpha=0.9))
+                ax.text(
+                    0.05,
+                    0.95,
+                    f"R$^2$ = {r2:.3f}",
+                    transform=ax.transAxes,
+                    fontsize=10,
+                    va="top",
+                    bbox=dict(fc="white", alpha=0.9),
+                )
                 ax.legend(fontsize=9)
             except Exception:
                 pass
@@ -651,19 +728,29 @@ def measure_pah_excess(
     if has_Z and valid_lr.any():
         valid_Z = valid_lr & np.isfinite(df["metallicity"]) & (df["metallicity"] > 0)
         if valid_Z.any():
-            sc = ax.scatter(np.log10(df.loc[valid_Z, "metallicity"]),
-                            df.loc[valid_Z, "l_24_to_l_ir"],
-                            c=df.loc[valid_Z, "z"], cmap="plasma",
-                            s=30, alpha=0.7)
+            sc = ax.scatter(
+                np.log10(df.loc[valid_Z, "metallicity"]),
+                df.loc[valid_Z, "l_24_to_l_ir"],
+                c=df.loc[valid_Z, "z"],
+                cmap="plasma",
+                s=30,
+                alpha=0.7,
+            )
             plt.colorbar(sc, ax=ax, label="Redshift")
 
             # Engelbracht+2005 threshold
-            ax.axvline(np.log10(0.005), color="r", ls="--", alpha=0.5,
-                       label="~0.25 Z$_\\odot$ (PAH threshold)")
+            ax.axvline(
+                np.log10(0.005),
+                color="r",
+                ls="--",
+                alpha=0.5,
+                label="~0.25 Z$_\\odot$ (PAH threshold)",
+            )
             ax.legend(fontsize=7)
     else:
-        ax.text(0.5, 0.5, "metallicity not available",
-                transform=ax.transAxes, ha="center")
+        ax.text(
+            0.5, 0.5, "metallicity not available", transform=ax.transAxes, ha="center"
+        )
     ax.set_xlabel("log(Z)")
     ax.set_ylabel("L$_{24}$ / L$_{IR}$")
     ax.set_title("PAH fraction vs metallicity\n(Engelbracht+2005)")
@@ -675,10 +762,14 @@ def measure_pah_excess(
     if has_T and valid_lr.any():
         valid_T = valid_lr & np.isfinite(df["T_dust"])
         if valid_T.any():
-            sc = ax.scatter(df.loc[valid_T, "T_dust"],
-                            df.loc[valid_T, "l_24_to_l_ir"],
-                            c=df.loc[valid_T, "z"], cmap="plasma",
-                            s=30, alpha=0.7)
+            sc = ax.scatter(
+                df.loc[valid_T, "T_dust"],
+                df.loc[valid_T, "l_24_to_l_ir"],
+                c=df.loc[valid_T, "z"],
+                cmap="plasma",
+                s=30,
+                alpha=0.7,
+            )
             plt.colorbar(sc, ax=ax, label="Redshift")
     ax.set_xlabel("T$_{dust}$ (K)")
     ax.set_ylabel("L$_{24}$ / L$_{IR}$")
@@ -689,7 +780,8 @@ def measure_pah_excess(
     fig.suptitle(
         f"PAH + warm dust at {target_wavelength:.0f}$\\mu$m  |  "
         f"{valid.sum()} populations (tier >= {min_tier})",
-        fontsize=13, y=1.01,
+        fontsize=13,
+        y=1.01,
     )
     plt.tight_layout()
 
@@ -743,9 +835,14 @@ def staggered_pah_zbins(
     """
     # First, get the optimal adaptive bins for the base run
     base_edges = adaptive_pah_zbins(
-        redshifts, z_min=z_min, z_max=z_max,
-        min_sources=min_sources, max_dz=max_dz, min_dz=min_dz,
-        secondary=secondary, verbose=False,
+        redshifts,
+        z_min=z_min,
+        z_max=z_max,
+        min_sources=min_sources,
+        max_dz=max_dz,
+        min_dz=min_dz,
+        secondary=secondary,
+        verbose=False,
     )
 
     # Compute typical bin widths per z range
@@ -780,8 +877,7 @@ def staggered_pah_zbins(
         print(f"\nStaggered PAH z-bins: {n_stagger} runs")
         total_bins = sum(len(e) - 1 for e in all_edge_sets)
         print(f"  Total spectral points: {total_bins}")
-        print(f"  Per-run bins: "
-              + ", ".join(str(len(e) - 1) for e in all_edge_sets))
+        print(f"  Per-run bins: " + ", ".join(str(len(e) - 1) for e in all_edge_sets))
 
         # Effective spectral sampling
         all_mids = []
@@ -833,8 +929,10 @@ def combine_pah_spectra(
 
     for i, wrapper in enumerate(wrappers):
         _, df = measure_pah_excess(
-            wrapper, target_wavelength=target_wavelength,
-            min_tier=min_tier, split_filter=split_filter,
+            wrapper,
+            target_wavelength=target_wavelength,
+            min_tier=min_tier,
+            split_filter=split_filter,
         )
         plt.close()
 
@@ -853,14 +951,18 @@ def combine_pah_spectra(
     # Summary
     n_points = len(df_combined)
     n_per_run = [len(d) for d in all_dfs]
-    print(f"\nCombined PAH spectrum: {n_points} spectral points "
-          f"from {len(all_dfs)} runs ({n_per_run})")
+    print(
+        f"\nCombined PAH spectrum: {n_points} spectral points "
+        f"from {len(all_dfs)} runs ({n_per_run})"
+    )
 
     rest_lams = df_combined["rest_lam_24"].values
     if len(rest_lams) > 2:
         spacings = np.diff(np.sort(rest_lams))
         med_spacing = np.median(spacings[spacings > 0])
-        print(f"  Rest wavelength range: {rest_lams.min():.1f} - {rest_lams.max():.1f} um")
+        print(
+            f"  Rest wavelength range: {rest_lams.min():.1f} - {rest_lams.max():.1f} um"
+        )
         print(f"  Median spacing: {med_spacing:.3f} um")
         print(f"  Effective R: {np.median(rest_lams) / med_spacing:.0f}")
 
@@ -900,8 +1002,10 @@ def reconstruct_pah_spectrum(
     """
     # First, get the PAH measurements
     _, df = measure_pah_excess(
-        wrapper, target_wavelength=target_wavelength,
-        min_tier=min_tier, split_filter=split_filter,
+        wrapper,
+        target_wavelength=target_wavelength,
+        min_tier=min_tier,
+        split_filter=split_filter,
     )
     plt.close()  # close the default figure
 
@@ -925,8 +1029,16 @@ def reconstruct_pah_spectrum(
     # Group by stellar mass for color coding
     # Extract actual mass bins from the population IDs
     has_mass = "stellar_mass" in df.columns and np.isfinite(df["stellar_mass"]).any()
-    colors_cycle = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
-                    "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"]
+    colors_cycle = [
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#8c564b",
+        "#e377c2",
+        "#7f7f7f",
+    ]
 
     if has_mass:
         try:
@@ -961,7 +1073,7 @@ def reconstruct_pah_spectrum(
     pah_template = np.zeros_like(pah_lam)
     for name, (lam_c, strength, fwhm) in PAH_FEATURES.items():
         sigma = fwhm / 2.355
-        pah_template += strength * np.exp(-0.5 * ((pah_lam - lam_c) / sigma)**2)
+        pah_template += strength * np.exp(-0.5 * ((pah_lam - lam_c) / sigma) ** 2)
 
     # ── Panel 1: PAH spectrum by mass bin ────────────────────────────
     ax = axes[0]
@@ -987,8 +1099,15 @@ def reconstruct_pah_spectrum(
 
         # Plot points with size by n_sources
         sizes = 10 + 80 * (n_src / max(n_src.max(), 1)) ** 0.5
-        ax.scatter(lam, flux, c=color, s=sizes, alpha=0.7,
-                   label=f"log M$_*$ = {m_label}", zorder=3)
+        ax.scatter(
+            lam,
+            flux,
+            c=color,
+            s=sizes,
+            alpha=0.7,
+            label=f"log M$_*$ = {m_label}",
+            zorder=3,
+        )
 
         # Connect with line
         ax.plot(lam, flux, "-", color=color, alpha=0.4, lw=1.5, zorder=2)
@@ -997,8 +1116,15 @@ def reconstruct_pah_spectrum(
     if valid.any():
         med_flux = df.loc[valid, y_col].median()
         template_scale = med_flux / pah_template.max() if pah_template.max() > 0 else 1
-        ax.plot(pah_lam, pah_template * template_scale, "k--", lw=1.5,
-                alpha=0.5, label="PAH template (D&L07)", zorder=1)
+        ax.plot(
+            pah_lam,
+            pah_template * template_scale,
+            "k--",
+            lw=1.5,
+            alpha=0.5,
+            label="PAH template (D&L07)",
+            zorder=1,
+        )
 
     ax.set_xlabel("Rest-frame wavelength ($\\mu$m)")
     ax.set_ylabel(y_label)
@@ -1011,9 +1137,17 @@ def reconstruct_pah_spectrum(
     ylims = ax.get_ylim()
     for name, (lam_c, strength, fwhm) in PAH_FEATURES.items():
         ax.axvline(lam_c, color="gray", ls=":", alpha=0.3)
-        ax.text(lam_c, ylims[1] * 0.97, f"{lam_c}$\\mu$m",
-                fontsize=7, ha="center", va="top",
-                color="gray", alpha=0.7, rotation=90)
+        ax.text(
+            lam_c,
+            ylims[1] * 0.97,
+            f"{lam_c}$\\mu$m",
+            fontsize=7,
+            ha="center",
+            va="top",
+            color="gray",
+            alpha=0.7,
+            rotation=90,
+        )
 
     # ── Panel 2: Detrended — remove smooth z/LIR trend ──────────────
     ax = axes[1]
@@ -1074,8 +1208,15 @@ def reconstruct_pah_spectrum(
             normalized = flux[pos] / smooth
 
             sizes = 10 + 50 * (n_src[pos] / max(n_src.max(), 1)) ** 0.5
-            ax.scatter(lam[pos], normalized, c=color, s=sizes, alpha=0.7,
-                       label=f"log M$_*$ = {m_label}", zorder=3)
+            ax.scatter(
+                lam[pos],
+                normalized,
+                c=color,
+                s=sizes,
+                alpha=0.7,
+                label=f"log M$_*$ = {m_label}",
+                zorder=3,
+            )
             ax.plot(lam[pos], normalized, "-", color=color, alpha=0.4, lw=1.5, zorder=2)
 
             detrended_all_lam.extend(lam[pos])
@@ -1087,13 +1228,16 @@ def reconstruct_pah_spectrum(
     if pah_template.max() > 0:
         # Template is features only; normalize to mean=1 with bumps above
         pah_norm = 1.0 + pah_template / pah_template.max() * 0.3  # 30% bumps
-        ax.plot(pah_lam, pah_norm, "k--", lw=1.5, alpha=0.5,
-                label="PAH template (scaled)")
+        ax.plot(
+            pah_lam, pah_norm, "k--", lw=1.5, alpha=0.5, label="PAH template (scaled)"
+        )
 
     ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
     ax.set_xlabel("Rest-frame wavelength ($\\mu$m)")
     ax.set_ylabel("Flux / smooth z-trend")
-    ax.set_title("Continuum-subtracted PAH features\n(bumps at PAH wavelengths = detection)")
+    ax.set_title(
+        "Continuum-subtracted PAH features\n(bumps at PAH wavelengths = detection)"
+    )
     ax.legend(fontsize=7, loc="upper right")
     ax.set_xlim(5, 16)
     ax.grid(True, alpha=0.2)
@@ -1107,14 +1251,23 @@ def reconstruct_pah_spectrum(
     ylims2 = ax.get_ylim()
     for name, (lam_c, strength, fwhm) in PAH_FEATURES.items():
         ax.axvline(lam_c, color="gray", ls=":", alpha=0.3)
-        ax.text(lam_c, ylims2[1] * 0.98, f"{lam_c}$\\mu$m",
-                fontsize=7, ha="center", va="top",
-                color="gray", alpha=0.7, rotation=90)
+        ax.text(
+            lam_c,
+            ylims2[1] * 0.98,
+            f"{lam_c}$\\mu$m",
+            fontsize=7,
+            ha="center",
+            va="top",
+            color="gray",
+            alpha=0.7,
+            rotation=90,
+        )
 
     fig.suptitle(
         f"PAH spectrum from tomographic 24$\\mu$m stacking  |  "
         f"{valid.sum()} spectral points",
-        fontsize=13, y=1.01,
+        fontsize=13,
+        y=1.01,
     )
     plt.tight_layout()
 
@@ -1125,9 +1278,19 @@ def reconstruct_pah_spectrum(
         print(f"Saved: {save_path}")
 
     # Output spectrum DataFrame
-    df_spec = df.loc[valid, ["pop_id", "z", "rest_lam_24", y_col, "n_sources",
-                              "pah_template", "dominant_feature",
-                              "log_l_ir"]].copy()
+    df_spec = df.loc[
+        valid,
+        [
+            "pop_id",
+            "z",
+            "rest_lam_24",
+            y_col,
+            "n_sources",
+            "pah_template",
+            "dominant_feature",
+            "log_l_ir",
+        ],
+    ].copy()
     if has_mass:
         df_spec["stellar_mass"] = df.loc[valid, "stellar_mass"]
     df_spec = df_spec.sort_values("rest_lam_24")
@@ -1153,25 +1316,29 @@ def fit_pah_model(df, verbose=True):
         Keys: 'coeffs' (array [a, b, c, d]), 'r_squared', 'n_fit',
         'residual_scatter' (dex).
     """
-    valid = (np.isfinite(df["l_24_to_l_ir"])
-             & np.isfinite(df["log_l_ir"])
-             & np.isfinite(df["pah_template"])
-             & (df["l_24_to_l_ir"] > 0))
+    valid = (
+        np.isfinite(df["l_24_to_l_ir"])
+        & np.isfinite(df["log_l_ir"])
+        & np.isfinite(df["pah_template"])
+        & (df["l_24_to_l_ir"] > 0)
+    )
 
-    X = np.column_stack([
-        df.loc[valid, "log_l_ir"].values,
-        df.loc[valid, "z"].values,
-        df.loc[valid, "pah_template"].values,
-        np.ones(valid.sum()),
-    ])
+    X = np.column_stack(
+        [
+            df.loc[valid, "log_l_ir"].values,
+            df.loc[valid, "z"].values,
+            df.loc[valid, "pah_template"].values,
+            np.ones(valid.sum()),
+        ]
+    )
     y = np.log10(df.loc[valid, "l_24_to_l_ir"].values)
     w = np.sqrt(df.loc[valid, "n_sources"].values.astype(float))
 
     coeffs, _, _, _ = np.linalg.lstsq(X * w[:, None], y * w, rcond=None)
 
     pred = X @ coeffs
-    ss_res = np.sum(w**2 * (y - pred)**2)
-    ss_tot = np.sum(w**2 * (y - np.average(y, weights=w**2))**2)
+    ss_res = np.sum(w**2 * (y - pred) ** 2)
+    ss_tot = np.sum(w**2 * (y - np.average(y, weights=w**2)) ** 2)
     r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
 
     resid = y - pred
@@ -1188,17 +1355,20 @@ def fit_pah_model(df, verbose=True):
     if verbose:
         a, b, c, d = coeffs
         print(f"\nPAH correction model:")
-        print(f"  log(L24/LIR) = {a:.3f} log(LIR) {b:+.3f} z "
-              f"{c:+.3f} PAH_template {d:+.3f}")
-        print(f"  R² = {r2:.3f}  (N={valid.sum()}, "
-              f"scatter = {scatter:.3f} dex)")
+        print(
+            f"  log(L24/LIR) = {a:.3f} log(LIR) {b:+.3f} z "
+            f"{c:+.3f} PAH_template {d:+.3f}"
+        )
+        print(f"  R² = {r2:.3f}  (N={valid.sum()}, " f"scatter = {scatter:.3f} dex)")
         print(f"\n  Example predictions (L24/LIR):")
         for z_ex in [0.5, 1.0, 2.0, 3.0]:
             pah = _pah_template_in_band(z_ex)[0]
             for l_ir_ex in [10.5, 11.5]:
-                pred_val = 10 ** (a*l_ir_ex + b*z_ex + c*pah + d)
-                print(f"    z={z_ex}, log(LIR)={l_ir_ex}: "
-                      f"L24/LIR = {pred_val:.3f} ({pred_val*100:.1f}%)")
+                pred_val = 10 ** (a * l_ir_ex + b * z_ex + c * pah + d)
+                print(
+                    f"    z={z_ex}, log(LIR)={l_ir_ex}: "
+                    f"L24/LIR = {pred_val:.3f} ({pred_val*100:.1f}%)"
+                )
 
     return model
 
@@ -1230,7 +1400,7 @@ def predict_pah_flux(z, log_l_ir, f_ir_peak, model):
     pah_strength = _pah_template_in_band(z)[0]
 
     log_ratio = a * log_l_ir + b * z + c * pah_strength + d
-    l_24_to_l_ir = 10 ** log_ratio
+    l_24_to_l_ir = 10**log_ratio
 
     # Convert to flux: f_24 ≈ l_24_to_l_ir * f_ir_peak * (correction)
     # This is approximate — the true conversion depends on the SED shape.
@@ -1314,10 +1484,14 @@ def apply_pah_correction(wrapper, model, target_wavelength=24.0):
     if n_corr > 0:
         pah_fracs = [c["l_24_to_l_ir"] for c in corrections.values()]
         print(f"\nPAH correction applied to {n_corr} populations:")
-        print(f"  Predicted L24/LIR: median = {np.median(pah_fracs):.3f} "
-              f"({np.median(pah_fracs)*100:.1f}%)")
-        print(f"  Predicted f24_pah: median = "
-              f"{np.median([c['f_24_pah'] for c in corrections.values()]):.4e} Jy")
+        print(
+            f"  Predicted L24/LIR: median = {np.median(pah_fracs):.3f} "
+            f"({np.median(pah_fracs)*100:.1f}%)"
+        )
+        print(
+            f"  Predicted f24_pah: median = "
+            f"{np.median([c['f_24_pah'] for c in corrections.values()]):.4e} Jy"
+        )
 
     return corrections
 
