@@ -1691,6 +1691,182 @@ class PAHModel:
             "_T_grid": T_grid,
         }
 
+    def simulate_pah_data(
+        self,
+        bin_z_ranges,
+        alpha_true,
+        feature_groups=None,
+        r_true=None,
+        baseline_coeffs=None,
+        property_col_values=None,
+        n_obs_per_bin=50,
+        noise_level=0.05,
+        group_col="log_sigma_sfr",
+        bin_centers=None,
+        flux_col="f24_to_fpeak",
+        seed=42,
+    ):
+        """Generate synthetic PAH forward-model data with known ground-truth parameters.
+
+        Produces a DataFrame ready for fit_bayesian_forward_model, along with the
+        bin_edges list and the true parameter values used to generate the data.
+        Useful for injection-recovery tests and sanity checks.
+
+        The forward model is:
+            flux_i = baseline_m(z_i) × pah_factor_m(z_i) + N(0, σ_i)
+
+        where pah_factor depends on alpha_true shape:
+            (M,)    → mode 1:   pah_factor = 1 + α_m × Σ_g r_g × T_g(z_i)
+            (G, M)  → modes 2/3: pah_factor = 1 + Σ_g α_gm × T_g(z_i)
+
+        Parameters
+        ----------
+        bin_z_ranges : list of (z_lo, z_hi)
+            Redshift range for each bin. Length M defines the number of bins.
+        alpha_true : array-like, shape (M,) or (G, M)
+            True PAH amplitudes. 1-D for single-alpha mode, 2-D for per-group mode.
+        feature_groups : list of lists, optional
+            Same as in fit_bayesian_forward_model.
+        r_true : array-like, shape (G,), optional
+            True group amplitude ratios (mode 1 only). Default: all 1.0.
+        baseline_coeffs : array-like, shape (M, 3), optional
+            Per-bin polynomial baseline in log10 space:
+            log10(flux) = a·z + b·z² + c. Default: mild declining SED.
+        property_col_values : dict, optional
+            {col_name: list of M values} — per-bin mean values for extra
+            property columns (e.g. log_l_ir). Added to every row of the bin.
+        n_obs_per_bin : int
+            Number of synthetic observations per bin.
+        noise_level : float
+            Fractional Gaussian noise: σ_i = noise_level × flux_i.
+            Set to 0 for noiseless (useful for checking MAP recovery).
+        group_col : str
+            Column name for the binning variable in the returned DataFrame.
+        bin_centers : array-like, shape (M,), optional
+            Values of group_col for each bin. Default: 0.0, 1.0, …
+        flux_col : str
+            Name of the flux column. Default "f24_to_fpeak".
+        seed : int
+
+        Returns
+        -------
+        dict
+            'df'          pandas DataFrame (ready for fit_bayesian_forward_model)
+            'bin_edges'   list of (lo, hi) — pass directly as bin_edges= to fitter
+            'true_params' dict of ground-truth values used for generation
+        """
+        import pandas as _pd
+
+        n_feat = len(self.features)
+        if feature_groups is None:
+            groups = [[i] for i in range(n_feat)]
+        else:
+            groups = list(feature_groups)
+        n_groups = len(groups)
+        M = len(bin_z_ranges)
+
+        # Within-group scaling — must match what the fitter uses
+        ref_amps    = np.array([max(rs, 1e-6) for _, rs, _ in self.features])
+        widths_sigma = np.array([fw / 2.355 for _, _, fw in self.features])
+        feat_scale  = np.zeros(n_feat)
+        for g in groups:
+            lead_amp = ref_amps[g[np.argmax(ref_amps[g])]]
+            for j in g:
+                feat_scale[j] = ref_amps[j] / lead_amp
+
+        alpha_arr  = np.asarray(alpha_true, dtype=float)
+        group_mode = alpha_arr.ndim == 2
+
+        if group_mode:
+            if alpha_arr.shape != (n_groups, M):
+                raise ValueError(
+                    f"alpha_true shape {alpha_arr.shape} must be ({n_groups}, {M}) "
+                    "for per-group mode"
+                )
+            r_arr = None
+        else:
+            if alpha_arr.shape != (M,):
+                raise ValueError(
+                    f"alpha_true shape {alpha_arr.shape} must be ({M},) for single-alpha mode"
+                )
+            r_arr = np.ones(n_groups) if r_true is None else np.asarray(r_true, dtype=float)
+
+        if baseline_coeffs is None:
+            # Mild declining SED typical of far-IR photometry: flux decreases ~50% over Δz=1
+            baseline_coeffs = np.tile([-0.3, 0.05, 0.0], (M, 1))
+        baseline_coeffs = np.asarray(baseline_coeffs, dtype=float)
+
+        if bin_centers is None:
+            bin_centers_arr = np.arange(M, dtype=float)
+        else:
+            bin_centers_arr = np.asarray(bin_centers, dtype=float)
+
+        rng = np.random.default_rng(seed)
+
+        def _T_g_at_z(z_val):
+            # Bandpass-integrated template for all groups at one redshift.
+            # Exactly the same computation as the fitter — ensuring data and
+            # model share the same T_g so the injected signal is recoverable.
+            T = np.zeros(n_groups)
+            rest_lam = _BP_LAM_F / (1.0 + z_val)
+            for gi, g in enumerate(groups):
+                for j in g:
+                    lc  = self.features[j][0]
+                    sig = widths_sigma[j]
+                    spec = np.exp(-0.5 * ((rest_lam - lc) / sig) ** 2)
+                    T[gi] += feat_scale[j] * _trapz(spec * _BP_RESP_F, _BP_LAM_F) / _BP_NORM
+            return T
+
+        dfs        = []
+        bin_edges_out = []
+
+        for m, (z_lo, z_hi) in enumerate(bin_z_ranges):
+            z_m   = rng.uniform(z_lo, z_hi, n_obs_per_bin)
+            T_obs = np.array([_T_g_at_z(z) for z in z_m])   # (n_obs, G)
+
+            if group_mode:
+                pah_factor = 1.0 + T_obs @ alpha_arr[:, m]  # (n_obs,)
+            else:
+                pah_factor = 1.0 + alpha_arr[m] * (T_obs @ r_arr)
+
+            X_m      = np.column_stack([z_m, z_m ** 2, np.ones_like(z_m)])
+            baseline = 10.0 ** (X_m @ baseline_coeffs[m])
+            f_true   = baseline * pah_factor
+
+            # Noise floor prevents sigma=0 from causing WLS degeneracy
+            sigma_m = np.maximum(noise_level * f_true, f_true.min() * 1e-8)
+            f_obs   = f_true + rng.normal(0.0, sigma_m)
+            f_obs   = np.maximum(f_obs, f_true * 1e-4)   # keep positive
+
+            center     = float(bin_centers_arr[m])
+            half       = 0.45                              # bin half-width in group_col space
+            bin_edges_out.append((center - half, center + half))
+
+            row: dict = {
+                "z":             z_m,
+                flux_col:        f_obs,
+                flux_col + "_err": sigma_m,
+                group_col:       np.full(n_obs_per_bin, center),
+            }
+            if property_col_values:
+                for col, vals in property_col_values.items():
+                    row[col] = np.full(n_obs_per_bin, float(vals[m]))
+
+            dfs.append(_pd.DataFrame(row))
+
+        return {
+            "df":   _pd.concat(dfs, ignore_index=True),
+            "bin_edges": bin_edges_out,
+            "true_params": {
+                "alpha":           alpha_arr,         # (M,) or (G, M)
+                "r":               r_arr,             # (G,) or None
+                "baseline_coeffs": baseline_coeffs,   # (M, 3)
+                "bin_centers":     bin_centers_arr.tolist(),
+                "group_mode":      group_mode,
+                "groups":          groups,
+            },
+        }
+
     def fit_bayesian_forward_model(
         self,
         df,
