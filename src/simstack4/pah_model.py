@@ -1703,6 +1703,8 @@ class PAHModel:
         n_steps=1000,
         n_burn=300,
         bin_edges=None,
+        group_amplitudes=False,
+        independent_betas=False,
         verbose=True,
         progress=True,
     ):
@@ -1836,12 +1838,18 @@ class PAHModel:
             return None
 
         if bin_edges is None:
+            import re as _re
+            # Strip leading "log_" so group_col="log_sigma_sfr" also matches
+            # pop_id segments named "sigma_sfr_..." (same logic as fit_forward_per_bin)
+            _gb_key = group_col.lower().replace("_", "")
+            _gb_key_nolog = _re.sub(r"^log", "", _gb_key)
             bin_edges = []
             if "pop_id" in df.columns:
                 edge_set = set()
                 for pop_id in df["pop_id"].dropna().unique():
                     for part in str(pop_id).split("__"):
-                        if group_col.lower().replace("_", "") in part.lower().replace("_", ""):
+                        part_key = part.lower().replace("_", "")
+                        if _gb_key in part_key or (_gb_key_nolog and _gb_key_nolog in part_key):
                             nums = []
                             for tok in part.replace(group_col, "").replace("_", " ").split():
                                 try:
@@ -1986,217 +1994,305 @@ class PAHModel:
             use_full_cov = False
 
         # ── Parameter layout ──────────────────────────────────────────────────
-        # Sampled parameters (in this order in the theta vector):
         #
-        #   [0]             log_alpha0       global PAH amplitude intercept
-        #   [1 .. K]        beta_k           evolution slope per standardized covariate
-        #   [K+1]           log_sigma_alpha  log of per-bin scatter around regression
-        #   [K+2 .. K+1+M]  delta_m          per-bin deviation (partial pooling)
-        #   [K+2+M ..]      r_g (g ≥ 1)      inter-group amplitude ratios (r_0 fixed = 1)
+        # Three modes controlled by group_amplitudes / independent_betas flags:
         #
-        # Why sample log_sigma_alpha instead of sigma_alpha?
-        #   sigma_alpha must be positive. Sampling in log space automatically
-        #   respects this without explicit bounds, and the posterior on sigma_alpha
-        #   is often log-scale distributed (heavy tail toward small values), so
-        #   log-space sampling gives better-mixed chains.
-        n_ratio = n_groups - 1
-        ndim = 1 + K + 1 + M + n_ratio
+        # Mode 1  group_amplitudes=False  (default — current behaviour)
+        #   theta = [log_α0 (1), β_k (K), log_σ_α (1), δ_m (M), r_g (G-1)]
+        #   ndim  = 1 + K + 1 + M + (G-1)
+        #   PAH factor per bin m: 1 + α_m × Σ_g r_g × T_g(z)
+        #   α_m is a single global amplitude; r_g adjusts relative group strengths.
+        #
+        # Mode 2  group_amplitudes=True, independent_betas=False
+        #   theta = [log_α0_g (G), β_k (K shared), log_σ_α_g (G), δ_gm (G×M)]
+        #   ndim  = G + K + G + G×M
+        #   PAH factor per bin m: 1 + Σ_g α_gm × T_g(z)
+        #   Each group has its own amplitude per bin; evolution β is shared.
+        #   Best starting point: separates group strengths while keeping β identifiable.
+        #
+        # Mode 3  group_amplitudes=True, independent_betas=True
+        #   theta = [log_α0_g (G), β_gk (G×K), log_σ_α_g (G), δ_gm (G×M)]
+        #   ndim  = G + G×K + G + G×M  = G×(1+K+1+M)
+        #   PAH factor per bin m: 1 + Σ_g α_gm × T_g(z)
+        #   Each group also gets its own evolution slopes — e.g. does 7.7 μm
+        #   depend on metallicity differently than 11.3 μm? Most parameters,
+        #   needs more data (large M) to constrain β_gk reliably.
+        #
+        # Slice variables (sl_*) are computed once here and reused in every
+        # closure (log_prior, log_likelihood) and in post-sampling extraction.
+        # This centralises all index arithmetic to prevent off-by-one bugs.
 
-        param_names = (
-            ["log_alpha0"]
-            + [f"beta_{col}" for col in evol_cols]
-            + ["log_sigma_alpha"]
-            + [f"delta_{bins_data[m][0]}" for m in range(M)]
-            + [f"r_group{gi}" for gi in range(1, n_groups)]
-        )
+        # Group names — one per feature group, used in param_names and return dict
+        group_names = []
+        for g in groups:
+            names_g = [feature_names[j] for j in g if j < len(feature_names)]
+            group_names.append("+".join(names_g) if names_g else f"g{len(group_names)}")
 
-        # Physical prior centers and widths for evolution slopes.
-        # These encode known PAH astrophysics before seeing this dataset:
-        #   sigma_sfr: PAH molecules are photo-dissociated by hard UV in compact
-        #              starbursts (Helou et al. 2001; Calzetti et al. 2007) → β < 0
-        #   l_ir:      the "PAH deficit" — LIRGs/ULIRGs show suppressed PAH relative
-        #              to total IR luminosity (Desai et al. 2007; Pope et al. 2008) → β < 0
-        #   z:         redshift evolution is uncertain; symmetric prior
-        #   stellar_mass, l_uv: sign uncertain from first principles; symmetric prior
+        if not group_amplitudes:
+            # ── Mode 1 layout ─────────────────────────────────────────────
+            i0, i1, i2, i3, i4 = 0, 1, 1+K, 1+K+1, 1+K+1+M
+            ndim = i4 + (n_groups - 1)
+
+            sl_log_a0  = slice(i0, i1)       # (1,) scalar log_α0
+            sl_betas   = slice(i1, i2)        # (K,) evolution slopes
+            sl_log_sig = slice(i2, i3)        # (1,) log_σ_α
+            sl_deltas  = slice(i3, i4)        # (M,) per-bin deviations
+            sl_ratios  = slice(i4, ndim)      # (G-1,) group ratios
+
+            param_names = (
+                ["log_alpha0"]
+                + [f"beta_{col}" for col in evol_cols]
+                + ["log_sigma_alpha"]
+                + [f"delta_{bins_data[m][0]}" for m in range(M)]
+                + [f"r_group{gi}" for gi in range(1, n_groups)]
+            )
+
+        elif not independent_betas:
+            # ── Mode 2 layout ─────────────────────────────────────────────
+            i0 = 0
+            i1 = n_groups              # betas start after G log_α0_g
+            i2 = i1 + K               # log_σ_α_g start after K betas
+            i3 = i2 + n_groups        # deltas start after G log_σ_α_g
+            ndim = i3 + n_groups * M
+
+            sl_log_a0  = slice(i0, i1)   # (G,) per-group intercepts
+            sl_betas   = slice(i1, i2)   # (K,) shared evolution slopes
+            sl_log_sig = slice(i2, i3)   # (G,) per-group scatter
+            sl_deltas  = slice(i3, ndim) # (G*M,) row-major: delta[g*M + m]
+            sl_ratios  = None
+
+            param_names = (
+                [f"log_alpha0_{gn.replace(' ','_')}" for gn in group_names]
+                + [f"beta_{col}" for col in evol_cols]
+                + [f"log_sigma_alpha_{gn.replace(' ','_')}" for gn in group_names]
+                + [f"delta_{gn.replace(' ','_')}_{bins_data[m][0]}"
+                   for gn in group_names for m in range(M)]
+            )
+
+        else:
+            # ── Mode 3 layout ─────────────────────────────────────────────
+            i0 = 0
+            i1 = n_groups                  # betas start (G*K params follow)
+            i2 = i1 + n_groups * K        # log_σ_α_g start
+            i3 = i2 + n_groups            # deltas start
+            ndim = i3 + n_groups * M
+
+            sl_log_a0  = slice(i0, i1)   # (G,) per-group intercepts
+            sl_betas   = slice(i1, i2)   # (G*K,) row-major: beta[g*K + k]
+            sl_log_sig = slice(i2, i3)   # (G,) per-group scatter
+            sl_deltas  = slice(i3, ndim) # (G*M,) row-major: delta[g*M + m]
+            sl_ratios  = None
+
+            param_names = (
+                [f"log_alpha0_{gn.replace(' ','_')}" for gn in group_names]
+                + [f"beta_{gn.replace(' ','_')}_{col}"
+                   for gn in group_names for col in evol_cols]
+                + [f"log_sigma_alpha_{gn.replace(' ','_')}" for gn in group_names]
+                + [f"delta_{gn.replace(' ','_')}_{bins_data[m][0]}"
+                   for gn in group_names for m in range(M)]
+            )
+
+        # Physical prior centers/widths for evolution slopes.
+        # These encode known PAH astrophysics before seeing the data.
         beta_prior_center = np.zeros(K)
-        beta_prior_sigma = np.full(K, 0.5)
+        beta_prior_sigma  = np.full(K, 0.5)
         for k, col in enumerate(evol_cols):
             if "sigma_sfr" in col.lower():
-                beta_prior_center[k] = -0.3
-                beta_prior_sigma[k] = 0.5
+                beta_prior_center[k] = -0.3   # PAH destruction in hard-UV starbursts
+                beta_prior_sigma[k]  =  0.5
             elif "l_ir" in col.lower() or "lir" in col.lower():
-                beta_prior_center[k] = -0.2
-                beta_prior_sigma[k] = 0.3
+                beta_prior_center[k] = -0.2   # PAH deficit in LIRGs/ULIRGs
+                beta_prior_sigma[k]  =  0.3
 
-        # Group ratio priors: from IRS spectroscopy of nearby star-forming galaxies
-        # (Smith et al. 2007, SINGS survey). Using r ~ 1.0 as a conservative center;
-        # the data will constrain the ratios further.
-        r_prior_center = np.ones(n_ratio)
-        r_prior_sigma = np.full(n_ratio, 0.5)
+        # Group ratio priors (Mode 1 only). From IRS spectroscopy of nearby
+        # star-forming galaxies (Smith et al. 2007, SINGS survey).
+        if sl_ratios is not None:
+            n_ratio = n_groups - 1
+            r_prior_center = np.ones(n_ratio)
+            r_prior_sigma  = np.full(n_ratio, 0.5)
 
         # ── Log-prior ─────────────────────────────────────────────────────────
         def log_prior(theta):
-            # Bayes theorem: posterior ∝ likelihood × prior (log: sum of logs).
-            # The prior encodes physical knowledge BEFORE seeing the data.
-            # We use weakly informative priors — they rule out unphysical regions
-            # (α < 0, enormous slopes) while letting the likelihood dominate when
-            # there is enough data. This is the Bayesian alternative to regularization.
-            log_alpha0 = theta[0]
-            betas = theta[1 : 1 + K]
-            log_sigma_alpha = theta[1 + K]
-            deltas = theta[1 + K + 1 : 1 + K + 1 + M]
-            ratios = theta[1 + K + 1 + M :]
-
             lp = 0.0
 
-            # log_alpha0: typical PAH excess ~10% (α ~ 0.1), allow ~factor-3 scatter.
-            # Normal prior on log(α₀) is equivalent to a LogNormal prior on α₀.
-            lp += -0.5 * ((log_alpha0 - np.log(0.1)) / 0.5) ** 2
+            if not group_amplitudes:
+                # Mode 1 ─────────────────────────────────────────────────────
+                log_a0  = theta[sl_log_a0][0]
+                betas   = theta[sl_betas]
+                log_sig = theta[sl_log_sig][0]
+                deltas  = theta[sl_deltas]
+                ratios  = theta[sl_ratios]
 
-            # Evolution slopes: physically motivated (see comments above).
-            for k in range(K):
-                lp += -0.5 * ((betas[k] - beta_prior_center[k]) / beta_prior_sigma[k]) ** 2
+                # α ~ 1 center; wide (σ=1.5 log) so T_g≈0.02-0.08 can be
+                # overcome by α~1-5 to produce realistic 10-30% PAH modulation
+                lp += -0.5 * ((log_a0 - np.log(1.0)) / 1.5) ** 2
 
-            # log_sigma_alpha: prior on the per-bin scatter.
-            # Without this regularization the sampler could set σ_α → ∞ to absorb
-            # all bin-to-bin variation as "scatter", making the β slopes unconstrained.
-            lp += -0.5 * ((log_sigma_alpha - np.log(0.2)) / 1.0) ** 2
+                for k in range(K):
+                    lp += -0.5 * ((betas[k] - beta_prior_center[k]) / beta_prior_sigma[k]) ** 2
 
-            # delta_m conditional: Normal(0, σ_α) — PARTIAL POOLING.
-            # This implements the hierarchical structure: each bin's α_m is
-            # allowed to deviate from the regression by δ_m, but large deviations
-            # are penalized by the shared σ_α. The -M*log(σ_α) term comes from
-            # the Normal normalization constant and is essential: it means that
-            # a model with large σ_α (explaining everything as scatter) pays a
-            # cost proportional to the number of bins M.
-            sigma_alpha = np.exp(log_sigma_alpha)
-            lp += -0.5 * np.sum((deltas / sigma_alpha) ** 2) - M * log_sigma_alpha
+                lp += -0.5 * ((log_sig - np.log(0.2)) / 1.0) ** 2
+                sigma_a = np.exp(log_sig)
+                # Partial pooling: -M·log(σ_α) from Normal normalization;
+                # prevents σ_α→∞ absorbing all bin variation as "scatter"
+                lp += -0.5 * np.sum((deltas / sigma_a) ** 2) - M * log_sig
 
-            # Group amplitude ratios: must be positive (PAH emission cannot absorb flux).
-            if np.any(ratios <= 0):
-                return -np.inf
-            for i, r in enumerate(ratios):
-                lp += -0.5 * ((r - r_prior_center[i]) / r_prior_sigma[i]) ** 2
+                if np.any(ratios <= 0):
+                    return -np.inf
+                for i, r in enumerate(ratios):
+                    lp += -0.5 * ((r - r_prior_center[i]) / r_prior_sigma[i]) ** 2
+
+            else:
+                # Modes 2 & 3 ─────────────────────────────────────────────────
+                log_a0_g  = theta[sl_log_a0]                            # (G,)
+                log_sig_g = theta[sl_log_sig]                           # (G,)
+                deltas_gm = theta[sl_deltas].reshape(n_groups, M)       # (G, M)
+
+                if not independent_betas:
+                    betas = theta[sl_betas]                             # (K,) shared
+                else:
+                    betas_gk = theta[sl_betas].reshape(n_groups, K)    # (G, K)
+
+                for g in range(n_groups):
+                    lp += -0.5 * ((log_a0_g[g] - np.log(1.0)) / 1.5) ** 2
+
+                if not independent_betas:
+                    for k in range(K):
+                        lp += -0.5 * ((betas[k] - beta_prior_center[k]) / beta_prior_sigma[k]) ** 2
+                else:
+                    for g in range(n_groups):
+                        for k in range(K):
+                            lp += -0.5 * ((betas_gk[g, k] - beta_prior_center[k]) / beta_prior_sigma[k]) ** 2
+
+                # Each group has its own σ_α controlling per-bin scatter
+                for g in range(n_groups):
+                    lp += -0.5 * ((log_sig_g[g] - np.log(0.2)) / 1.0) ** 2
+                    sigma_g = np.exp(log_sig_g[g])
+                    lp += -0.5 * np.sum((deltas_gm[g] / sigma_g) ** 2) - M * log_sig_g[g]
 
             return lp
 
         # ── Log-likelihood ────────────────────────────────────────────────────
         def log_likelihood(theta):
             # P(data | model): how probable is the observed data given these parameters?
-            # This is a Gaussian noise model: each flux measurement is drawn from
-            # Normal(model_flux, σ). In log space: log L = -½ Σ (residual/σ)².
+            # For both single-α and per-group-α modes, the analytic baseline
+            # marginalization (WLS at each MCMC step) is identical — only the
+            # pah_factor computation changes.
 
-            log_alpha0 = theta[0]
-            betas = theta[1 : 1 + K]
-            deltas = theta[1 + K + 1 : 1 + K + 1 + M]
-            ratios_free = theta[1 + K + 1 + M :]
-            ratios = np.concatenate([[1.0], ratios_free])  # r_0 fixed to 1
+            if not group_amplitudes:
+                # Mode 1: α_m = exp(log_α0 + β·x̃_m + δ_m), global r_g ratios
+                log_a0       = theta[sl_log_a0][0]
+                betas        = theta[sl_betas]
+                deltas       = theta[sl_deltas]
+                ratios_free  = theta[sl_ratios]
+                ratios       = np.concatenate([[1.0], ratios_free])
 
-            # HIERARCHICAL EVOLUTION MODEL: the "recursion across bins".
-            # Each bin's amplitude is drawn from the regression on physical properties:
-            #   log(α_m) = log_α₀ + Σ_k β_k × x̃_km + δ_m
-            # The shared β parameters couple all bins — data from one bin informs
-            # the amplitude expected in every other bin. This is the Bayesian analogue
-            # of the BOCD recursion: instead of updating P(r_t | x_{1:t}) sequentially,
-            # we sample the full joint posterior P(β, α, δ | all data) at once.
-            log_alpha_m = log_alpha0 + X_evol_std @ betas + deltas  # (M,)
-            alpha_m = np.exp(log_alpha_m)
-
-            if not np.all(np.isfinite(alpha_m)):
-                return -np.inf
-
-            residuals_list = []
-            for m in range(M):
-                T_m = T_bins[m]        # (n_groups, n_obs): precomputed templates
-                X_m = X_bins[m]        # (n_obs, 3): baseline design matrix
-                f_m = bins_data[m][2]  # observed flux values
-
-                # PAH modulation: how much the smooth baseline is boosted by PAH
-                # features at each redshift. = 1 when features miss the bandpass.
-                # ratios @ T_m = Σ_g r_g × T_g(z_i), shape (n_obs,)
-                pah_factor = 1.0 + alpha_m[m] * (ratios @ T_m)
-
-                if np.any(pah_factor <= 0):
+                # HIERARCHICAL EVOLUTION MODEL: each bin's amplitude is drawn from
+                # the regression on physical properties. Shared β couples all bins —
+                # data from one bin informs expected amplitude in every other bin.
+                log_alpha_m = log_a0 + X_evol_std @ betas + deltas   # (M,)
+                alpha_m = np.exp(log_alpha_m)
+                if not np.all(np.isfinite(alpha_m)):
                     return -np.inf
 
-                # ANALYTIC BASELINE MARGINALIZATION:
-                # For fixed α_m and r_g, dividing both sides of the model by pah_factor:
-                #   flux / pah_factor = baseline(z)
-                # Taking log10 makes this linear in the baseline coefficients [a, b, c]:
-                #   log10(flux / pah_factor) = a·z + b·z² + c
-                # Solving this WLS problem at each MCMC step is equivalent to
-                # analytically marginalizing over [a, b, c] under a Gaussian prior
-                # centered on the WLS solution. This eliminates 3M nuisance dimensions
-                # from the sampler, dramatically reducing the parameter space.
-                y_m = log10_flux_bins[m] - np.log10(pah_factor)
-                w_m = w_log_bins[m]
+                def _pah_factor(m):
+                    return 1.0 + alpha_m[m] * (ratios @ T_bins[m])
 
-                # WLS via the sqrt-weight trick: multiplying both X and y by sqrt(w)
-                # transforms the weighted problem Σ w_i(y_i - x_i β)² into the
-                # unweighted form ||X_w β - y_w||² that np.linalg.lstsq solves.
-                X_w = X_m * w_m[:, None]
+            else:
+                # Modes 2 & 3: α_gm for each group g and bin m
+                log_a0_g  = theta[sl_log_a0]                          # (G,)
+                deltas_gm = theta[sl_deltas].reshape(n_groups, M)     # (G, M)
+
+                if not independent_betas:
+                    # Mode 2: shared β — same evolution trend for all groups,
+                    # different intercepts. log_α_gm[g, m] = log_α0_g[g] + β·x̃_m + δ_gm
+                    betas = theta[sl_betas]                            # (K,)
+                    log_alpha_gm = (
+                        log_a0_g[:, None]                              # (G, 1)
+                        + (X_evol_std @ betas)[None, :]               # (1, M)
+                        + deltas_gm                                    # (G, M)
+                    )
+                else:
+                    # Mode 3: independent β_g — each group can respond differently
+                    # to the same physical covariate (e.g. metallicity affects
+                    # 7.7 μm differently than 11.3 μm). log_α_gm[g, m] = log_α0_g[g]
+                    # + Σ_k β_gk × x̃_km + δ_gm
+                    betas_gk = theta[sl_betas].reshape(n_groups, K)   # (G, K)
+                    log_alpha_gm = (
+                        log_a0_g[:, None]                              # (G, 1)
+                        + (betas_gk @ X_evol_std.T)                   # (G, M)
+                        + deltas_gm                                    # (G, M)
+                    )
+
+                alpha_gm = np.exp(log_alpha_gm)                        # (G, M)
+                if not np.all(np.isfinite(alpha_gm)):
+                    return -np.inf
+
+                def _pah_factor(m):
+                    # alpha_gm[:, m] @ T_bins[m] = Σ_g α_gm × T_g(z)  shape (n_obs,)
+                    return 1.0 + alpha_gm[:, m] @ T_bins[m]
+
+            # ── Analytic baseline marginalization (same for all modes) ────────
+            # For fixed PAH amplitudes, dividing flux by pah_factor yields a
+            # smooth baseline. Its log10 is linear in [z, z², 1], so WLS gives
+            # the MAP baseline coefficients analytically — eliminating 3M nuisance
+            # dimensions from the MCMC sampler.
+            residuals_list = []
+            for m in range(M):
+                pah_f = _pah_factor(m)
+                if np.any(pah_f <= 0):
+                    return -np.inf
+
+                y_m = log10_flux_bins[m] - np.log10(pah_f)
+                w_m = w_log_bins[m]
+                X_w = X_bins[m] * w_m[:, None]
                 y_w = y_m * w_m
                 try:
                     coeffs, _, _, _ = np.linalg.lstsq(X_w, y_w, rcond=None)
                 except np.linalg.LinAlgError:
                     return -np.inf
 
-                # Back to flux space: compute full model and residuals
-                baseline = 10.0 ** (X_m @ coeffs)
-                model = baseline * pah_factor
-                residuals_list.append(f_m - model)
+                baseline = 10.0 ** (X_bins[m] @ coeffs)
+                residuals_list.append(bins_data[m][2] - baseline * pah_f)
 
             r = np.concatenate(residuals_list)
 
             if use_full_cov:
-                # MULTIVARIATE GAUSSIAN LIKELIHOOD: log L = -½ r.T C^{-1} r
-                # cho_solve(cov_cho, r) computes C^{-1}r using the pre-factored
-                # Cholesky — cheap O(N²) because L was already computed once.
-                # This correctly down-weights correlated measurements: if two bins
-                # have nearly identical noise patterns (high off-diagonal C), the
-                # effective information content is closer to one measurement, not two.
+                # Multivariate Gaussian: down-weights correlated bin measurements
                 return -0.5 * np.dot(r, cho_solve(cov_cho, r))
             else:
-                # INDEPENDENT GAUSSIAN LIKELIHOOD: log L = -½ Σ (r_i / σ_i)²
-                # Valid when bins are independently measured (no shared noise).
                 return -0.5 * np.sum((r / sigma_flat) ** 2)
 
         def log_posterior(theta):
-            # Bayes theorem in log space:
-            #   log P(θ | data) = log P(data | θ) + log P(θ) + const
-            # The constant (log evidence) cancels in all MCMC acceptance ratios,
-            # so emcee only needs the unnormalized log-posterior.
             lp = log_prior(theta)
             if not np.isfinite(lp):
                 return -np.inf
             return lp + log_likelihood(theta)
 
         # ── Initialize walkers ────────────────────────────────────────────────
-        # emcee is an ENSEMBLE sampler: it runs n_walkers parallel chains whose
-        # proposed moves are informed by the other walkers' positions. This
-        # automatically adapts the proposal to the posterior shape without manual
-        # tuning. Minimum requirement: n_walkers > 2 × ndim.
         if n_walkers is None:
             n_walkers = max(2 * ndim + 4, 32)
 
         p0_center = np.zeros(ndim)
-        p0_center[0] = np.log(0.1)       # log_alpha0: start at α ~ 0.1
-        # betas start at 0 (no evolution assumed initially)
-        p0_center[1 + K] = np.log(0.2)  # log_sigma_alpha: start at σ_α = 0.2
-        # deltas start at 0 (no deviation from regression)
-        p0_center[1 + K + 1 + M :] = 1.0  # r_g: start at equal group amplitudes
+        # All log_α0 start at α ~ 1.0 (one value for mode 1, G values for modes 2/3)
+        p0_center[sl_log_a0] = np.log(1.0)
+        # All log_σ_α start at σ = 0.2 (one value for mode 1, G for modes 2/3)
+        p0_center[sl_log_sig] = np.log(0.2)
+        if sl_ratios is not None:
+            # r_g start at 1.0 (equal group amplitudes before data informs them)
+            p0_center[sl_ratios] = 1.0
+        # betas and deltas default to 0 (no evolution, no bin deviations)
 
-        # Walkers start in a tight Gaussian ball around p0_center.
-        # emcee then "stretches" them across the posterior during burn-in.
-        # Starting too spread out wastes burn-in steps; too tight and walkers
-        # cluster together until they drift apart — both are fine in practice.
+        # Tight Gaussian ball: emcee stretches walkers during burn-in to find the
+        # posterior. Too wide wastes burn-in; too tight is fine — they drift apart.
         p0 = p0_center + 1e-3 * rng.standard_normal((n_walkers, ndim))
 
         # ── Run MCMC ──────────────────────────────────────────────────────────
+        mode_str = ("shared-beta" if not independent_betas else "independent-beta") if group_amplitudes else "single-alpha"
         if verbose:
             print(
-                f"\nBayesian PAH forward model: {M} bins, {K} evolution covariates, "
-                f"{ndim} parameters, {n_walkers} walkers"
+                f"\nBayesian PAH forward model [{mode_str}]: {M} bins, "
+                f"{n_groups} groups, {K} covariates, {ndim} parameters, "
+                f"{n_walkers} walkers"
             )
             print(f"  Parameters: {param_names}")
             print(
@@ -2208,64 +2304,87 @@ class PAHModel:
         sampler.run_mcmc(p0, n_steps, progress=progress)
 
         # ── Extract posterior ─────────────────────────────────────────────────
-        # BURN-IN: the first n_burn steps are discarded because walkers start at
-        # an arbitrary point and need time to find the high-probability region.
-        # The remaining steps approximate draws from the true posterior P(θ | data).
         flat_samples = sampler.get_chain(discard=n_burn, flat=True)
-        # flat_samples shape: (n_walkers × (n_steps - n_burn), ndim)
 
         medians, lower, upper = {}, {}, {}
         for i, name in enumerate(param_names):
             q16, q50, q84 = np.percentile(flat_samples[:, i], [16, 50, 84])
             medians[name] = q50
-            lower[name] = q16
-            upper[name] = q84
+            lower[name]   = q16
+            upper[name]   = q84
 
-        # Per-bin PAH amplitudes: derived quantity from posterior samples.
-        # α_m = exp(log_α₀ + β·x̃_m + δ_m) evaluated at every sample gives the
-        # full marginal posterior for each bin's amplitude, accounting for
-        # uncertainty in log_α₀, β, and δ_m simultaneously.
-        log_alpha0_samp = flat_samples[:, 0]                           # (n_flat,)
-        beta_samp = flat_samples[:, 1 : 1 + K]                        # (n_flat, K)
-        delta_samp = flat_samples[:, 1 + K + 1 : 1 + K + 1 + M]      # (n_flat, M)
-        log_alpha_samp = (
-            log_alpha0_samp[:, None]
-            + beta_samp @ X_evol_std.T   # broadcast: (n_flat, M)
-            + delta_samp
-        )
-        alpha_samples = np.exp(log_alpha_samp)         # (n_flat, M)
-        alpha_per_bin = np.median(alpha_samples, axis=0)
-        alpha_err_per_bin = alpha_samples.std(axis=0)
+        # Reconstruct per-bin (or per-group-per-bin) amplitude posteriors.
+        # The full posterior on α accounts for uncertainty in log_α0, β, and δ.
+        n_flat = len(flat_samples)
 
-        # Evolution slopes in physical (un-standardized) units.
-        # The sampler uses standardized covariates; divide by X_std to recover
-        # "log(α) change per unit of the original property".
-        evolution = {}
-        for k, col in enumerate(evol_cols):
-            beta_physical = flat_samples[:, 1 + k] / X_std[k]
-            q16, q50, q84 = np.percentile(beta_physical, [16, 50, 84])
-            evolution[col] = (q50, q16, q84)
+        if not group_amplitudes:
+            # Mode 1: alpha_samples shape (n_flat, M)
+            log_a0_samp   = flat_samples[:, sl_log_a0][:, 0]     # (n_flat,)
+            betas_samp    = flat_samples[:, sl_betas]              # (n_flat, K)
+            deltas_samp   = flat_samples[:, sl_deltas]             # (n_flat, M)
+            log_alpha_samp = (
+                log_a0_samp[:, None]
+                + betas_samp @ X_evol_std.T    # (n_flat, M)
+                + deltas_samp
+            )
+            alpha_samples = np.exp(log_alpha_samp)                 # (n_flat, M)
 
-        # Acceptance fraction: fraction of proposed moves accepted.
-        # < 0.2: walkers are stuck (step too large or posterior highly curved)
-        # > 0.5: steps too small, chains move slowly (still correct but slow)
+            evolution = {}
+            for k, col in enumerate(evol_cols):
+                beta_phys = flat_samples[:, i1 + k] / X_std[k]
+                q16, q50, q84 = np.percentile(beta_phys, [16, 50, 84])
+                evolution[col] = (q50, q16, q84)
+
+        else:
+            # Modes 2 & 3: alpha_samples shape (n_flat, G, M)
+            log_a0_g_samp = flat_samples[:, sl_log_a0]             # (n_flat, G)
+            deltas_samp   = flat_samples[:, sl_deltas].reshape(n_flat, n_groups, M)  # (n_flat, G, M)
+
+            if not independent_betas:
+                betas_samp = flat_samples[:, sl_betas]             # (n_flat, K)
+                # log_α_gm[s, g, m] = log_α0_g[s,g] + β[s]·x̃_m + δ[s,g,m]
+                log_alpha_samp = (
+                    log_a0_g_samp[:, :, None]                      # (n_flat, G, 1)
+                    + (betas_samp @ X_evol_std.T)[:, None, :]      # (n_flat, 1, M)
+                    + deltas_samp                                    # (n_flat, G, M)
+                )
+                evolution = {}
+                for k, col in enumerate(evol_cols):
+                    beta_phys = flat_samples[:, i1 + k] / X_std[k]
+                    q16, q50, q84 = np.percentile(beta_phys, [16, 50, 84])
+                    evolution[col] = (q50, q16, q84)
+            else:
+                betas_gk_samp = flat_samples[:, sl_betas].reshape(n_flat, n_groups, K)  # (n_flat, G, K)
+                # log_α_gm[s, g, m] = log_α0_g[s,g] + β_g[s,g]·x̃_m + δ[s,g,m]
+                log_alpha_samp = (
+                    log_a0_g_samp[:, :, None]                       # (n_flat, G, 1)
+                    + np.einsum("sgk,mk->sgm", betas_gk_samp, X_evol_std)  # (n_flat, G, M)
+                    + deltas_samp                                    # (n_flat, G, M)
+                )
+                # Per-group evolution: keyed as "{group_name}_{col}"
+                evolution = {}
+                for g in range(n_groups):
+                    for k, col in enumerate(evol_cols):
+                        beta_phys = flat_samples[:, i1 + g * K + k] / X_std[k]
+                        q16, q50, q84 = np.percentile(beta_phys, [16, 50, 84])
+                        evolution[f"{group_names[g]}_{col}"] = (q50, q16, q84)
+
+            alpha_samples = np.exp(log_alpha_samp)                  # (n_flat, G, M)
+
+        alpha_per_bin     = np.median(alpha_samples, axis=0)         # (M,) or (G, M)
+        alpha_err_per_bin = alpha_samples.std(axis=0)                # same shape
+
         acc_frac = float(sampler.acceptance_fraction.mean())
-
-        # Autocorrelation time: how many steps are needed for one independent sample.
-        # Requires n_steps >> 50 × tau to estimate reliably.
         try:
             tau = sampler.get_autocorr_time(quiet=True)
         except Exception:
             tau = None
 
-        # Reduced chi² at posterior median (rough goodness-of-fit check).
-        # chi²_red ≈ 1: model fits noise level; >> 1: under-fitting; << 1: over-fitting.
         theta_med = np.array([medians[n] for n in param_names])
         ll_med = log_likelihood(theta_med)
         chi2_red = (
             float(-2 * ll_med / max(N_total - ndim, 1))
-            if not use_full_cov
-            else float("nan")  # chi²_red not simply defined for correlated errors
+            if not use_full_cov else float("nan")
         )
 
         if verbose:
@@ -2274,44 +2393,66 @@ class PAHModel:
                 print(f"  Max autocorrelation time: {int(np.max(tau))} steps")
             if not np.isnan(chi2_red):
                 print(f"  chi2_red at median: {chi2_red:.3f}")
-            print(f"\n  Posterior median PAH amplitudes per bin:")
-            for m in range(M):
-                label = bins_data[m][0]
-                print(
-                    f"    {label}: α = {alpha_per_bin[m]:.4f} "
-                    f"± {alpha_err_per_bin[m]:.4f}"
-                )
+            if not group_amplitudes:
+                print(f"\n  Per-bin PAH amplitudes:")
+                for m in range(M):
+                    label = bins_data[m][0]
+                    print(f"    {label}: α = {alpha_per_bin[m]:.4f} ± {alpha_err_per_bin[m]:.4f}")
+            else:
+                print(f"\n  Per-group per-bin PAH amplitudes (α_gm):")
+                for g in range(n_groups):
+                    print(f"    Group {group_names[g]}:")
+                    for m in range(M):
+                        print(f"      {bins_data[m][0]}: α = {alpha_per_bin[g, m]:.4f} ± {alpha_err_per_bin[g, m]:.4f}")
             print(f"\n  Evolution slopes (physical units, 16/50/84 percentiles):")
             for col, (med, lo, hi) in evolution.items():
                 print(f"    β_{col}: {med:+.3f}  [{lo:+.3f}, {hi:+.3f}]")
 
         return {
-            "flat_samples": flat_samples,
-            "param_names": param_names,
-            "medians": medians,
-            "lower": lower,
-            "upper": upper,
-            "evolution": evolution,
-            "alpha_per_bin": alpha_per_bin,
-            "alpha_err_per_bin": alpha_err_per_bin,
-            "alpha_samples": alpha_samples,
-            "bin_labels": [b[0] for b in bins_data],
-            "bin_centers": np.array([b[4] for b in bins_data]),
-            "sampler": sampler,
+            "flat_samples":        flat_samples,
+            "param_names":         param_names,
+            "medians":             medians,
+            "lower":               lower,
+            "upper":               upper,
+            "evolution":           evolution,
+            "alpha_per_bin":       alpha_per_bin,       # (M,) or (G, M)
+            "alpha_err_per_bin":   alpha_err_per_bin,   # same shape
+            "alpha_samples":       alpha_samples,        # (n_flat, M) or (n_flat, G, M)
+            "bin_labels":          [b[0] for b in bins_data],
+            "bin_centers":         np.array([b[4] for b in bins_data]),
+            "sampler":             sampler,
             "acceptance_fraction": acc_frac,
-            "autocorr_time": tau,
-            "chi2_red": chi2_red,
-            "feature_groups": groups,
-            "feature_names": feature_names,
-            "evol_cols": evol_cols,
-            "X_evol": X_evol,
-            "X_mean": X_mean,
-            "X_std": X_std,
-            "ndim": ndim,
-            "n_walkers": n_walkers,
-            "n_steps": n_steps,
-            "n_burn": n_burn,
+            "autocorr_time":       tau,
+            "chi2_red":            chi2_red,
+            "feature_groups":      groups,
+            "feature_names":       feature_names,
+            "group_names":         group_names,
+            "group_amplitudes":    group_amplitudes,
+            "independent_betas":   independent_betas,
+            "evol_cols":           evol_cols,
+            "X_evol":              X_evol,
+            "X_mean":              X_mean,
+            "X_std":               X_std,
+            "ndim":                ndim,
+            "n_walkers":           n_walkers,
+            "n_steps":             n_steps,
+            "n_burn":              n_burn,
+            "_z_union":            z_union,
+            "_T_grid":             T_grid,              # (n_groups, len(z_union))
+            "_obs_per_bin": {
+                b[0]: {"z": b[1], "flux": b[2], "sigma": b[3]}
+                for b in bins_data
+            },
+            "_X_evol_std":         X_evol_std,          # (M, K)
+            "_feat_scale":         feat_scale,
+            "_widths_sigma":       widths_sigma,
+            "_group_col":          group_col,
         }
+
+    def plot_bayesian_pah_vs_property(self, result, save_path=None):
+        """Plot Bayesian forward model results. Delegates to plots.plot_pah_vs_property_bayesian."""
+        from .plots import plot_pah_vs_property_bayesian
+        return plot_pah_vs_property_bayesian(result, self.features, save_path=save_path)
 
     def plot_multibin_forward_fit(self, result, save_path=None):
         """Plot multi-bin forward model results. Delegates to plots.plot_pah_multibin_forward_fit."""

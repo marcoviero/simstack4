@@ -3629,6 +3629,176 @@ def plot_pah_vs_property(per_bin_results, features, save_path=None):
     return fig
 
 
+def plot_pah_vs_property_bayesian(result, features, save_path=None):
+    """
+    Science summary plot for fit_bayesian_forward_model — mirrors plot_pah_vs_property.
+
+    Three panels:
+      1. Detrended flux vs z per bin (data bumps = PAH features)
+      2. Recovered intrinsic PAH spectra per bin (rest-frame, deconvolved from bandpass)
+      3. Per-bin alpha vs bin center — one series per feature group in group_amplitudes modes
+
+    Dispatches on alpha_per_bin shape: (M,) for mode 1, (G, M) for modes 2/3.
+
+    Parameters
+    ----------
+    result : dict
+        Output from PAHModel.fit_bayesian_forward_model.
+    features : list of (center, amplitude, fwhm) tuples
+        PAH feature definitions (e.g. PAHModel.features).
+    save_path : str or Path, optional
+    """
+    from pathlib import Path as _Path
+
+    bin_labels       = result["bin_labels"]
+    bin_centers      = result["bin_centers"]
+    alpha_per_bin    = result["alpha_per_bin"]    # (M,) or (G, M)
+    alpha_samples    = result["alpha_samples"]    # (n_flat, M) or (n_flat, G, M)
+    medians          = result["medians"]
+    groups           = result["feature_groups"]
+    group_names      = result.get("group_names", [f"g{g}" for g in range(len(groups))])
+    feat_scale       = result["_feat_scale"]
+    widths_sigma     = result["_widths_sigma"]
+    obs_per_bin      = result["_obs_per_bin"]
+    z_union          = result["_z_union"]
+    T_grid           = result["_T_grid"]
+    group_amplitudes = result.get("group_amplitudes", False)
+
+    M        = len(bin_labels)
+    n_groups = T_grid.shape[0]
+    colors_m = plt.cm.viridis(np.linspace(0.15, 0.85, max(M, 2)))
+    colors_g = plt.cm.plasma(np.linspace(0.15, 0.85, max(n_groups, 2)))
+
+    # For panel 1: compute pah_factor at each bin using posterior medians.
+    # Mode 1: 1 + α_m × (r @ T); modes 2/3: 1 + Σ_g α_gm × T_g
+    def _pah_factor_plot(m, T_arr):
+        if not group_amplitudes:
+            r_med = np.concatenate([[1.0], [
+                medians.get(f"r_group{gi}", 1.0) for gi in range(1, n_groups)
+            ]])
+            return 1.0 + alpha_per_bin[m] * (r_med @ T_arr)
+        else:
+            return 1.0 + alpha_per_bin[:, m] @ T_arr   # (G,) @ (G, n_obs) = (n_obs,)
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
+
+    # ── Panel 1: detrended flux vs z ─────────────────────────────────────────
+    ax = axes[0]
+    for m, label in enumerate(bin_labels):
+        obs    = obs_per_bin[label]
+        z_m    = obs["z"]
+        flux_m = obs["flux"]
+        sig_m  = obs["sigma"]
+
+        T_data = np.array([np.interp(z_m, z_union, T_grid[gi]) for gi in range(n_groups)])
+        pah_m  = _pah_factor_plot(m, T_data)
+        w_log  = flux_m / (sig_m * np.log(10))
+        X      = np.column_stack([z_m, z_m**2, np.ones_like(z_m)])
+        y_log  = np.log10(flux_m / pah_m)
+        coeffs, _, _, _ = np.linalg.lstsq(X * w_log[:, None], y_log * w_log, rcond=None)
+        baseline = 10.0 ** (X @ coeffs)
+
+        detrended     = flux_m / baseline
+        detrended_err = sig_m  / baseline
+
+        z_fine = np.linspace(z_m.min(), z_m.max(), 150)
+        T_fine = np.array([np.interp(z_fine, z_union, T_grid[gi]) for gi in range(n_groups)])
+        pah_curve = _pah_factor_plot(m, T_fine)
+
+        ax.errorbar(z_m, detrended, yerr=detrended_err,
+                    fmt="o", ms=5, alpha=0.5, color=colors_m[m], ecolor=colors_m[m])
+        ax.plot(z_fine, pah_curve, "-", color=colors_m[m], lw=2.0, alpha=0.85, label=label)
+
+    ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
+    ax.set_xlabel("Redshift")
+    ax.set_ylabel("Flux / smooth trend")
+    ax.set_title("Detrended flux vs z per bin\n(bumps = PAH features)")
+    ax.legend(fontsize=7, loc="upper right")
+    ax.grid(True, alpha=0.2)
+
+    # ── Panel 2: recovered intrinsic PAH spectra ──────────────────────────────
+    # 1 + Σ_{g,f} α_gm × feat_scale[f] × G(λ; lc_f, σ_f)
+    # For mode 1: α_gm → α_m × r_g; for modes 2/3: α_gm directly.
+    ax = axes[1]
+    lam_fine = np.linspace(5, 16, 500)
+    for m, label in enumerate(bin_labels):
+        spec = np.ones_like(lam_fine)
+        for gi, g in enumerate(groups):
+            if group_amplitudes:
+                a_gm = alpha_per_bin[gi, m]
+            else:
+                r_med_gi = medians.get(f"r_group{gi}", 1.0) if gi > 0 else 1.0
+                a_gm = alpha_per_bin[m] * r_med_gi
+            for j in g:
+                lc  = features[j][0]
+                sig = widths_sigma[j]
+                spec += a_gm * feat_scale[j] * np.exp(-0.5 * ((lam_fine - lc) / sig) ** 2)
+        ax.plot(lam_fine, spec, "-", color=colors_m[m], lw=2.5, alpha=0.8, label=label)
+
+    ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
+    for lc, _, _ in features:
+        ax.axvline(lc, color="gray", ls=":", alpha=0.2)
+        ax.text(lc, max(ax.get_ylim()[1], 1.6),
+                f"{lc}", fontsize=7, ha="center", va="bottom", color="gray")
+    ax.set_xlabel("Rest-frame wavelength (μm)")
+    ax.set_ylabel("1 + PAH emission")
+    ax.set_title("Recovered intrinsic PAH spectra\n(deconvolved from MIPS bandpass)")
+    ax.legend(fontsize=8)
+    ax.set_xlim(5, 15)
+    ax.grid(True, alpha=0.2)
+
+    # ── Panel 3: alpha vs bin center ──────────────────────────────────────────
+    # Mode 1: one series; modes 2/3: G series (one per feature group)
+    ax = axes[2]
+    if not group_amplitudes:
+        q16 = np.percentile(alpha_samples, 16, axis=0)  # (M,)
+        q84 = np.percentile(alpha_samples, 84, axis=0)
+        for m in range(M):
+            ax.errorbar(
+                bin_centers[m], alpha_per_bin[m],
+                yerr=[[alpha_per_bin[m] - q16[m]], [q84[m] - alpha_per_bin[m]]],
+                fmt="o", ms=9, color=colors_m[m], ecolor=colors_m[m],
+                elinewidth=2, capsize=5, label=bin_labels[m], zorder=5,
+            )
+        ax.set_ylabel("PAH amplitude alpha")
+        ax.set_title("PAH amplitude per bin\n(posterior median + 16–84 CI)")
+    else:
+        # alpha_samples shape (n_flat, G, M); alpha_per_bin shape (G, M)
+        q16 = np.percentile(alpha_samples, 16, axis=0)  # (G, M)
+        q84 = np.percentile(alpha_samples, 84, axis=0)
+        for g in range(n_groups):
+            ax.errorbar(
+                bin_centers, alpha_per_bin[g],
+                yerr=[alpha_per_bin[g] - q16[g], q84[g] - alpha_per_bin[g]],
+                fmt="o-", ms=7, lw=1.5, color=colors_g[g], ecolor=colors_g[g],
+                elinewidth=1.5, capsize=4, label=group_names[g], zorder=5,
+            )
+        ax.set_ylabel("PAH amplitude alpha_gm")
+        ax.set_title("Per-group PAH amplitude vs bin\n(posterior median + 16–84 CI)")
+
+    ax.set_xlabel(result.get("_group_col", "bin center").replace("_", " "))
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.2)
+
+    mode_label = "single-alpha" if not group_amplitudes else (
+        "shared-beta" if not result.get("independent_betas", False) else "independent-beta"
+    )
+    group_col = result.get("_group_col", "bin property")
+    fig.suptitle(
+        f"PAH emission vs {group_col}  |  {M} bins  |  Bayesian [{mode_label}]",
+        fontsize=13, y=1.01,
+    )
+    plt.tight_layout()
+
+    if save_path:
+        save_path = _Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+        print(f"Saved: {save_path}")
+
+    return fig
+
+
 def plot_pah_multibin_forward_fit(result, features, save_path=None):
     """
     Plot multi-bin forward model results.
