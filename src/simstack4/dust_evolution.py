@@ -238,12 +238,13 @@ class DustEvolutionModel:
         self,
         beta_c: float = 1.8,
         beta_w: float = 1.5,
-        T_c_min: float = 15.0,
+        T_c_min: float = 20.0,
         T_c_max: float = 60.0,
         T_w_min: float = 40.0,
         T_w_max: float = 100.0,
+        T_c_prior: tuple[float, float] = (30.0, 5.0),     # (mean, sigma) — Schreiber+18 MS anchor
         T_w0_prior: tuple[float, float] = (55.0, 15.0),   # (mean, sigma)
-        c_sigma_prior: tuple[float, float] = (5.0, 5.0),  # (mean, sigma)
+        c_sigma_prior: tuple[float, float] = (5.0, 3.0),  # (mean, sigma) — tightened from 5.0
         bands: dict | None = None,
         noise_model: dict | None = None,
     ):
@@ -253,6 +254,7 @@ class DustEvolutionModel:
         self.T_c_max = T_c_max
         self.T_w_min = T_w_min
         self.T_w_max = T_w_max
+        self.T_c_prior = T_c_prior
         self.T_w0_prior = T_w0_prior
         self.c_sigma_prior = c_sigma_prior
         self.bands = bands or COSMOS_BANDS
@@ -525,8 +527,11 @@ class DustEvolutionModel:
         if a_z < 0:
             return -np.inf
 
-        # Gaussian on T_w0 and c_sigma
+        # Gaussian priors on dust temperatures and sigma slope
         lp = 0.0
+        mu_Tc, sig_Tc = self.T_c_prior
+        lp -= 0.5 * ((T_c - mu_Tc) / sig_Tc) ** 2
+
         mu_Tw0, sig_Tw0 = self.T_w0_prior
         lp -= 0.5 * ((T_w0 - mu_Tw0) / sig_Tw0) ** 2
 
