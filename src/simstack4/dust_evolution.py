@@ -34,6 +34,7 @@ recoverable because the z-trajectory of the SED shape is jointly informative
 across all bins.
 """
 
+import functools
 import logging
 from dataclasses import dataclass, field
 
@@ -94,9 +95,15 @@ _NORM_LAM_UM = np.logspace(1.0, 4.0, 400)
 _NORM_NU_HZ  = _c * 1e6 / _NORM_LAM_UM
 
 
+@functools.lru_cache(maxsize=8192)
+def _norm_peak(T_K: float, beta: float) -> float:
+    """Peak of ν^β·B_ν(T) over the fixed broad grid, cached by (T_K, beta)."""
+    return float((_NORM_NU_HZ**beta * _planck_nu(_NORM_NU_HZ, T_K)).max())
+
+
 def _greybody_nu(nu_hz: np.ndarray, T_K: float, beta: float) -> np.ndarray:
     """S_ν ∝ ν^β · B_ν(T), normalised to peak = 1 over a fixed broad grid."""
-    peak = (_NORM_NU_HZ**beta * _planck_nu(_NORM_NU_HZ, T_K)).max()
+    peak = _norm_peak(T_K, beta)
     raw = nu_hz**beta * _planck_nu(nu_hz, T_K)
     return raw / peak if peak > 0 else raw
 
@@ -175,6 +182,17 @@ def warm_temperature(log_sigma_sfr: float, T_w0: float, c_sigma: float) -> float
 # ---------------------------------------------------------------------------
 # Dataclasses for results
 # ---------------------------------------------------------------------------
+
+@dataclass
+class _BinObs:
+    """Pre-baked per-bin observations for the MCMC hot path (no pandas)."""
+    z: float
+    log_M_star: float
+    log_sigma_sfr: float
+    nu_rest: np.ndarray   # Hz, valid bands only
+    f_obs: np.ndarray     # observed fluxes (mJy)
+    inv_var: np.ndarray   # 1/σ²
+
 
 @dataclass
 class DustEvolutionResult:
@@ -534,6 +552,75 @@ class DustEvolutionModel:
         ll = self._log_likelihood(theta_global, df, bin_col)
         return lp + ll
 
+    def _prepare_obs(self, df: pd.DataFrame, bin_col: str) -> list:
+        """Convert DataFrame to a list of _BinObs (called once before MCMC)."""
+        obs = []
+        for bid in sorted(df[bin_col].unique()):
+            sub = df[df[bin_col] == bid].iloc[0]
+            z = float(sub["z"])
+            nu_list, f_list, iv_list = [], [], []
+            for band, lam_obs_um in self.bands.items():
+                if band == "MIPS_24" and z > _MIPS_ZMAX:
+                    continue
+                f_obs = sub.get(band, np.nan)
+                f_err = sub.get(f"{band}_err", np.nan)
+                if not (np.isfinite(f_obs) and np.isfinite(f_err) and f_err > 0):
+                    continue
+                nu_list.append(_c * 1e6 / (lam_obs_um / (1.0 + z)))
+                f_list.append(f_obs)
+                iv_list.append(1.0 / f_err**2)
+            obs.append(_BinObs(
+                z=z,
+                log_M_star=float(sub["log_M_star"]),
+                log_sigma_sfr=float(sub["log_sigma_sfr"]),
+                nu_rest=np.array(nu_list),
+                f_obs=np.array(f_list),
+                inv_var=np.array(iv_list),
+            ))
+        return obs
+
+    def _log_posterior_fast(self, theta: np.ndarray, obs_list: list) -> float:
+        """Vectorized log-posterior using pre-baked obs data and cached peaks.
+
+        Single pass per bin: solves A_c analytically then accumulates χ².
+        """
+        lp = self._log_prior(theta)
+        if not np.isfinite(lp):
+            return -np.inf
+
+        T_c, T_w0, c_sigma, a0, a_z, a_M = theta
+        theta_f = np.array([a0, a_z, a_M])
+        beta_c, beta_w = self.beta_c, self.beta_w
+
+        ll = 0.0
+        for b in obs_list:
+            if len(b.nu_rest) == 0:
+                continue
+            fw = warm_fraction(b.z, b.log_M_star, theta_f)
+            Tw = float(np.clip(
+                warm_temperature(b.log_sigma_sfr, T_w0, c_sigma),
+                self.T_w_min, self.T_w_max,
+            ))
+
+            # Template at A_c=1 (vectorized over bands; peaks are cached)
+            cold = b.nu_rest**beta_c * _planck_nu(b.nu_rest, T_c) / _norm_peak(T_c, beta_c)
+            warm = fw * b.nu_rest**beta_w * _planck_nu(b.nu_rest, Tw) / _norm_peak(Tw, beta_w)
+            t = cold + warm
+
+            # WLS solve for A_c
+            denom = float((t * t * b.inv_var).sum())
+            if denom <= 0.0:
+                return -np.inf
+            A_c = float((b.f_obs * t * b.inv_var).sum()) / denom
+            if A_c <= 0.0:
+                return -np.inf
+
+            # χ² contribution (all bands at once)
+            r = b.f_obs - A_c * t
+            ll -= 0.5 * float((r * r * b.inv_var).sum())
+
+        return lp + ll
+
     def fit_dust_evolution(
         self,
         df: pd.DataFrame,
@@ -574,20 +661,25 @@ class DustEvolutionModel:
             logger.error("emcee not installed — cannot run MCMC")
             return None
 
+        # Pre-bake observations once — eliminates all pandas access from the hot path
+        obs_list = self._prepare_obs(df, bin_col)
+
         if fix_a_M:
             param_names = ["T_c", "T_w0", "c_sigma", "a0", "a_z"]
 
-            def _log_post_5(theta5, df, bin_col):
-                return self._log_posterior(
-                    np.array([*theta5, 0.0]), df, bin_col
+            def log_post_fn(theta5):
+                return self._log_posterior_fast(
+                    np.array([*theta5, 0.0]), obs_list
                 )
 
-            log_post_fn = _log_post_5
             default_init = np.array([30.0, 55.0, 5.0, -0.5, 0.05])
             scales = np.array([2.0, 3.0, 1.0, 0.3, 0.05])
         else:
             param_names = ["T_c", "T_w0", "c_sigma", "a0", "a_z", "a_M"]
-            log_post_fn = self._log_posterior
+
+            def log_post_fn(theta6):
+                return self._log_posterior_fast(theta6, obs_list)
+
             default_init = np.array([30.0, 55.0, 5.0, -0.5, 0.05, 0.0])
             scales = np.array([2.0, 3.0, 1.0, 0.3, 0.05, 0.05])
 
@@ -601,10 +693,7 @@ class DustEvolutionModel:
         rng = np.random.default_rng(0)
         p0 = theta_init_use + scales * rng.standard_normal((n_walkers, n_params))
 
-        sampler = emcee.EnsembleSampler(
-            n_walkers, n_params, log_post_fn,
-            args=(df, bin_col),
-        )
+        sampler = emcee.EnsembleSampler(n_walkers, n_params, log_post_fn)
 
         if verbose:
             logger.info("Running MCMC: %d walkers × %d steps (%s)",
