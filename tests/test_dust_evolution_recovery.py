@@ -43,14 +43,15 @@ from simstack4.dust_evolution import (
 # Shared constants
 # ---------------------------------------------------------------------------
 
-# True global parameters: [T_c, T_w0, c_sigma, a0, a_z, a_M]
+# True global parameters: [T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma]
 #   T_c = 30 K cold dust (V22 low-z baseline)
 #   T_w0 = 55 K warm dust at log_σ_SFR = 0
 #   c_sigma = 5 K per dex in σ_SFR  (physical: radiation field intensity)
 #   a0 = −0.5  → f_w ≈ 38% at z=0.75, log_M*=10.5 — clearly above 3% noise floor
 #   a_z = 0.10 → moderate z evolution of warm fraction
 #   a_M = 0.0  → no mass dependence (simple case; used in most tests)
-THETA_TRUE = np.array([30.0, 55.0, 5.0, -0.5, 0.10, 0.0])
+#   a_sigma = 0.0 → no σ_SFR dependence on f_w (T_w dependence via c_sigma suffices)
+THETA_TRUE = np.array([30.0, 55.0, 5.0, -0.5, 0.10, 0.0, 0.0])
 
 # z × σ_SFR grid (2D for speed; 6 z bins × 3 σ_SFR bins = 18 property bins)
 Z_MIDS     = [0.75, 1.25, 1.75, 2.5, 4.0, 5.5]
@@ -218,7 +219,8 @@ class TestGlobalParameterRecovery:
 
         BIN_GRID_2D has fixed log_M*=10.5, so a_M is degenerate with a0
         (a0 + a_M·10.5 is identifiable but not each term separately).
-        We fix a_M=0 so the chain has 5 well-identified parameters.
+        We fix a_M=0 so the chain has 6 well-identified parameters
+        [T_c, T_w0, c_sigma, a0, a_z, a_sigma].
         """
         sim = dem.simulate_stacked_dataframe(
             BIN_GRID_2D, THETA_TRUE, A_c_true=A_C_TRUE, noise_scale=0.005,
@@ -283,7 +285,7 @@ class TestPerBinSingleComponentBias:
         from simstack4.greybody import Greybody
 
         # Weak warm at low z, strong at high z
-        theta_warm = np.array([30.0, 60.0, 0.0, -2.0, 0.30, 0.0])
+        theta_warm = np.array([30.0, 60.0, 0.0, -2.0, 0.30, 0.0, 0.0])
         A_c_test = np.ones(len(BIN_GRID_2D))
 
         sim = dem.simulate_stacked_dataframe(
@@ -380,7 +382,7 @@ class TestMassSigmaDecomposition:
         dependence is clearly visible in the SED shape.
         """
         # a0=-1.5 at z=0.75, M*=9.5: f_w≈33%; at z=2.5, M*=11.2: f_w≈74%
-        theta_mass = np.array([30.0, 55.0, 5.0, -1.5, 0.10, 0.1])
+        theta_mass = np.array([30.0, 55.0, 5.0, -1.5, 0.10, 0.1, 0.0])
 
         sim = dem.simulate_stacked_dataframe(
             BIN_GRID_3D, theta_mass, A_c_true=A_C_TRUE_3D, noise_scale=0.005,

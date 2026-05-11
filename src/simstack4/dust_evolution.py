@@ -150,19 +150,24 @@ def _peak_wavelength_um(T_K: float, beta: float = 1.8) -> float:
 # Warm-fraction and warm-temperature parametrizations
 # ---------------------------------------------------------------------------
 
-def warm_fraction(z: float, log_M_star: float, theta_f: np.ndarray) -> float:
+def warm_fraction(
+    z: float,
+    log_M_star: float,
+    log_sigma_sfr: float,
+    theta_f: np.ndarray,
+) -> float:
     """
     Fraction of cold-component amplitude carried by the warm component.
 
-        f_w = 10^(a0 + a_z·z + a_M·log_M*)
+        f_w = 10^(a0 + a_z·z + a_M·log_M* + a_sigma·log_σ_SFR)
 
-    theta_f = [a0, a_z, a_M]
+    theta_f = [a0, a_z, a_M, a_sigma]
 
     Returns a value in [0, ∞).  Values >1 are physically allowed (warm can
     dominate at extreme σ_SFR) but the prior penalises them.
     """
-    a0, a_z, a_M = theta_f
-    log_fw = a0 + a_z * z + a_M * log_M_star
+    a0, a_z, a_M, a_sigma = theta_f
+    log_fw = a0 + a_z * z + a_M * log_M_star + a_sigma * log_sigma_sfr
     return 10.0 ** np.clip(log_fw, -6.0, 3.0)
 
 
@@ -276,10 +281,10 @@ class DustEvolutionModel:
         """
         Compute observed flux densities (mJy) for a single population at redshift z.
 
-        theta_global = [T_c, T_w0, c_sigma, a0, a_z, a_M]
+        theta_global = [T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma]
         """
-        T_c, T_w0, c_sigma, a0, a_z, a_M = theta_global
-        fw = warm_fraction(z, log_M_star, np.array([a0, a_z, a_M]))
+        T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma = theta_global
+        fw = warm_fraction(z, log_M_star, log_sigma_sfr, np.array([a0, a_z, a_M, a_sigma]))
         Tw = warm_temperature(log_sigma_sfr, T_w0, c_sigma)
         Tw = np.clip(Tw, self.T_w_min, self.T_w_max)
 
@@ -349,7 +354,7 @@ class DustEvolutionModel:
             A_c_true = np.ones(M)
         assert len(A_c_true) == M
 
-        T_c, T_w0, c_sigma, a0, a_z, a_M = theta_true
+        T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma = theta_true
 
         rows = []
         for m, bdict in enumerate(bin_grid):
@@ -390,7 +395,8 @@ class DustEvolutionModel:
 
         # Derived true quantities for inspection
         fw_true = np.array([
-            warm_fraction(b["z"], b["log_M_star"], np.array([a0, a_z, a_M]))
+            warm_fraction(b["z"], b["log_M_star"], b["log_sigma_sfr"],
+                          np.array([a0, a_z, a_M, a_sigma]))
             for b in bin_grid
         ])
         Tw_true = np.array([
@@ -411,6 +417,7 @@ class DustEvolutionModel:
                 "a0": a0,
                 "a_z": a_z,
                 "a_M": a_M,
+                "a_sigma": a_sigma,
             },
             "bin_grid": bin_grid,
             "sigma_sfr_per_bin": np.array([b["log_sigma_sfr"] for b in bin_grid]),
@@ -435,8 +442,8 @@ class DustEvolutionModel:
 
         Returns (M,) array of A_c values; sets A_c=0 for degenerate bins.
         """
-        T_c, T_w0, c_sigma, a0, a_z, a_M = theta_global
-        theta_f = np.array([a0, a_z, a_M])
+        T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma = theta_global
+        theta_f = np.array([a0, a_z, a_M, a_sigma])
 
         bins = sorted(df[bin_col].unique())
         A_c = np.zeros(len(bins))
@@ -447,7 +454,7 @@ class DustEvolutionModel:
             log_M = sub["log_M_star"]
             log_sig = sub["log_sigma_sfr"]
 
-            fw = warm_fraction(z, log_M, theta_f)
+            fw = warm_fraction(z, log_M, log_sig, theta_f)
             Tw = np.clip(warm_temperature(log_sig, T_w0, c_sigma), self.T_w_min, self.T_w_max)
 
             numer = denom = 0.0
@@ -478,8 +485,8 @@ class DustEvolutionModel:
         df: pd.DataFrame,
         bin_col: str,
     ) -> float:
-        T_c, T_w0, c_sigma, a0, a_z, a_M = theta_global
-        theta_f = np.array([a0, a_z, a_M])
+        T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma = theta_global
+        theta_f = np.array([a0, a_z, a_M, a_sigma])
 
         # Analytic amplitudes at this theta
         A_c_arr = self._solve_amplitudes(df, bin_col, theta_global)
@@ -492,7 +499,7 @@ class DustEvolutionModel:
             log_M = sub["log_M_star"]
             log_sig = sub["log_sigma_sfr"]
 
-            fw = warm_fraction(z, log_M, theta_f)
+            fw = warm_fraction(z, log_M, log_sig, theta_f)
             Tw = np.clip(warm_temperature(log_sig, T_w0, c_sigma), self.T_w_min, self.T_w_max)
             A_c = A_c_arr[idx]
             if A_c <= 0:
@@ -516,7 +523,7 @@ class DustEvolutionModel:
         return ll
 
     def _log_prior(self, theta_global: np.ndarray) -> float:
-        T_c, T_w0, c_sigma, a0, a_z, a_M = theta_global
+        T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma = theta_global
 
         # Hard bounds
         if not (self.T_c_min < T_c < self.T_c_max):
@@ -539,9 +546,10 @@ class DustEvolutionModel:
         lp -= 0.5 * ((c_sigma - mu_cs) / sig_cs) ** 2
 
         # Broad Gaussian on log_fw coefficients to prevent runaway
-        lp -= 0.5 * (a0 / 3.0) ** 2    # |a0| < ~3 (log units)
-        lp -= 0.5 * (a_z / 2.0) ** 2   # modest z evolution
+        lp -= 0.5 * (a0 / 3.0) ** 2       # |a0| < ~3 (log units)
+        lp -= 0.5 * (a_z / 2.0) ** 2      # modest z evolution
         lp -= 0.5 * (a_M / 2.0) ** 2
+        lp -= 0.5 * (a_sigma / 2.0) ** 2  # modest σ_SFR dependence
 
         return lp
 
@@ -593,15 +601,15 @@ class DustEvolutionModel:
         if not np.isfinite(lp):
             return -np.inf
 
-        T_c, T_w0, c_sigma, a0, a_z, a_M = theta
-        theta_f = np.array([a0, a_z, a_M])
+        T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma = theta
+        theta_f = np.array([a0, a_z, a_M, a_sigma])
         beta_c, beta_w = self.beta_c, self.beta_w
 
         ll = 0.0
         for b in obs_list:
             if len(b.nu_rest) == 0:
                 continue
-            fw = warm_fraction(b.z, b.log_M_star, theta_f)
+            fw = warm_fraction(b.z, b.log_M_star, b.log_sigma_sfr, theta_f)
             Tw = float(np.clip(
                 warm_temperature(b.log_sigma_sfr, T_w0, c_sigma),
                 self.T_w_min, self.T_w_max,
@@ -637,6 +645,7 @@ class DustEvolutionModel:
         verbose: bool = True,
         theta_init: np.ndarray | None = None,
         fix_a_M: bool = False,
+        fix_a_sigma: bool = False,
     ) -> DustEvolutionResult | None:
         """
         Fit the two-component dust evolution model via emcee.
@@ -649,12 +658,11 @@ class DustEvolutionModel:
         bin_col : column identifying the property bin index.
         n_walkers : emcee walkers (must be even, ≥ 2×n_params).
         n_steps, n_burn : MCMC steps after/before burn-in discard.
-        theta_init : starting point [T_c, T_w0, c_sigma, a0, a_z, a_M].
+        theta_init : starting point [T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma].
                      Defaults to a physically motivated starting point.
-
-        fix_a_M : if True, fix a_M=0 and fit only [T_c, T_w0, c_sigma, a0, a_z].
-                  Use when the bin grid does not vary in stellar mass — otherwise
-                  a_M and a0 are perfectly degenerate.
+        fix_a_M : if True, fix a_M=0.  Use when log_M* is constant across bins.
+        fix_a_sigma : if True, fix a_sigma=0.  Use when log_σ_SFR is constant
+                      across bins (rare — most real grids vary σ_SFR).
 
         Returns
         -------
@@ -669,24 +677,48 @@ class DustEvolutionModel:
         # Pre-bake observations once — eliminates all pandas access from the hot path
         obs_list = self._prepare_obs(df, bin_col)
 
-        if fix_a_M:
+        # Build parameter list and closure based on which params are fixed.
+        # Full theta order: [T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma]
+        if fix_a_M and fix_a_sigma:
             param_names = ["T_c", "T_w0", "c_sigma", "a0", "a_z"]
 
-            def log_post_fn(theta5):
+            def log_post_fn(t):
                 return self._log_posterior_fast(
-                    np.array([*theta5, 0.0]), obs_list
-                )
+                    np.array([*t, 0.0, 0.0]), obs_list)
 
             default_init = np.array([30.0, 55.0, 5.0, -0.5, 0.05])
-            scales = np.array([2.0, 3.0, 1.0, 0.3, 0.05])
-        else:
-            param_names = ["T_c", "T_w0", "c_sigma", "a0", "a_z", "a_M"]
+            scales       = np.array([2.0,  3.0,  1.0,  0.3,  0.05])
 
-            def log_post_fn(theta6):
-                return self._log_posterior_fast(theta6, obs_list)
+        elif fix_a_M:
+            param_names = ["T_c", "T_w0", "c_sigma", "a0", "a_z", "a_sigma"]
+
+            def log_post_fn(t):
+                T_c, T_w0, c_sigma, a0, a_z, a_sigma = t
+                return self._log_posterior_fast(
+                    np.array([T_c, T_w0, c_sigma, a0, a_z, 0.0, a_sigma]), obs_list)
 
             default_init = np.array([30.0, 55.0, 5.0, -0.5, 0.05, 0.0])
-            scales = np.array([2.0, 3.0, 1.0, 0.3, 0.05, 0.05])
+            scales       = np.array([2.0,  3.0,  1.0,  0.3,  0.05, 0.05])
+
+        elif fix_a_sigma:
+            param_names = ["T_c", "T_w0", "c_sigma", "a0", "a_z", "a_M"]
+
+            def log_post_fn(t):
+                T_c, T_w0, c_sigma, a0, a_z, a_M = t
+                return self._log_posterior_fast(
+                    np.array([T_c, T_w0, c_sigma, a0, a_z, a_M, 0.0]), obs_list)
+
+            default_init = np.array([30.0, 55.0, 5.0, -0.5, 0.05, 0.0])
+            scales       = np.array([2.0,  3.0,  1.0,  0.3,  0.05, 0.05])
+
+        else:
+            param_names = ["T_c", "T_w0", "c_sigma", "a0", "a_z", "a_M", "a_sigma"]
+
+            def log_post_fn(t):
+                return self._log_posterior_fast(t, obs_list)
+
+            default_init = np.array([30.0, 55.0, 5.0, -0.5, 0.05, 0.0, 0.0])
+            scales       = np.array([2.0,  3.0,  1.0,  0.3,  0.05, 0.05, 0.05])
 
         n_params = len(param_names)
         n_walkers = max(n_walkers, 2 * n_params + 2)
@@ -701,9 +733,12 @@ class DustEvolutionModel:
         sampler = emcee.EnsembleSampler(n_walkers, n_params, log_post_fn)
 
         if verbose:
+            fixed = []
+            if fix_a_M:    fixed.append("a_M=0")
+            if fix_a_sigma: fixed.append("a_sigma=0")
+            label = ("fix[" + ",".join(fixed) + "]") if fixed else "free_all"
             logger.info("Running MCMC: %d walkers × %d steps (%s)",
-                        n_walkers, n_steps + n_burn,
-                        "fix_a_M=0" if fix_a_M else "free_a_M")
+                        n_walkers, n_steps + n_burn, label)
 
         sampler.run_mcmc(p0, n_steps + n_burn, progress=progress)
 
@@ -712,27 +747,29 @@ class DustEvolutionModel:
         theta_med_fit = np.median(flat, axis=0)
         theta_err_fit = flat.std(axis=0)
 
-        # Reconstruct full 6-param theta for derived quantities
-        if fix_a_M:
-            theta_med = np.append(theta_med_fit, 0.0)
-            theta_err = np.append(theta_err_fit, 0.0)
-        else:
-            theta_med = theta_med_fit
-            theta_err = theta_err_fit
+        # Reconstruct full 7-param theta for derived quantities
+        fit_vals = dict(zip(param_names, theta_med_fit))
+        fit_errs = dict(zip(param_names, theta_err_fit))
+        _def = {"T_c": 30.0, "T_w0": 55.0, "c_sigma": 5.0,
+                "a0": -0.5, "a_z": 0.05, "a_M": 0.0, "a_sigma": 0.0}
+        _all_names = ["T_c", "T_w0", "c_sigma", "a0", "a_z", "a_M", "a_sigma"]
+        theta_med = np.array([fit_vals.get(n, _def[n]) for n in _all_names])
+        theta_err_full = np.array([fit_errs.get(n, 0.0) for n in _all_names])
 
         # Derived quantities at the posterior median
         A_c = self._solve_amplitudes(df, bin_col, theta_med)
         bins = sorted(df[bin_col].unique())
         M = len(bins)
 
-        T_c, T_w0, c_sigma, a0, a_z, a_M = theta_med
-        theta_f = np.array([a0, a_z, a_M])
+        T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma = theta_med
+        theta_f = np.array([a0, a_z, a_M, a_sigma])
 
         fw_arr = np.zeros(M)
         Tw_arr = np.zeros(M)
         for idx, bid in enumerate(bins):
             sub = df[df[bin_col] == bid].iloc[0]
-            fw_arr[idx] = warm_fraction(sub["z"], sub["log_M_star"], theta_f)
+            fw_arr[idx] = warm_fraction(
+                sub["z"], sub["log_M_star"], sub["log_sigma_sfr"], theta_f)
             Tw_arr[idx] = np.clip(
                 warm_temperature(sub["log_sigma_sfr"], T_w0, c_sigma),
                 self.T_w_min, self.T_w_max,
