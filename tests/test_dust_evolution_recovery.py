@@ -211,21 +211,25 @@ class TestSimulatorConsistency:
 class TestGlobalParameterRecovery:
     """
     Joint fit recovers [T_c, T_w0, c_sigma, a0, a_z] within PARAM_TOL.
-    a_M is fixed at 0 in these tests (see Tier 3 for the M*-σ_SFR separation).
+    Both a_M and a_sigma are fixed at 0 in these tests:
+      - a_M: BIN_GRID_2D has fixed log_M*=10.5 so a_M is degenerate with a0
+      - a_sigma: truth has a_sigma=0; fixing it keeps the chain at 5 params so
+        MCMC_STD (2000 post-burn steps) is sufficient for τ~40-60.
+    See Tier 3 for the full 7-param M*-σ_SFR separation tests.
     """
 
     def test_tc_and_fw_evolution_recovered(self, dem):
         """Main recovery test: T_c + f_w z-evolution at low noise.
 
-        BIN_GRID_2D has fixed log_M*=10.5, so a_M is degenerate with a0
-        (a0 + a_M·10.5 is identifiable but not each term separately).
-        We fix a_M=0 so the chain has 6 well-identified parameters
-        [T_c, T_w0, c_sigma, a0, a_z, a_sigma].
+        BIN_GRID_2D has fixed log_M*=10.5 and truth a_sigma=0, so we fix
+        both a_M=0 and a_sigma=0, leaving 5 identifiable parameters
+        [T_c, T_w0, c_sigma, a0, a_z].
         """
         sim = dem.simulate_stacked_dataframe(
             BIN_GRID_2D, THETA_TRUE, A_c_true=A_C_TRUE, noise_scale=0.005,
         )
-        result = dem.fit_dust_evolution(sim["df"], fix_a_M=True, **MCMC_STD)
+        result = dem.fit_dust_evolution(
+            sim["df"], fix_a_M=True, fix_a_sigma=True, **MCMC_STD)
         assert result is not None
         _check_global_params(result, THETA_TRUE)
 
@@ -234,7 +238,8 @@ class TestGlobalParameterRecovery:
         sim = dem.simulate_stacked_dataframe(
             BIN_GRID_2D, THETA_TRUE, A_c_true=A_C_TRUE, noise_scale=0.03,
         )
-        result = dem.fit_dust_evolution(sim["df"], fix_a_M=True, **MCMC_STD)
+        result = dem.fit_dust_evolution(
+            sim["df"], fix_a_M=True, fix_a_sigma=True, **MCMC_STD)
         assert result is not None
         assert (result.A_c_per_bin > 0).all(), (
             f"Negative A_c: {result.A_c_per_bin}"
@@ -245,7 +250,8 @@ class TestGlobalParameterRecovery:
         sim = dem.simulate_stacked_dataframe(
             BIN_GRID_2D, THETA_TRUE, A_c_true=A_C_TRUE, noise_scale=0.005,
         )
-        result = dem.fit_dust_evolution(sim["df"], fix_a_M=True, **MCMC_STD)
+        result = dem.fit_dust_evolution(
+            sim["df"], fix_a_M=True, fix_a_sigma=True, **MCMC_STD)
         assert result is not None
         # Middle-sigma bins indexed at j=1 within each z-slice
         idx_mid = [1 + j * len(SIGMA_MIDS) for j in range(len(Z_MIDS))]
@@ -366,7 +372,8 @@ class TestMassSigmaDecomposition:
         sim = dem.simulate_stacked_dataframe(
             BIN_GRID_2D, THETA_TRUE, A_c_true=A_C_TRUE, noise_scale=0.03,
         )
-        result = dem.fit_dust_evolution(sim["df"], fix_a_M=True, **MCMC_STD)
+        result = dem.fit_dust_evolution(
+            sim["df"], fix_a_M=True, fix_a_sigma=True, **MCMC_STD)
         assert result is not None
         # Within the first z-slice (bins 0, 1, 2), σ_SFR increases
         Tw_rec = result.T_w_grid[:3]
