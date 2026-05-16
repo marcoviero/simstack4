@@ -43,15 +43,16 @@ from simstack4.dust_evolution import (
 # Shared constants
 # ---------------------------------------------------------------------------
 
-# True global parameters: [T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma]
-#   T_c = 30 K cold dust (V22 low-z baseline)
-#   T_w0 = 55 K warm dust at log_σ_SFR = 0
-#   c_sigma = 5 K per dex in σ_SFR  (physical: radiation field intensity)
-#   a0 = −0.5  → f_w ≈ 38% at z=0.75, log_M*=10.5 — clearly above 3% noise floor
+# True global parameters: [T_c0, b_z, T_w0, c_sigma, a0, a_z, a_M, a_sigma]
+#   T_c0 = 30 K cold dust anchor at z=0 (V22 low-z baseline)
+#   b_z  = 0.0 K/z → no T_c evolution (keeps tests comparable to pre-refactor)
+#   T_w0 = 55 K warm dust at log_σ_SFR=0
+#   c_sigma = 5 K per dex in σ_SFR
+#   a0 = −0.5  → f_w ≈ 38% at z=0.75, log_M*=10.5
 #   a_z = 0.10 → moderate z evolution of warm fraction
-#   a_M = 0.0  → no mass dependence (simple case; used in most tests)
-#   a_sigma = 0.0 → no σ_SFR dependence on f_w (T_w dependence via c_sigma suffices)
-THETA_TRUE = np.array([30.0, 55.0, 5.0, -0.5, 0.10, 0.0, 0.0])
+#   a_M = 0.0  → no mass dependence
+#   a_sigma = 0.0 → no σ_SFR dependence on f_w
+THETA_TRUE = np.array([30.0, 0.0, 55.0, 5.0, -0.5, 0.10, 0.0, 0.0])
 
 # z × σ_SFR grid (2D for speed; 6 z bins × 3 σ_SFR bins = 18 property bins)
 Z_MIDS     = [0.75, 1.25, 1.75, 2.5, 4.0, 5.5]
@@ -219,11 +220,12 @@ class TestGlobalParameterRecovery:
     """
 
     def test_tc_and_fw_evolution_recovered(self, dem):
-        """Main recovery test: T_c + f_w z-evolution at low noise.
+        """Main recovery test: T_c0, b_z + f_w z-evolution at low noise.
 
         BIN_GRID_2D has fixed log_M*=10.5 and truth a_sigma=0, so we fix
-        both a_M=0 and a_sigma=0, leaving 5 identifiable parameters
-        [T_c, T_w0, c_sigma, a0, a_z].
+        both a_M=0 and a_sigma=0, leaving 6 identifiable parameters
+        [T_c0, b_z, T_w0, c_sigma, a0, a_z].
+        b_z has truth=0; allow wider tolerance for it.
         """
         sim = dem.simulate_stacked_dataframe(
             BIN_GRID_2D, THETA_TRUE, A_c_true=A_C_TRUE, noise_scale=0.005,
@@ -231,7 +233,8 @@ class TestGlobalParameterRecovery:
         result = dem.fit_dust_evolution(
             sim["df"], fix_a_M=True, fix_a_sigma=True, **MCMC_STD)
         assert result is not None
-        _check_global_params(result, THETA_TRUE)
+        _check_global_params(result, THETA_TRUE,
+                             tol_override={"b_z": 1.0})
 
     def test_cold_amplitude_positive(self, dem):
         """Recovered per-bin A_c must all be positive."""
@@ -291,7 +294,7 @@ class TestPerBinSingleComponentBias:
         from simstack4.greybody import Greybody
 
         # Weak warm at low z, strong at high z
-        theta_warm = np.array([30.0, 60.0, 0.0, -2.0, 0.30, 0.0, 0.0])
+        theta_warm = np.array([30.0, 0.0, 60.0, 0.0, -2.0, 0.30, 0.0, 0.0])
         A_c_test = np.ones(len(BIN_GRID_2D))
 
         sim = dem.simulate_stacked_dataframe(
@@ -389,12 +392,13 @@ class TestMassSigmaDecomposition:
         dependence is clearly visible in the SED shape.
         """
         # a0=-1.5 at z=0.75, M*=9.5: f_w≈33%; at z=2.5, M*=11.2: f_w≈74%
-        theta_mass = np.array([30.0, 55.0, 5.0, -1.5, 0.10, 0.1, 0.0])
+        theta_mass = np.array([30.0, 0.0, 55.0, 5.0, -1.5, 0.10, 0.1, 0.0])
 
         sim = dem.simulate_stacked_dataframe(
             BIN_GRID_3D, theta_mass, A_c_true=A_C_TRUE_3D, noise_scale=0.005,
         )
-        result = dem.fit_dust_evolution(sim["df"], fix_a_M=False, theta_init=theta_mass, **MCMC_LONG)
+        result = dem.fit_dust_evolution(
+            sim["df"], fix_a_M=False, fix_a_sigma=True, theta_init=theta_mass[:7], **MCMC_LONG)
         assert result is not None
         # a_M recovered positive (sign check — theta_global is 5 or 6 params)
         a_M_idx = result.param_names.index("a_M")
