@@ -172,13 +172,14 @@ _TYPE_SHORT = {
 _DIM_LABELS = {
     "redshift": "z",
     "stellar_mass": "log M★",
+    "sigma_sfr": "log σ_SFR",
     "beta_uv": "β_UV",
     "l_uv": "log L_UV",
     "l_nuv": "log L_NUV",
 }
 
 # Grid dimension auto-detection priority (first match → columns)
-_DIM_PRIORITY = ["redshift", "l_uv", "l_nuv", "beta_uv", "stellar_mass"]
+_DIM_PRIORITY = ["redshift", "l_uv", "l_nuv", "beta_uv", "stellar_mass", "sigma_sfr"]
 
 
 # ---------------------------------------------------------------------------
@@ -854,6 +855,27 @@ def plot_sed_grid(
         print(f"💾 Saved to {save_path}")
 
     return fig
+
+
+def plot_sed_grid_sigma_sfr_rows(
+    wrapper,
+    *,
+    split_filter: list[int] | None = None,
+    **kwargs,
+) -> plt.Figure:
+    """
+    SED grid with σ_SFR bins as rows, redshift as columns, and a stellar-mass
+    colorbar — the complement of the default plot_sed_grid layout.
+
+    All keyword arguments are forwarded to plot_sed_grid.
+    """
+    return plot_sed_grid(
+        wrapper,
+        col_dim="redshift",
+        row_dim="sigma_sfr",
+        split_filter=split_filter,
+        **kwargs,
+    )
 
 
 # ---------------------------------------------------------------------------
