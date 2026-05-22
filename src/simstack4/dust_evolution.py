@@ -128,6 +128,35 @@ def _greybody_sed(
     return cold + warm
 
 
+def _warm_sed_nu(
+    nu_hz: np.ndarray,
+    T_K: float,
+    beta: float,
+    z: float,
+    log_l_ir: float,
+    pah_model=None,
+) -> np.ndarray:
+    """Warm SED = GB(T_K, beta) + PAH features; peak-normalised over the GB alone.
+
+    PAH amplitude is treated as a peak ratio relative to the warm GB peak — not a
+    rigorous integral luminosity ratio — so pah_model.predict_amplitude is an
+    approximation for how much short-wavelength flux PAH contributes.
+    """
+    gb = _greybody_nu(nu_hz, T_K, beta)
+    if pah_model is None or not np.isfinite(log_l_ir):
+        return gb
+
+    lam_um = _c * 1e6 / nu_hz  # rest-frame wavelengths in µm
+    pah_spec = pah_model.feature_spectrum(lam_um)
+
+    log_ratio = pah_model.predict_amplitude(z, log_l_ir)
+    ratio = 10.0 ** float(np.clip(log_ratio, -4.0, 0.0))
+
+    pah_peak = float(pah_spec.max()) if pah_spec.max() > 0 else 1.0
+    pah_scaled = pah_spec * ratio / pah_peak
+    return gb + pah_scaled
+
+
 def _peak_wavelength_um(T_K: float, beta: float = 1.8) -> float:
     """Rest-frame SED peak of the pure modified blackbody via grid search."""
     lam = np.logspace(1, 4, 4000)   # 10 µm … 10 mm
@@ -199,6 +228,7 @@ class _BinObs:
     nu_rest: np.ndarray   # Hz, valid bands only
     f_obs: np.ndarray     # observed fluxes (mJy)
     inv_var: np.ndarray   # 1/σ²
+    log_l_ir: float = np.nan  # log10(L_IR/L_sun) for PAH amplitude scaling
 
 
 @dataclass
@@ -255,6 +285,8 @@ class DustEvolutionModel:
         c_sigma_prior: tuple[float, float] = (5.0, 3.0),
         bands: dict | None = None,
         noise_model: dict | None = None,
+        use_pah_warm: bool = True,
+        log_l_ir_default: float = np.nan,
     ):
         self.beta_c = beta_c
         self.beta_w = beta_w
@@ -267,6 +299,13 @@ class DustEvolutionModel:
         self.c_sigma_prior = c_sigma_prior
         self.bands = bands or COSMOS_BANDS
         self.noise_model = noise_model or _DEFAULT_NOISE_MJY
+        self.use_pah_warm = use_pah_warm
+        self.log_l_ir_default = log_l_ir_default
+        if use_pah_warm:
+            from .pah_model import PAHModel
+            self.pah_model = PAHModel()
+        else:
+            self.pah_model = None
 
     # ------------------------------------------------------------------ #
     # Forward model                                                        #
@@ -280,11 +319,13 @@ class DustEvolutionModel:
         A_c: float,
         theta_global: np.ndarray,
         bands: list[str] | None = None,
+        log_l_ir: float = np.nan,
     ) -> dict[str, float]:
         """
         Compute observed flux densities (mJy) for a single population at redshift z.
 
         theta_global = [T_c0, b_z, T_w0, c_sigma, a0, a_z, a_M, a_sigma]
+        log_l_ir: log10(L_IR/L_sun) for PAH amplitude scaling (nan → no PAH)
         """
         T_c0, b_z, T_w0, c_sigma, a0, a_z, a_M, a_sigma = theta_global
         Tc = cold_temperature(z, T_c0, b_z)
@@ -297,19 +338,13 @@ class DustEvolutionModel:
         for band in bands_to_use:
             lam_obs = self.bands[band]
             lam_rest = lam_obs / (1.0 + z)
-            # Two-component SED at rest wavelength — pure modified blackbody,
-            # consistent with the MCMC likelihood (no Wien splice in forward model)
-            F = _greybody_sed(
-                np.array([lam_rest]),
-                A_c=A_c,
-                T_c=Tc,
-                A_w=fw * A_c,
-                T_w=Tw,
-                beta_c=self.beta_c,
-                beta_w=self.beta_w,
-            )[0]
-            # Apply (1+z) cosmological dimming proxy: flux ∝ 1/(1+z) for fixed L
-            # (proper D_L scaling not applied — A_c absorbs it; this is relative)
+            nu_rest = np.array([_c * 1e6 / lam_rest])
+            cold_flux = A_c * _greybody_nu(nu_rest, Tc, self.beta_c)
+            warm_flux = fw * A_c * _warm_sed_nu(
+                nu_rest, Tw, self.beta_w, z, log_l_ir,
+                self.pah_model if self.use_pah_warm else None,
+            )
+            F = float((cold_flux + warm_flux)[0])
             fluxes[band] = F
         return fluxes
 
@@ -376,7 +411,8 @@ class DustEvolutionModel:
 
             # True fluxes
             true_fluxes = self.sed_at_z(
-                z, log_M, log_sig, A_c_true[m], theta_true, bands=available
+                z, log_M, log_sig, A_c_true[m], theta_true,
+                bands=available, log_l_ir=self.log_l_ir_default,
             )
 
             row = {
@@ -595,6 +631,7 @@ class DustEvolutionModel:
         for bid in sorted(df[bin_col].unique()):
             sub = df[df[bin_col] == bid].iloc[0]
             z = float(sub["z"])
+            log_l_ir = float(sub["log_l_ir"]) if "log_l_ir" in sub.index else self.log_l_ir_default
             nu_list, f_list, iv_list = [], [], []
             for band, lam_obs_um in self.bands.items():
                 if band == "MIPS_24" and z > _MIPS_ZMAX:
@@ -613,6 +650,7 @@ class DustEvolutionModel:
                 nu_rest=np.array(nu_list),
                 f_obs=np.array(f_list),
                 inv_var=np.array(iv_list),
+                log_l_ir=log_l_ir,
             ))
         return obs
 
@@ -783,7 +821,10 @@ class DustEvolutionModel:
             # Template at A_c=1 — pure modified blackbody (no Wien splice here;
             # Wien is used only for per-bin T_c prior and plotting)
             cold = _greybody_nu(b.nu_rest, Tc, beta_c)
-            warm = fw * _greybody_nu(b.nu_rest, Tw, beta_w)
+            warm = fw * _warm_sed_nu(
+                b.nu_rest, Tw, beta_w, b.z, b.log_l_ir,
+                self.pah_model if self.use_pah_warm else None,
+            )
             t = cold + warm
 
             # WLS solve for A_c
