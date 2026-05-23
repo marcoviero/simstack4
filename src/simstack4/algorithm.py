@@ -406,20 +406,20 @@ class SimstackAlgorithm:
                         else:
                             layer_A -= np.mean(layer_A)
 
-                    # layer_B = base_k − layer_A  (no convolution)
-                    layer_B = cache[k] - layer_A
+                    # layer_B = base_k − layer_A  (no convolution needed)
+                    # layer_B is not materialised; use algebraic identities below.
 
                     # ---- Gram matrix update ----
-                    # Cross-products with all base layers
-                    A_dot_base = cache @ layer_A  # (n_layers,)
-                    B_dot_base = cache @ layer_B  # (n_layers,)
+                    # Only one DGEMV needed: layer_B identities follow from
+                    # layer_B = cache[k] - layer_A and G_base = cache @ cache.T.
+                    A_dot_base = cache @ layer_A                      # (n_layers,) — single DGEMV
+                    B_dot_base = G_base[:, k] - A_dot_base            # cache @ layer_B, no DGEMV
 
                     A_dot_A = np.dot(layer_A, layer_A)
-                    B_dot_B = np.dot(layer_B, layer_B)
-                    A_dot_B = np.dot(layer_A, layer_B)
-
                     h_A = np.dot(layer_A, obs_vector)
-                    h_B = np.dot(layer_B, obs_vector)
+                    A_dot_B = A_dot_base[k] - A_dot_A                 # dot(layer_A, layer_B)
+                    B_dot_B = G_base[k, k] - 2 * A_dot_base[k] + A_dot_A  # dot(layer_B, layer_B)
+                    h_B = h_base[k] - h_A                             # dot(layer_B, obs_vector)
 
                     # Build (n_layers+1) × (n_layers+1) system:
                     # row/col k → A, insert new row/col k+1 → B
