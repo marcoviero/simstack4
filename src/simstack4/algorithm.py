@@ -350,18 +350,31 @@ class SimstackAlgorithm:
                 f"PSF {psf_kernel.shape}, G {G_base.shape}"
             )
 
-            # ---- 2d. Per-bin iterations (parallelised over populations) ----
-            # All threads read shared arrays (cache, G_base, h_base, obs_vector)
-            # and write only to their own local variables — no locking needed
-            # except for the progress counter.
-            _done_count = 0
-            _done_lock = threading.Lock()
-            _t_parallel_start = time.time()
+            # ---- 2d. Per-bin iterations ----
+            # Use parallel populations when the cache is small enough that
+            # multiple DGEMV calls won't saturate memory bandwidth.
+            # Above _PARALLEL_CACHE_BYTES the workload is bandwidth-bound and
+            # threading adds overhead without gain, so we fall back to the
+            # sequential path which also gives per-population progress logging.
+            _PARALLEL_CACHE_BYTES = 128 * 1024 * 1024  # 128 MB
 
-            def _compute_pop_error(k: int) -> tuple[int, float]:
-                """Bootstrap error for population k. Returns (k, std)."""
-                nonlocal _done_count
+            n_crop_local = crop_info["n_crop"]
+            signal_mask_crop = crop_info.get("signal_mask_crop")
+            use_parallel = cache.nbytes < _PARALLEL_CACHE_BYTES
 
+            if use_parallel:
+                logger.info(
+                    f"  {map_name}: cache {cache.nbytes / 1e6:.0f} MB < 128 MB — "
+                    f"using {os.cpu_count()} parallel workers"
+                )
+            else:
+                logger.info(
+                    f"  {map_name}: cache {cache.nbytes / 1e6:.0f} MB ≥ 128 MB — "
+                    f"using sequential (bandwidth-bound)"
+                )
+
+            def _pop_bootstrap(k: int) -> tuple[int, float]:
+                """Bootstrap iterations for population k. Returns (k, std)."""
                 pop = self.population_manager.populations[population_ids[k]]
                 if pop.n_sources == 0:
                     return k, 0.0
@@ -376,8 +389,6 @@ class SimstackAlgorithm:
                 flux_k_samples = []
                 n_sources = len(pop.indices)
                 n_A = int(n_sources * self.bootstrap_split_fraction)
-                n_crop = crop_info["n_crop"]
-                signal_mask_crop = crop_info.get("signal_mask_crop")
 
                 for iteration in range(self.bootstrap_iterations):
                     rng = np.random.RandomState(
@@ -388,7 +399,7 @@ class SimstackAlgorithm:
 
                     layer_A = self._stamp_psf_cropped(
                         rows_all[idx_A], cols_all[idx_A],
-                        psf_kernel, psf_half, flat_to_crop, map_shape, n_crop,
+                        psf_kernel, psf_half, flat_to_crop, map_shape, n_crop_local,
                     )
 
                     if self.crop_circles:
@@ -440,22 +451,37 @@ class SimstackAlgorithm:
 
                     flux_k_samples.append(x_new[k] + x_new[k + 1])
 
-                with _done_lock:
-                    _done_count += 1
-                    done = _done_count
-
-                if done % max(1, n_populations // 10) == 0 or done == n_populations:
-                    elapsed = time.time() - _t_parallel_start
-                    logger.info(
-                        f"  {map_name}: {done}/{n_populations} populations done "
-                        f"({elapsed:.0f}s elapsed)"
-                    )
-
                 return k, np.std(flux_k_samples, ddof=1)
 
-            n_workers = min(n_populations, os.cpu_count() or 1)
-            with ThreadPoolExecutor(max_workers=n_workers) as executor:
-                for k, err in executor.map(_compute_pop_error, range(n_populations)):
+            if use_parallel:
+                n_workers = min(n_populations, os.cpu_count() or 1)
+                _done_count = 0
+                _done_lock = threading.Lock()
+                _t_par_start = time.time()
+
+                def _pop_bootstrap_tracked(k: int) -> tuple[int, float]:
+                    nonlocal _done_count
+                    result = _pop_bootstrap(k)
+                    with _done_lock:
+                        _done_count += 1
+                        done = _done_count
+                    if done % max(1, n_populations // 10) == 0 or done == n_populations:
+                        elapsed = time.time() - _t_par_start
+                        logger.info(
+                            f"  {map_name}: {done}/{n_populations} populations done "
+                            f"({elapsed:.0f}s elapsed)"
+                        )
+                    return result
+
+                with ThreadPoolExecutor(max_workers=n_workers) as executor:
+                    for k, err in executor.map(_pop_bootstrap_tracked, range(n_populations)):
+                        per_bin_errors[map_name][k] = err
+            else:
+                for k in range(n_populations):
+                    self.progress_tracker.update(
+                        k + 1, map_name, f"per_bin: {population_ids[k]}"
+                    )
+                    _, err = _pop_bootstrap(k)
                     per_bin_errors[map_name][k] = err
 
             # Free this map's cache
