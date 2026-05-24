@@ -50,7 +50,9 @@ bins = [0.5, 1.0, 1.5, 2.0, 3.0, 5.0]  # Redshift bin edges
 [catalog.classification.binning.sigma_sfr]
 id = "log_sigma_sfr"
 label = "SFR Surface Density"
-bins = [-2.0, -1.0, -0.25, 0.5, 1.5]
+#bins = [-2.0, -1.0, -0.25, 0.5, 1.5]
+#bins = [-3.0, -1.71, -0.99, 1.5]
+bins = [-3.0, -1.8, -1.3, -0.4, 1.5]
 # -2 to -1: local spirals
 # -1 to  0: MS at z~1-2
 #  0 to  1: compact SF, local starbursts

@@ -34,8 +34,11 @@ from simstack4.dust_evolution import (
     warm_fraction,
     warm_temperature,
     _greybody_sed,
+    _greybody_nu,
+    _warm_sed_nu,
     _peak_wavelength_um,
     COSMOS_BANDS,
+    _c,
 )
 
 
@@ -418,4 +421,121 @@ class TestMassSigmaDecomposition:
         # Should not be strongly biased away from 0
         assert abs(a_M_rec) < 0.3, (
             f"a_M should be near 0; got {a_M_rec:.3f} — possible M*-σ_SFR degeneracy"
+        )
+
+
+# ---------------------------------------------------------------------------
+# PAH warm-component tests (dust-temp-evol-3)
+# ---------------------------------------------------------------------------
+
+class TestPAHWarmSEDShape:
+    """Unit tests for the _warm_sed_nu helper function."""
+
+    def test_pah_warm_sed_shape(self):
+        """_warm_sed_nu must exceed _greybody_nu at 7.7µm rest-frame when PAH is on.
+
+        T_w=55K greybody peaks near 50µm, so its Wien tail at 7.7µm is negligible.
+        PAH emission at 7.7µm should dominate the warm SED there.
+        """
+        from simstack4.pah_model import PAHModel
+
+        pah_model = PAHModel()
+        T_w, beta_w = 55.0, 1.5
+        z = 1.0
+        log_l_ir = 12.0
+
+        # Sample a grid around 7.7µm rest frame
+        lam_um = np.linspace(6.5, 9.5, 200)
+        nu_hz = _c * 1e6 / lam_um
+
+        gb = _greybody_nu(nu_hz, T_w, beta_w)
+        warm_pah = _warm_sed_nu(nu_hz, T_w, beta_w, z, log_l_ir, pah_model)
+
+        # PAH-enhanced warm SED must have strictly more flux at 7.7µm
+        assert warm_pah.max() > gb.max(), (
+            "PAH-enhanced warm SED should exceed plain greybody at 7.7µm rest frame"
+        )
+
+    def test_pah_warm_sed_fallback_no_model(self):
+        """_warm_sed_nu with pah_model=None returns the same result as _greybody_nu."""
+        T_w, beta_w = 55.0, 1.5
+        lam_um = np.logspace(1, 3, 100)
+        nu_hz = _c * 1e6 / lam_um
+
+        gb = _greybody_nu(nu_hz, T_w, beta_w)
+        warm_no_pah = _warm_sed_nu(nu_hz, T_w, beta_w, z=1.0, log_l_ir=12.0, pah_model=None)
+
+        np.testing.assert_array_equal(warm_no_pah, gb)
+
+    def test_pah_warm_sed_fallback_nan_log_l_ir(self):
+        """_warm_sed_nu with log_l_ir=nan returns the same result as _greybody_nu."""
+        from simstack4.pah_model import PAHModel
+
+        pah_model = PAHModel()
+        T_w, beta_w = 55.0, 1.5
+        lam_um = np.logspace(1, 3, 100)
+        nu_hz = _c * 1e6 / lam_um
+
+        gb = _greybody_nu(nu_hz, T_w, beta_w)
+        warm_nan = _warm_sed_nu(nu_hz, T_w, beta_w, z=1.0, log_l_ir=np.nan, pah_model=pah_model)
+
+        np.testing.assert_array_equal(warm_nan, gb)
+
+
+class TestBzRecoveryWithPAH:
+    """Test that PAH-enhanced warm SED shifts the posterior landscape to favor non-zero b_z.
+
+    Scientific hypothesis: without PAH, the model must absorb MIPS 24µm PAH flux
+    into f_w, raising χ² at the true (b_z=3) theta and making the degenerate
+    (b_z=0, T_c0 raised) solution look competitive.  With PAH, MIPS flux is
+    explained correctly, so the posterior strongly prefers the true theta over
+    the degenerate one.
+
+    Test strategy: evaluate log_posterior_fast at theta_true and at a degenerate
+    theta (b_z=0, T_c0 raised to match the mean T_c) for both models, then
+    compare how much each model prefers the true solution.
+    """
+
+    THETA_BZ_TRUE = np.array([30.0, 3.0, 55.0, 5.0, -0.5, 0.10, 0.0, 0.0])
+
+    def test_b_z_posterior_landscape_with_pah(self):
+        """PAH-on model prefers b_z=3 over b_z=0 more strongly than PAH-off."""
+        dem_pah   = DustEvolutionModel(use_pah_warm=True,  log_l_ir_default=12.0,
+                                       T_c_prior=(30.0, 3.0))
+        dem_nopah = DustEvolutionModel(use_pah_warm=False, T_c_prior=(30.0, 3.0))
+
+        # Simulate PAH-injected data (b_z=3, log_l_ir_default=12)
+        sim = dem_pah.simulate_stacked_dataframe(
+            BIN_GRID_2D, self.THETA_BZ_TRUE, A_c_true=A_C_TRUE, noise_scale=0.02, seed=7,
+        )
+        df = sim["df"]
+
+        obs_pah   = dem_pah._prepare_obs(df, "bin_id")
+        obs_nopah = dem_nopah._prepare_obs(df, "bin_id")
+
+        # Degenerate alternative: raise T_c0 by b_z*z_mean so that the mean T_c is
+        # preserved, but b_z=0 (T_c no longer evolves with z).
+        z_vals = [b["z"] for b in BIN_GRID_2D]
+        z_mean = float(np.mean(z_vals))
+        theta_bz0 = self.THETA_BZ_TRUE.copy()
+        theta_bz0[0] = self.THETA_BZ_TRUE[0] + self.THETA_BZ_TRUE[1] * z_mean
+        theta_bz0[1] = 0.0
+
+        lp_pah_true   = dem_pah._log_posterior_fast(self.THETA_BZ_TRUE, obs_pah)
+        lp_pah_bz0    = dem_pah._log_posterior_fast(theta_bz0,           obs_pah)
+        lp_nopah_true = dem_nopah._log_posterior_fast(self.THETA_BZ_TRUE, obs_nopah)
+        lp_nopah_bz0  = dem_nopah._log_posterior_fast(theta_bz0,          obs_nopah)
+
+        pah_advantage   = lp_pah_true   - lp_pah_bz0
+        nopah_advantage = lp_nopah_true - lp_nopah_bz0
+
+        # PAH-on model should clearly prefer the true b_z=3 theta
+        assert lp_pah_true > lp_pah_bz0, (
+            f"PAH-on model should prefer b_z=3 over b_z=0; "
+            f"Δlog-post = {pah_advantage:.1f}"
+        )
+        # PAH-on advantage must exceed PAH-off advantage (PAH helps break the degeneracy)
+        assert pah_advantage > nopah_advantage, (
+            f"PAH should help discriminate b_z=3 vs b_z=0 more than no-PAH; "
+            f"PAH-on Δ={pah_advantage:.1f}, PAH-off Δ={nopah_advantage:.1f}"
         )

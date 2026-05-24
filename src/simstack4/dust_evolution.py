@@ -101,28 +101,15 @@ def _norm_peak(T_K: float, beta: float) -> float:
     return float((_NORM_NU_HZ**beta * _planck_nu(_NORM_NU_HZ, T_K)).max())
 
 
-def _greybody_nu(nu_hz: np.ndarray, T_K: float, beta: float,
-                 alpha=None) -> np.ndarray:
-    """S_ν ∝ ν^β · B_ν(T), optionally with Wien-side ν^{-α} power law (Casey 2012).
+def _greybody_nu(nu_hz: np.ndarray, T_K: float, beta: float) -> np.ndarray:
+    """S_ν ∝ ν^β · B_ν(T), peak-normalised pure modified blackbody.
 
-    alpha=None  → pure modified blackbody (used for MCMC likelihood paths).
-    alpha=float → splice ν^{-α} at nu_cut = (3+β+α)·kT/h for continuity.
-                  Used for per-bin T_c prior estimation and SED plotting.
+    Used throughout the MCMC likelihood and amplitude solver.  No Wien-side
+    power law — that extension lives in Greybody.greybody_model in greybody.py.
     """
     peak = _norm_peak(T_K, beta)
     raw  = nu_hz**beta * _planck_nu(nu_hz, T_K)
-    gb   = raw / peak if peak > 0 else raw
-
-    if alpha is not None:
-        # Wien splice: continuity at nu_cut
-        nu_cut = (3.0 + beta + alpha) * _k * T_K / _h
-        wien   = nu_hz > nu_cut
-        if np.any(wien):
-            gb_cut = nu_cut**beta * float(_planck_nu(np.array([nu_cut]), T_K)[0]) / peak
-            amp    = gb_cut * nu_cut**alpha        # power-law amplitude for continuity
-            gb[wien] = amp * nu_hz[wien] ** (-alpha)
-
-    return gb
+    return raw / peak if peak > 0 else raw
 
 
 def _greybody_sed(
@@ -133,37 +120,48 @@ def _greybody_sed(
     T_w: float,
     beta_c: float = 1.8,
     beta_w: float = 1.5,
-    alpha_c=None,
-    alpha_w=None,
 ) -> np.ndarray:
-    """
-    Two-component greybody SED in mJy (arbitrary normalisation).
-
-    Parameters
-    ----------
-    lambda_rest_um : rest-frame wavelengths in µm
-    A_c : cold-dust amplitude (linear, mJy at SED peak)
-    T_c : cold-dust temperature (K)
-    A_w : warm-dust amplitude (linear, mJy at warm-component peak)
-    T_w : warm-dust temperature (K)
-    beta_c, beta_w : emissivity indices
-    alpha_c, alpha_w : Wien-side power-law slopes (Casey 2012); None = pure greybody
-    """
+    """Two-component pure modified blackbody SED in mJy (arbitrary normalisation)."""
     nu = _c * 1e6 / lambda_rest_um   # Hz
-    cold = A_c * _greybody_nu(nu, T_c, beta_c, alpha_c)
-    warm = A_w * _greybody_nu(nu, T_w, beta_w, alpha_w)
+    cold = A_c * _greybody_nu(nu, T_c, beta_c)
+    warm = A_w * _greybody_nu(nu, T_w, beta_w)
     return cold + warm
 
 
-def _peak_wavelength_um(T_K: float, beta: float = 1.8,
-                        alpha=None) -> float:
+def _warm_sed_nu(
+    nu_hz: np.ndarray,
+    T_K: float,
+    beta: float,
+    z: float,
+    log_l_ir: float,
+    pah_model=None,
+) -> np.ndarray:
+    """Warm SED = GB(T_K, beta) + PAH features; peak-normalised over the GB alone.
+
+    PAH amplitude is treated as a peak ratio relative to the warm GB peak — not a
+    rigorous integral luminosity ratio — so pah_model.predict_amplitude is an
+    approximation for how much short-wavelength flux PAH contributes.
     """
-    Rest-frame SED peak via a quick grid search.
-    alpha=None → pure greybody; pass alpha=2.0 for Wien-spliced peak.
-    """
+    gb = _greybody_nu(nu_hz, T_K, beta)
+    if pah_model is None or not np.isfinite(log_l_ir):
+        return gb
+
+    lam_um = _c * 1e6 / nu_hz  # rest-frame wavelengths in µm
+    pah_spec = pah_model.feature_spectrum(lam_um)
+
+    log_ratio = pah_model.predict_amplitude(z, log_l_ir)
+    ratio = 10.0 ** float(np.clip(log_ratio, -4.0, 0.0))
+
+    pah_peak = float(pah_spec.max()) if pah_spec.max() > 0 else 1.0
+    pah_scaled = pah_spec * ratio / pah_peak
+    return gb + pah_scaled
+
+
+def _peak_wavelength_um(T_K: float, beta: float = 1.8) -> float:
+    """Rest-frame SED peak of the pure modified blackbody via grid search."""
     lam = np.logspace(1, 4, 4000)   # 10 µm … 10 mm
     nu = _c * 1e6 / lam
-    sed = _greybody_nu(nu, T_K, beta, alpha)
+    sed = _greybody_nu(nu, T_K, beta)
     return lam[np.argmax(sed)]
 
 
@@ -230,6 +228,7 @@ class _BinObs:
     nu_rest: np.ndarray   # Hz, valid bands only
     f_obs: np.ndarray     # observed fluxes (mJy)
     inv_var: np.ndarray   # 1/σ²
+    log_l_ir: float = np.nan  # log10(L_IR/L_sun) for PAH amplitude scaling
 
 
 @dataclass
@@ -277,22 +276,20 @@ class DustEvolutionModel:
         self,
         beta_c: float = 1.8,
         beta_w: float = 1.5,
-        alpha_c: float = 2.0,   # Wien-side power-law slope, cold component (Casey 2012)
-        alpha_w: float = 2.0,   # Wien-side power-law slope, warm component
         T_c_min: float = 20.0,
         T_c_max: float = 60.0,
         T_w_min: float = 40.0,
         T_w_max: float = 100.0,
         T_c_prior: tuple[float, float] = (30.0, 5.0),     # (mean, sigma) — Schreiber+18 MS anchor
         T_w0_prior: tuple[float, float] = (55.0, 15.0),   # (mean, sigma)
-        c_sigma_prior: tuple[float, float] = (5.0, 3.0),  # (mean, sigma) — tightened from 5.0
+        c_sigma_prior: tuple[float, float] = (5.0, 3.0),
         bands: dict | None = None,
         noise_model: dict | None = None,
+        use_pah_warm: bool = True,
+        log_l_ir_default: float = np.nan,
     ):
         self.beta_c = beta_c
         self.beta_w = beta_w
-        self.alpha_c = alpha_c
-        self.alpha_w = alpha_w
         self.T_c_min = T_c_min
         self.T_c_max = T_c_max
         self.T_w_min = T_w_min
@@ -302,6 +299,13 @@ class DustEvolutionModel:
         self.c_sigma_prior = c_sigma_prior
         self.bands = bands or COSMOS_BANDS
         self.noise_model = noise_model or _DEFAULT_NOISE_MJY
+        self.use_pah_warm = use_pah_warm
+        self.log_l_ir_default = log_l_ir_default
+        if use_pah_warm:
+            from .pah_model import PAHModel
+            self.pah_model = PAHModel()
+        else:
+            self.pah_model = None
 
     # ------------------------------------------------------------------ #
     # Forward model                                                        #
@@ -315,11 +319,13 @@ class DustEvolutionModel:
         A_c: float,
         theta_global: np.ndarray,
         bands: list[str] | None = None,
+        log_l_ir: float = np.nan,
     ) -> dict[str, float]:
         """
         Compute observed flux densities (mJy) for a single population at redshift z.
 
         theta_global = [T_c0, b_z, T_w0, c_sigma, a0, a_z, a_M, a_sigma]
+        log_l_ir: log10(L_IR/L_sun) for PAH amplitude scaling (nan → no PAH)
         """
         T_c0, b_z, T_w0, c_sigma, a0, a_z, a_M, a_sigma = theta_global
         Tc = cold_temperature(z, T_c0, b_z)
@@ -332,19 +338,13 @@ class DustEvolutionModel:
         for band in bands_to_use:
             lam_obs = self.bands[band]
             lam_rest = lam_obs / (1.0 + z)
-            # Two-component SED at rest wavelength — pure modified blackbody,
-            # consistent with the MCMC likelihood (no Wien splice in forward model)
-            F = _greybody_sed(
-                np.array([lam_rest]),
-                A_c=A_c,
-                T_c=Tc,
-                A_w=fw * A_c,
-                T_w=Tw,
-                beta_c=self.beta_c,
-                beta_w=self.beta_w,
-            )[0]
-            # Apply (1+z) cosmological dimming proxy: flux ∝ 1/(1+z) for fixed L
-            # (proper D_L scaling not applied — A_c absorbs it; this is relative)
+            nu_rest = np.array([_c * 1e6 / lam_rest])
+            cold_flux = A_c * _greybody_nu(nu_rest, Tc, self.beta_c)
+            warm_flux = fw * A_c * _warm_sed_nu(
+                nu_rest, Tw, self.beta_w, z, log_l_ir,
+                self.pah_model if self.use_pah_warm else None,
+            )
+            F = float((cold_flux + warm_flux)[0])
             fluxes[band] = F
         return fluxes
 
@@ -411,7 +411,8 @@ class DustEvolutionModel:
 
             # True fluxes
             true_fluxes = self.sed_at_z(
-                z, log_M, log_sig, A_c_true[m], theta_true, bands=available
+                z, log_M, log_sig, A_c_true[m], theta_true,
+                bands=available, log_l_ir=self.log_l_ir_default,
             )
 
             row = {
@@ -530,7 +531,7 @@ class DustEvolutionModel:
         df: pd.DataFrame,
         bin_col: str,
     ) -> float:
-        T_c, T_w0, c_sigma, a0, a_z, a_M, a_sigma = theta_global
+        T_c0, b_z, T_w0, c_sigma, a0, a_z, a_M, a_sigma = theta_global
         theta_f = np.array([a0, a_z, a_M, a_sigma])
 
         # Analytic amplitudes at this theta
@@ -559,8 +560,9 @@ class DustEvolutionModel:
                     continue
 
                 lam_rest = self.bands[band] / (1.0 + z)
+                Tc = cold_temperature(z, T_c0, b_z)
                 f_model = _greybody_sed(
-                    np.array([lam_rest]), A_c, T_c, fw * A_c, Tw,
+                    np.array([lam_rest]), A_c, Tc, fw * A_c, Tw,
                     self.beta_c, self.beta_w,
                 )[0]
                 ll -= 0.5 * ((f_obs - f_model) / f_err) ** 2
@@ -583,6 +585,10 @@ class DustEvolutionModel:
             return -np.inf
         # Warm fraction grows with z (V22, Parente+), but cap to prevent runaway
         if not (0.0 <= a_z <= 1.5):
+            return -np.inf
+        # Physical cap: f_w < 1 at z=4 (warm can't exceed cold at realistic redshifts).
+        # Hard constraint prevents runaway warm fraction in the absence of high-z data.
+        if a0 + a_z * 4.0 > 0.0:
             return -np.inf
 
         # Gaussian priors on temperature anchors and sigma slope
@@ -625,6 +631,7 @@ class DustEvolutionModel:
         for bid in sorted(df[bin_col].unique()):
             sub = df[df[bin_col] == bid].iloc[0]
             z = float(sub["z"])
+            log_l_ir = float(sub["log_l_ir"]) if "log_l_ir" in sub.index else self.log_l_ir_default
             nu_list, f_list, iv_list = [], [], []
             for band, lam_obs_um in self.bands.items():
                 if band == "MIPS_24" and z > _MIPS_ZMAX:
@@ -643,6 +650,7 @@ class DustEvolutionModel:
                 nu_rest=np.array(nu_list),
                 f_obs=np.array(f_list),
                 inv_var=np.array(iv_list),
+                log_l_ir=log_l_ir,
             ))
         return obs
 
@@ -661,7 +669,7 @@ class DustEvolutionModel:
                 continue
 
             def sc(nu, A, T, _b=b):
-                return A * _greybody_nu(nu, T, self.beta_c, self.alpha_c)
+                return A * _greybody_nu(nu, T, self.beta_c)
 
             try:
                 popt, _ = curve_fit(
@@ -813,7 +821,10 @@ class DustEvolutionModel:
             # Template at A_c=1 — pure modified blackbody (no Wien splice here;
             # Wien is used only for per-bin T_c prior and plotting)
             cold = _greybody_nu(b.nu_rest, Tc, beta_c)
-            warm = fw * _greybody_nu(b.nu_rest, Tw, beta_w)
+            warm = fw * _warm_sed_nu(
+                b.nu_rest, Tw, beta_w, b.z, b.log_l_ir,
+                self.pah_model if self.use_pah_warm else None,
+            )
             t = cold + warm
 
             # WLS solve for A_c
@@ -829,6 +840,137 @@ class DustEvolutionModel:
             ll -= 0.5 * float((r * r * b.inv_var).sum())
 
         return lp + ll
+
+    def fit_dust_evolution_lstsq(
+        self,
+        df: pd.DataFrame,
+        bin_col: str = "bin_id",
+        theta_init: np.ndarray | None = None,
+        fix_a_M: bool = False,
+        fix_a_sigma: bool = False,
+        verbose: bool = True,
+    ) -> DustEvolutionResult:
+        """
+        Least-squares (MAP) fit — returns the Nelder-Mead posterior mode.
+
+        Same parameter structure and fixing conventions as fit_dust_evolution,
+        but skips MCMC entirely.  Use this to: (a) diagnose the model before
+        committing to MCMC, (b) get initial parameter guesses, (c) explore
+        warm-fraction decomposition on real data quickly.
+
+        Returns a DustEvolutionResult with sampler=None and theta_err from
+        a numerical Hessian approximation (unreliable — treat as lower bound
+        on uncertainties; use MCMC for proper posteriors).
+        """
+        from scipy.optimize import minimize
+
+        obs_list = self._prepare_obs(df, bin_col)
+
+        _saved_T_c_prior = self.T_c_prior
+        try:
+            T_arr_init, z_arr_init, _ = self._per_bin_fits(obs_list)
+            if len(T_arr_init) >= 3:
+                low_z_mask = z_arr_init <= np.percentile(z_arr_init, 40)
+                base = T_arr_init[low_z_mask] if low_z_mask.sum() > 2 else T_arr_init
+                T_c0_data = float(np.clip(np.percentile(base, 20),
+                                          self.T_c_min + 1, self.T_c_max - 5))
+                logger.info("Data-driven T_c0 prior centre: %.1f K (σ=3 K)", T_c0_data)
+                self.T_c_prior = (T_c0_data, 3.0)
+        except Exception:
+            pass
+
+        if fix_a_M and fix_a_sigma:
+            param_names = ["T_c0", "b_z", "T_w0", "c_sigma", "a0", "a_z"]
+            def log_post_fn(t):
+                T_c0, b_z, T_w0, c_sigma, a0, a_z = t
+                return self._log_posterior_fast(
+                    np.array([T_c0, b_z, T_w0, c_sigma, a0, a_z, 0.0, 0.0]), obs_list)
+            default_init = np.array([30.0, 0.0, 55.0, 5.0, -0.5, 0.05])
+        elif fix_a_M:
+            param_names = ["T_c0", "b_z", "T_w0", "c_sigma", "a0", "a_z", "a_sigma"]
+            def log_post_fn(t):
+                T_c0, b_z, T_w0, c_sigma, a0, a_z, a_sigma = t
+                return self._log_posterior_fast(
+                    np.array([T_c0, b_z, T_w0, c_sigma, a0, a_z, 0.0, a_sigma]), obs_list)
+            default_init = np.array([30.0, 0.0, 55.0, 5.0, -0.5, 0.05, 0.0])
+        elif fix_a_sigma:
+            param_names = ["T_c0", "b_z", "T_w0", "c_sigma", "a0", "a_z", "a_M"]
+            def log_post_fn(t):
+                T_c0, b_z, T_w0, c_sigma, a0, a_z, a_M = t
+                return self._log_posterior_fast(
+                    np.array([T_c0, b_z, T_w0, c_sigma, a0, a_z, a_M, 0.0]), obs_list)
+            default_init = np.array([30.0, 0.0, 55.0, 5.0, -0.5, 0.05, 0.0])
+        else:
+            param_names = ["T_c0", "b_z", "T_w0", "c_sigma", "a0", "a_z", "a_M", "a_sigma"]
+            def log_post_fn(t):
+                return self._log_posterior_fast(t, obs_list)
+            default_init = np.array([30.0, 0.0, 55.0, 5.0, -0.5, 0.05, 0.0, 0.0])
+
+        n_params = len(param_names)
+        if theta_init is not None:
+            start = np.asarray(theta_init)[:n_params]
+        else:
+            start = default_init
+
+        theta_map = self._compute_map_init(log_post_fn, start, n_params, obs_list, param_names)
+
+        # Numerical Hessian for rough uncertainty estimate
+        eps = 1e-3
+        hess_diag = np.zeros(n_params)
+        lp0 = log_post_fn(theta_map)
+        for i in range(n_params):
+            dv = np.zeros(n_params); dv[i] = eps
+            hp = log_post_fn(theta_map + dv)
+            hm = log_post_fn(theta_map - dv)
+            h2 = (hp - 2.0 * lp0 + hm) / eps**2
+            hess_diag[i] = max(-h2, 1e-10)
+
+        theta_err = 1.0 / np.sqrt(hess_diag)
+
+        # Reconstruct full 8-param theta
+        fit_vals = dict(zip(param_names, theta_map))
+        _def = {"T_c0": 30.0, "b_z": 0.0, "T_w0": 55.0, "c_sigma": 5.0,
+                "a0": -0.5, "a_z": 0.05, "a_M": 0.0, "a_sigma": 0.0}
+        _all_names = ["T_c0", "b_z", "T_w0", "c_sigma", "a0", "a_z", "a_M", "a_sigma"]
+        theta_med = np.array([fit_vals.get(n, _def[n]) for n in _all_names])
+
+        A_c = self._solve_amplitudes(df, bin_col, theta_med)
+        bins = sorted(df[bin_col].unique())
+        M = len(bins)
+
+        T_c0, b_z, T_w0, c_sigma, a0, a_z, a_M, a_sigma = theta_med
+        theta_f = np.array([a0, a_z, a_M, a_sigma])
+        fw_arr = np.zeros(M); Tw_arr = np.zeros(M); Tc_arr = np.zeros(M)
+        for idx, bid in enumerate(bins):
+            sub = df[df[bin_col] == bid].iloc[0]
+            z = float(sub["z"])
+            fw_arr[idx] = warm_fraction(z, sub["log_M_star"], sub["log_sigma_sfr"], theta_f)
+            Tw_arr[idx] = float(np.clip(warm_temperature(sub["log_sigma_sfr"], T_w0, c_sigma),
+                                        self.T_w_min, self.T_w_max))
+            Tc_arr[idx] = float(np.clip(cold_temperature(z, T_c0, b_z),
+                                        self.T_c_min, self.T_c_max))
+
+        self.T_c_prior = _saved_T_c_prior
+
+        if verbose:
+            for name, val, err in zip(param_names, theta_map, theta_err):
+                logger.info("  %-12s = %7.3f ± %.3f", name, val, err)
+
+        return DustEvolutionResult(
+            theta_global=theta_map,
+            theta_err=theta_err,
+            A_c_per_bin=A_c,
+            A_w_per_bin=fw_arr * A_c,
+            f_w_per_bin=fw_arr,
+            T_c_per_bin=Tc_arr,
+            T_w_grid=Tw_arr,
+            T_c_fit=T_c0,
+            sampler=None,
+            acceptance_fraction=0.0,
+            autocorr_time=np.nan,
+            n_bins=M,
+            param_names=param_names,
+        )
 
     def fit_dust_evolution(
         self,
