@@ -300,6 +300,49 @@ if __name__ == "__main__":
     data_warmup = build_synthetic_data(n_populations=4, n_crop=1000)
     run_benchmark(data_warmup, n_iterations=5, label="warmup (discarded)")
 
-    # Head-to-head: old (2 DGEMVs) vs new (1 DGEMV + identities)
+    # Head-to-head: old, new sequential, new threaded
     run_benchmark(data, n_iterations=50, use_identity=False, label="OLD: 2 DGEMVs")
     run_benchmark(data, n_iterations=50, use_identity=True,  label="NEW: 1 DGEMV + identities")
+
+    # ---- Threaded version ----
+    import os
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    def run_benchmark_threaded(data, n_iterations=50, split_fraction=0.5, seed=1,
+                               n_workers=None, label="threaded"):
+        n_populations = data["n_populations"]
+        n_workers = n_workers or os.cpu_count() or 1
+        lock = threading.Lock()
+        errors = np.zeros(n_populations)
+
+        def work_k(k):
+            n_src = data["src_rows_all"].shape[1]
+            n_A = int(n_src * split_fraction)
+            samples = []
+            for iteration in range(n_iterations):
+                rng = np.random.RandomState(seed + k * n_iterations + iteration)
+                perm = rng.permutation(n_src)
+                idx_A = perm[:n_A]
+                t = run_one_iteration(k, idx_A, data, use_identity=True)
+                samples.append(t["total_ms"])
+            return k, np.std(samples, ddof=1)
+
+        wall_start = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=n_workers) as ex:
+            for k, _ in ex.map(work_k, range(n_populations)):
+                pass
+        wall_total = time.perf_counter() - wall_start
+
+        n_total = n_populations * n_iterations
+        seq_ref = 25.2  # from previous single-threaded NEW run
+        print(f"\n{'='*60}")
+        print(f"  {label}  (n_workers={n_workers})")
+        print(f"  Wall time: {wall_total:.1f}s  ({wall_total/n_total*1e3:.2f} ms/task)")
+        print(f"  Speedup vs sequential NEW: {seq_ref/wall_total:.2f}×")
+        print(f"{'='*60}")
+
+    print(f"\nCPU count: {os.cpu_count()}")
+    for nw in [2, 4, os.cpu_count()]:
+        run_benchmark_threaded(data, n_iterations=50,
+                               n_workers=nw, label=f"Threaded")

@@ -6,7 +6,10 @@ multiple population layers to observed maps, replacing the nested loop
 structure from simstack3 with a more efficient matrix-based approach.
 """
 
+import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -347,123 +350,113 @@ class SimstackAlgorithm:
                 f"PSF {psf_kernel.shape}, G {G_base.shape}"
             )
 
-            # ---- 2d. Per-bin iterations ----
-            for k in range(n_populations):
+            # ---- 2d. Per-bin iterations (parallelised over populations) ----
+            # All threads read shared arrays (cache, G_base, h_base, obs_vector)
+            # and write only to their own local variables — no locking needed
+            # except for the progress counter.
+            _done_count = 0
+            _done_lock = threading.Lock()
+            _t_parallel_start = time.time()
+
+            def _compute_pop_error(k: int) -> tuple[int, float]:
+                """Bootstrap error for population k. Returns (k, std)."""
+                nonlocal _done_count
+
                 pop = self.population_manager.populations[population_ids[k]]
                 if pop.n_sources == 0:
-                    continue
+                    return k, 0.0
 
-                self.progress_tracker.update(
-                    k + 1, map_name, f"per_bin: {population_ids[k]}"
-                )
-
-                # Pre-compute pixel positions for this population's sources
-                # (one WCS transform per population, not per iteration)
                 ra_all, dec_all = self._get_coordinates_from_indices(pop.indices)
                 x_pix_all, y_pix_all = self.sky_maps.world_to_pixel(
                     map_name, ra_all, dec_all
                 )
-                # y=row, x=col  (FITS convention)
                 rows_all = np.round(y_pix_all).astype(np.intp)
                 cols_all = np.round(x_pix_all).astype(np.intp)
 
                 flux_k_samples = []
+                n_sources = len(pop.indices)
+                n_A = int(n_sources * self.bootstrap_split_fraction)
+                n_crop = crop_info["n_crop"]
+                signal_mask_crop = crop_info.get("signal_mask_crop")
 
                 for iteration in range(self.bootstrap_iterations):
                     rng = np.random.RandomState(
                         self.bootstrap_seed + k * self.bootstrap_iterations + iteration
                     )
-
-                    # Split sources
-                    n_sources = len(pop.indices)
-                    n_A = int(n_sources * self.bootstrap_split_fraction)
                     perm = rng.permutation(n_sources)
                     idx_A = perm[:n_A]
 
-                    # Build layer_A via direct PSF stamping with real kernel
-                    # (exact match to convolve_with_psf, ~1000× faster)
                     layer_A = self._stamp_psf_cropped(
-                        rows_all[idx_A],
-                        cols_all[idx_A],
-                        psf_kernel,
-                        psf_half,
-                        flat_to_crop,
-                        map_shape,
-                        crop_info["n_crop"],
+                        rows_all[idx_A], cols_all[idx_A],
+                        psf_kernel, psf_half, flat_to_crop, map_shape, n_crop,
                     )
-                    # Mean-subtract layer_A to match the base layer centering.
-                    # crop_circles=True: base layers used the full-map mean, so
-                    #   approximate it analytically (n_A PSF stamps × kernel_sum).
-                    # crop_circles=False: base layers were re-centered over
-                    #   signal pixels in _build_per_bin_cache; do the same here.
+
                     if self.crop_circles:
-                        full_map_mean_A = len(idx_A) * kernel_sum / n_full
-                        layer_A -= full_map_mean_A
+                        layer_A -= len(idx_A) * kernel_sum / n_full
                     else:
-                        signal_mask_crop = crop_info.get("signal_mask_crop")
                         if signal_mask_crop is not None:
                             layer_A -= np.mean(layer_A[signal_mask_crop])
                         else:
                             layer_A -= np.mean(layer_A)
 
-                    # layer_B = base_k − layer_A  (no convolution needed)
-                    # layer_B is not materialised; use algebraic identities below.
-
-                    # ---- Gram matrix update ----
-                    # Only one DGEMV needed: layer_B identities follow from
-                    # layer_B = cache[k] - layer_A and G_base = cache @ cache.T.
-                    A_dot_base = cache @ layer_A                      # (n_layers,) — single DGEMV
-                    B_dot_base = G_base[:, k] - A_dot_base            # cache @ layer_B, no DGEMV
+                    # layer_B = cache[k] - layer_A: use algebraic identities
+                    # to avoid a second DGEMV (see commit note on this branch).
+                    A_dot_base = cache @ layer_A
+                    B_dot_base = G_base[:, k] - A_dot_base
 
                     A_dot_A = np.dot(layer_A, layer_A)
                     h_A = np.dot(layer_A, obs_vector)
-                    A_dot_B = A_dot_base[k] - A_dot_A                 # dot(layer_A, layer_B)
-                    B_dot_B = G_base[k, k] - 2 * A_dot_base[k] + A_dot_A  # dot(layer_B, layer_B)
-                    h_B = h_base[k] - h_A                             # dot(layer_B, obs_vector)
+                    A_dot_B = A_dot_base[k] - A_dot_A
+                    B_dot_B = G_base[k, k] - 2 * A_dot_base[k] + A_dot_A
+                    h_B = h_base[k] - h_A
 
-                    # Build (n_layers+1) × (n_layers+1) system:
-                    # row/col k → A, insert new row/col k+1 → B
                     n_new = n_layers + 1
                     G_new = np.empty((n_new, n_new))
                     h_new = np.empty(n_new)
-
-                    # Map: old indices [0..k-1, k+1..n_layers-1] → new [0..k-1, k+2..n_new-1]
                     old_keep = np.concatenate(
                         [np.arange(k), np.arange(k + 1, n_layers)]
                     )
                     new_keep = np.concatenate([np.arange(k), np.arange(k + 2, n_new)])
 
-                    # Unchanged block
                     G_new[np.ix_(new_keep, new_keep)] = G_base[
                         np.ix_(old_keep, old_keep)
                     ]
                     h_new[new_keep] = h_base[old_keep]
-
-                    # A row/col (index k)
                     G_new[k, new_keep] = A_dot_base[old_keep]
                     G_new[new_keep, k] = A_dot_base[old_keep]
                     G_new[k, k] = A_dot_A
                     G_new[k, k + 1] = A_dot_B
                     G_new[k + 1, k] = A_dot_B
-
-                    # B row/col (index k+1)
                     G_new[k + 1, new_keep] = B_dot_base[old_keep]
                     G_new[new_keep, k + 1] = B_dot_base[old_keep]
                     G_new[k + 1, k + 1] = B_dot_B
-
                     h_new[k] = h_A
                     h_new[k + 1] = h_B
 
-                    # Solve tiny system
                     try:
                         x_new = np.linalg.solve(G_new, h_new)
                     except np.linalg.LinAlgError:
                         x_new, _, _, _ = np.linalg.lstsq(G_new, h_new, rcond=None)
 
-                    flux_k_total = x_new[k] + x_new[k + 1]
-                    flux_k_samples.append(flux_k_total)
+                    flux_k_samples.append(x_new[k] + x_new[k + 1])
 
-                per_bin_errors[map_name][k] = np.std(flux_k_samples, ddof=1)
+                with _done_lock:
+                    _done_count += 1
+                    done = _done_count
+
+                if done % max(1, n_populations // 10) == 0 or done == n_populations:
+                    elapsed = time.time() - _t_parallel_start
+                    logger.info(
+                        f"  {map_name}: {done}/{n_populations} populations done "
+                        f"({elapsed:.0f}s elapsed)"
+                    )
+
+                return k, np.std(flux_k_samples, ddof=1)
+
+            n_workers = min(n_populations, os.cpu_count() or 1)
+            with ThreadPoolExecutor(max_workers=n_workers) as executor:
+                for k, err in executor.map(_compute_pop_error, range(n_populations)):
+                    per_bin_errors[map_name][k] = err
 
             # Free this map's cache
             del cache, G_base, h_base, obs_vector
