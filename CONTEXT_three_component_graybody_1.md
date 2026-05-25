@@ -52,53 +52,62 @@ excess simultaneously.
 
 ## What CIGALE / LEPHARE give us
 
-Our current PAH Gaussians and the hot-dust greybody are phenomenological. CIGALE
-and LEPHARE carry physics-grounded template libraries:
+Our current PAH Gaussians and the hot-dust greybody are phenomenological. LEPHARE
+carries physics-grounded empirical template libraries that directly span the
+wavelength range of interest:
 
 | Library | Origin | Useful content |
 |---------|--------|----------------|
-| **Draine & Li 2007** (CIGALE) | Full radiative-transfer grain models | qPAH, Umin/Umax, hot continuum vs. cold continuum split as a function of ISRF intensity |
-| **Dale & Helou 2002 / Dale+14** (CIGALE, LEPHARE) | Empirical IR template sequence | SED shape as a function of α (ISRF gradient), hot-to-cold ratio |
+| **Dale & Helou 2002 / Dale+14** (LEPHARE) | Empirical IR template sequence | SED shape as a function of α (ISRF gradient), hot-to-cold ratio |
 | **Chary & Elbaz 2001** (LEPHARE) | Observed galaxy SEDs | Empirical L_IR–SED shape relation |
 | **Lagache+04** (LEPHARE) | Two-component: starburst + cirrus | Explicit separation of warm/cold components |
 
-**Immediate scientific value**:
+CIGALE (Draine+Li 2007 radiative-transfer grid) is held in reserve: use it if the
+LEPHARE templates give poor fits or if we need physically motivated `T_hd` priors
+from the `Umin`/`Umax` grid.
+
+**Immediate scientific value from LEPHARE**:
 
 1. **Validate PAH amplitudes**: do our Gaussian feature strengths match the
-   Draine+Li qPAH grid at the COSMOS L_IR range?
-2. **Constrain hot-dust SED shape**: Draine+Li gives the mid-IR continuum under
-   the PAH features (the template after subtracting PAH Gaussians is the continuum
-   we want for `GB(T_hd)`).
-3. **Constrain T_hd prior**: the Draine+Li grid spans `Umin ∈ [0.1, 25]` and
-   `Umax ∈ [10^3, 10^6]` — maps to effective dust temperature via
-   `T_eff ∝ U^(1/(4+β))`. This sets physically motivated bounds for `T_hd`.
-4. **Cross-check f_hd vs L_IR**: Dale+14 gives hot-to-cold fraction as a function of
-   α (the ISRF slope parameter), which correlates with sSFR. We can compare against
-   our `a_z` and `a_M` recovery.
+   template library at the COSMOS L_IR range?
+2. **Constrain hot-dust SED shape**: the mid-IR continuum under the PAH features
+   in Dale+14 / CE01 templates defines the shape we want for `GB(T_hd)`.
+3. **Constrain T_hd prior**: effective dust temperature derived from template
+   peak position sets physically motivated bounds for `T_hd0`.
+4. **Cross-check f_hd vs L_IR**: Dale+14 hot-to-cold fraction as a function of
+   α (ISRF slope, correlates with sSFR) — compare against our `a_z`, `a_M` recovery.
 
-## Templates to download
+## Templates — data on hand
 
-### CIGALE (Draine+Li 2007)
+### COSMOSWeb LEPHARE SED catalog (primary)
+
 ```
+COSMOSWeb-LePhare-SEDs_v1.1.h5
+```
+
+This is the COSMOSWeb photometric redshift run: per-source best-fit LEPHARE SEDs
+stored in HDF5. It gives us the actual fitted SED shapes at known redshifts for
+the same COSMOS field we stack — a direct apples-to-apples comparison.
+
+Workflow:
+- Open with `h5py`; explore keys to find the SED arrays (λ, F_ν), redshifts,
+  stellar masses, and L_IR estimates.
+- Select sources that overlap with our stacking bins (same z, M* ranges).
+- Stack or median the per-source SEDs within each bin → "template SED per bin".
+- Compare median template to our two-component model prediction for that bin.
+
+This sidesteps downloading a generic template library entirely — we have the
+real fitted SEDs for our own sources.
+
+### CIGALE (Draine+Li 2007 — held in reserve)
+```
+# Only if COSMOSWeb LEPHARE SEDs give poor coverage (e.g. missing mid-IR)
 https://cigale.lam.fr/
-# Module: dustatt_modified_starburst, dust_emission (draine2007)
-# Grid files: dl2007_templates.fits or from pcigale data download
+# Module: dust_emission (draine2007)
+# Grid files available via: pcigale --help → data download
 ```
 
-Key grid axes: `qPAH ∈ {0.47%, 1.12%, 1.77%, 2.50%, 3.19%, 3.90%, 4.58%}`,
-`Umin`, `Umax`, `gamma`.
-
-The templates are stored as `L_ν / L_IR` vs. λ in rest frame — directly comparable
-to our normalized SED components.
-
-### LEPHARE (Dale+14 or Chary-Elbaz)
-```
-https://www.cfht.hawaii.edu/~arnouts/LEPHARE/lephare.html
-# Template dir: $LEPHAREDIR/sed/GAL/CHARY_ELBAZ/ or DALE/
-# Or via Conda: conda install -c conda-forge lephare
-```
-
-### Spitzer/IRS spectral decomposition (optional, observational anchor)
+### Spitzer/IRS spectral decomposition (observational anchor)
 Smith+07 (ApJ 656) provides measured PAH equivalent widths and feature ratios from
 59 SINGS galaxies. This is the empirical ground truth our Gaussians in `pah_model.py`
 should reproduce.
@@ -107,14 +116,15 @@ should reproduce.
 
 ### Step 0: Template survey (before any code)
 
-Download the Draine+Li 2007 CIGALE templates.  For each model in the grid:
-- Extract `L_ν / L_IR` at rest 6–100 µm.
-- Separate the SED into "PAH region" (6–15 µm) and "hot continuum" (15–60 µm) by
-  subtracting a fitted modified blackbody from the long-wavelength side.
-- Measure: effective T_hd(Umin, Umax), ratio `L_PAH/L_IR` vs. `qPAH`, hot-to-cold
-  ratio as a function of ISRF.
+Open `COSMOSWeb-LePhare-SEDs_v1.1.h5` with `h5py`; map the file structure (keys, array shapes, units).
+- Select sources matching our stacking bin boundaries (z, M*).
+- Median-stack per-source SEDs within each bin → one "template SED per bin".
+- Separate each stacked SED into PAH region (6–15 µm) and hot continuum (15–60 µm)
+  by subtracting a fitted modified blackbody from the long-wavelength anchor.
+- Measure: effective T_hd per bin, ratio `L_PAH/L_IR` vs. L_IR and M*, hot-to-cold
+  ratio as a function of redshift.
 
-Deliverable: a notebook (`notebooks/2026-05-xx-cigale-template-survey.ipynb`) that
+Deliverable: a notebook (`notebooks/2026-05-25-lephare-template-survey.ipynb`) that
 loads the templates and plots:
 1. Full SED library colored by qPAH.
 2. PAH region overlay vs. our `PAHModel` prediction.
@@ -162,7 +172,7 @@ Re-run the end-to-end fit on `cosmos25_stacking_20260317_201727.json` (same data
 as the dust-temp-evol-2 notebook) with the three-component model.
 Compare `b_z` posteriors: two-component vs. three-component.
 
-New notebook: `notebooks/2026-05-xx-three-component-graybody.ipynb`
+New notebook: `notebooks/2026-05-25-three-component-graybody.ipynb`
 
 ### Step 4: Template validation overlay
 
@@ -190,9 +200,12 @@ This is the "legitimize with physics" step.
 # Stacking results (unchanged from dust-temp-evol-2)
 /Users/mviero/data/Astronomy/pickles/simstack/stacked_flux_densities/cosmos25_stacking_20260317_201727.json
 
-# Templates (to be downloaded)
-/Users/mviero/data/Astronomy/templates/cigale/draine2007/
-/Users/mviero/data/Astronomy/templates/lephare/dale2014/
+# COSMOSWeb LEPHARE SED catalog (transfer from other Mac via Thunderbolt)
+COSMOSWeb-LePhare-SEDs_v1.1.h5
+# Expected destination: /Users/mviero/data/Astronomy/COSMOSWeb/COSMOSWeb-LePhare-SEDs_v1.1.h5
+
+# CIGALE templates (held in reserve — only if LEPHARE SEDs are insufficient)
+# /Users/mviero/data/Astronomy/templates/cigale/draine2007/
 ```
 
 ## Run tests
