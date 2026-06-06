@@ -1,0 +1,10 @@
+# Agrawal et al. (2026) — placeholder
+# Usage: prepare-cosmos-catalog --paper a26
+#
+# TODO: Fill in paper-specific parameters when finalized.
+# This config currently uses all defaults from config/catalog/defaults.toml.
+
+[paper]
+id          = "a26"
+description = "Agrawal et al. (2026) — placeholder"
+reference   = "Agrawal et al. 2026, in prep."

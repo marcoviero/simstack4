@@ -1,0 +1,68 @@
+# Default catalog preparation settings for COSMOSWeb (2025)
+# Paper-specific configs in this directory override only the keys they need.
+# Usage: prepare-cosmos-catalog  (no flags = use these defaults)
+
+[paper]
+id = "cosmos25"
+description = "Default COSMOSWeb 2025 preparation"
+
+[inputs]
+phot_file   = "COSMOSWeb_mastercatalog_v1.fits"
+sed_file    = "COSMOSWeb_mastercatalog_v1_lephare.fits"
+cigale_file = ""   # empty = not loaded
+
+# Column names in the input FITS catalogs
+[columns]
+ra           = "ra"
+dec          = "dec"
+redshift     = "zfinal"
+stellar_mass = "mass_med"        # log10(M*/Msun)
+sfr          = "sfr_med"         # log10(SFR) or linear
+sfr_is_log   = true
+nuv          = "mabs_nuv"        # rest-frame NUV absolute mag (for NUVrJ)
+r_band       = "mabs_r"          # rest-frame r absolute mag
+j_band       = "mabs_j"          # rest-frame J absolute mag
+l_nuv        = "l_nuv"           # log10(nuL_nu at 2300 Å / L_sun)
+ebv          = "ebv_minchi2"     # E(B-V) from LePhare best-fit
+dust_law     = "law_minchi2"     # attenuation law index (0=Calzetti, 1=Arnouts, 2=Salim)
+star_flag    = "flag_star"       # star flag (0 = galaxy)
+chi2         = "chi2_best"       # LePhare best-fit chi2
+sersic_radius = "radius_sersic"  # Sersic effective radius in degrees (SE++)
+sersic_chi2   = "fmf_chi2"       # SE++ reduced chi2
+metallicity   = "metallicity"    # gas-phase metallicity from CIGALE
+
+[selection]
+redshift_min = 0.01
+redshift_max = 9.0
+mass_min     = 7.0    # log10(M*/Msun)
+chi2_max     = 100.0
+
+# Population flagging
+# Simstack stacks ALL populations simultaneously — these flags are used as
+# split dimensions (bin axes), not as hard filters. Sources are only removed
+# if their class appears in exclude_classes.
+[populations]
+flag_quiescent         = true    # NUVrJ quiescent classification (Ilbert+2013)
+flag_starburst         = true    # SFR/SFR_MS > 3 starburst flag (Elbaz+2018)
+flag_mass_completeness = true    # 90% mass-completeness per redshift bin
+exclude_classes        = []      # population classes to drop from output
+                                 # 0=complete_sfg  1=incomplete_sfg  2=qt  3=sb
+mass_completeness_table = "wijesekera2026"   # "wijesekera2026" (only option currently)
+
+# UV slope and luminosity
+# method = "template"    : from E(B-V) and attenuation law
+# method = "photometric" : power-law fit to observed fluxes in rest-frame 1300-2600 A
+# method = "both"        : compute both and include both column sets in output
+[beta_luv]
+method            = "both"
+min_redshift_phot = 0.75           # z below which photometric fit lacks UV coverage
+flux_prefix       = "flux_model"
+err_prefix        = "flux_err-cal_model"
+
+# Sersic morphology (requires SE++ output in photometry catalog)
+[morphology]
+sersic    = false   # flag_sersic_reliable column + Sersic columns kept
+sigma_sfr = false   # log_sigma_sfr = log(SFR / 2*pi*r_e^2)
+
+[output]
+filename = ""   # auto-generated: COSMOSWeb_{paper.id}_catalog.parquet
