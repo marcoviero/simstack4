@@ -374,7 +374,8 @@ def classify_nuvrj(df: pd.DataFrame, config: dict) -> pd.Series:
 def _schreiber_ms_sfr(log_mass: np.ndarray, z: np.ndarray) -> np.ndarray:
     """Schreiber+2015 Eq 9 main-sequence SFR (linear, Msun/yr)."""
     m0, a0, a1, m1, a2 = 0.5, 1.5, 0.3, 0.36, 2.5
-    r = np.log10(1.0 + np.asarray(z, dtype=float))
+    with np.errstate(invalid="ignore"):  # NaN z → NaN SFR_MS (intentional)
+        r = np.log10(1.0 + np.asarray(z, dtype=float))
     m = np.asarray(log_mass, dtype=float) - 9.0
     term = np.maximum(0.0, m - m1 - a2 * r)
     return 10.0 ** (m - m0 + a0 * r - a1 * term**2)
