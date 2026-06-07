@@ -1,10 +1,28 @@
-# Agrawal et al. (2026) — placeholder
+# Agrawal et al. (2026)
+# "[CII] excess and deficit in star-forming and quiescent galaxies in COSMOS"
+# in prep.
+#
 # Usage: prepare-cosmos-catalog --paper a26
 #
-# TODO: Fill in paper-specific parameters when finalized.
-# This config currently uses all defaults from config/catalog/defaults.toml.
+# This file overrides only the keys that differ from config/catalog/defaults.toml.
 
 [paper]
 id          = "a26"
-description = "Agrawal et al. (2026) — placeholder"
+description = "Agrawal et al. (2026) — [CII] excess/deficit vs. SFR, environment"
 reference   = "Agrawal et al. 2026, in prep."
+
+[selection]
+redshift_min = 0.01
+redshift_max = 6.0
+mass_min     = 8.5
+
+# Photometric β for IRX-β consistency; template β correlates with SED fit.
+[beta_luv]
+method = "photometric"
+
+# Sersic morphology not required by the primary [CII] analysis but included
+# for potential extension: σ_SFR as a predictor of line deficit
+# (cf. Sommovigo+2022 radiative equilibrium; Parente+2026 T_dust-σ_SFR).
+[morphology]
+sersic    = true
+sigma_sfr = true
