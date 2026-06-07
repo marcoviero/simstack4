@@ -50,8 +50,51 @@ flag_quiescent         = true    # NUVrJ quiescent classification (Ilbert+2013)
 flag_starburst         = true    # SFR/SFR_MS > 3 starburst flag (Elbaz+2018)
 flag_mass_completeness = true    # 90% mass-completeness per redshift bin
 exclude_classes        = []      # population classes to drop from output
-                                 # 0=complete_sfg  1=incomplete_sfg  2=qt  3=sb
 mass_completeness_table = "wijesekera2026"   # "wijesekera2026" (only option currently)
+
+# Class definitions — evaluated in list order; first matching class wins.
+# requires     : flag column names that must be True (missing column = rule fails)
+# requires_not : flag column names that must be False (missing column = ignored)
+# warn_if_excluded : whether removing this class from exclude_classes biases stacked fluxes
+#
+# Built-in flag columns: star_forming, mass_complete, starburst
+# Custom flag columns:   defined in [populations.custom_flags] below
+#
+# To add or reorder classes in a paper preset, restate the entire
+# [[populations.classes]] list — the array is replaced, not merged.
+[[populations.classes]]
+code           = 3
+label          = "sb"
+requires       = ["starburst", "star_forming", "mass_complete"]
+requires_not   = []
+warn_if_excluded = true
+
+[[populations.classes]]
+code           = 2
+label          = "qt"
+requires       = []
+requires_not   = ["star_forming"]
+warn_if_excluded = false
+
+[[populations.classes]]
+code           = 1
+label          = "incomplete_sfg"
+requires       = ["star_forming"]
+requires_not   = ["mass_complete"]
+warn_if_excluded = true
+
+[[populations.classes]]
+code           = 0
+label          = "complete_sfg"
+requires       = ["star_forming"]
+requires_not   = []
+warn_if_excluded = true
+
+# Optional computed boolean columns from catalog data.
+# Paper presets can add entries here to create new flag columns.
+# Supported ops: ==, !=, >, >=, <, <=
+# Example (AGN):  agn = {column = "flag_chandra", op = "==", value = 1}
+[populations.custom_flags]
 
 # UV slope and luminosity
 # method = "template"    : from E(B-V) and attenuation law

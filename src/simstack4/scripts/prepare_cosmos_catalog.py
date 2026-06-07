@@ -30,6 +30,7 @@ parquet — it does NOT change the stacking algorithm.  Quiescent galaxies
 
 from __future__ import annotations
 
+import operator
 import os
 import sys
 import warnings
@@ -92,8 +93,22 @@ _BAND_WAVELENGTHS: dict[str, int] = {
     "f150w":   15007,
 }
 
-_POP_LABELS = {0: "complete_sfg", 1: "incomplete_sfg", 2: "qt", 3: "sb"}
 _PAPER_IDS = {"w26": "wijesekera2026", "p26": "parente2026", "a26": "agrawal2026"}
+
+# Python-side fallback — mirrors what defaults.toml defines.
+# The TOML value takes precedence once load_config() runs.
+_DEFAULT_CLASSES = [
+    {"code": 3, "label": "sb",             "requires": ["starburst", "star_forming", "mass_complete"], "requires_not": [],              "warn_if_excluded": True},
+    {"code": 2, "label": "qt",             "requires": [],                                              "requires_not": ["star_forming"], "warn_if_excluded": False},
+    {"code": 1, "label": "incomplete_sfg", "requires": ["star_forming"],                                "requires_not": ["mass_complete"],"warn_if_excluded": True},
+    {"code": 0, "label": "complete_sfg",   "requires": ["star_forming"],                                "requires_not": [],              "warn_if_excluded": True},
+]
+
+
+def _class_labels(config: dict) -> dict[int, str]:
+    """Return {code: label} from TOML class definitions."""
+    classes = config.get("populations", {}).get("classes", _DEFAULT_CLASSES)
+    return {c["code"]: c["label"] for c in classes}
 
 
 # =========================================================================
@@ -817,62 +832,111 @@ def compute_sersic_columns(
 
 
 # =========================================================================
-# Step 8: Population class encoding
+# Step 8a: Custom flag columns
+# =========================================================================
+
+_CMP_OPS: dict[str, object] = {
+    "==": operator.eq, "!=": operator.ne,
+    ">":  operator.gt, ">=": operator.ge,
+    "<":  operator.lt, "<=": operator.le,
+}
+
+
+def apply_custom_flags(df: pd.DataFrame, config: dict) -> None:
+    """
+    Add boolean columns to df for each entry in [populations.custom_flags].
+
+    Each entry: name = {column = "col", op = "==", value = scalar}
+    The resulting column is written as int (0/1) so it behaves like the
+    built-in star_forming / mass_complete / starburst columns.
+    """
+    custom = config.get("populations", {}).get("custom_flags", {})
+    if not custom:
+        return
+    for name, spec in custom.items():
+        col    = spec.get("column")
+        op_str = spec.get("op", "==")
+        val    = spec.get("value", 1)
+        op_fn  = _CMP_OPS.get(op_str)
+        if op_fn is None:
+            raise ValueError(f"Unknown operator '{op_str}' for custom flag '{name}'")
+        if col not in df.columns:
+            print(f"  Custom flag '{name}': SKIPPED (column '{col}' not in catalog)")
+            continue
+        df[name] = op_fn(df[col].values, val).astype(int)
+        n = int(df[name].sum())
+        print(f"  Custom flag '{name}': {n:,} sources  ({col} {op_str} {val})")
+
+
+# =========================================================================
+# Step 8b: Population class encoding
 # =========================================================================
 
 
-def encode_populations(
-    df: pd.DataFrame,
-    config: dict,
-    star_forming: pd.Series,
-    mass_complete: pd.Series,
-    is_starburst: pd.Series,
-) -> pd.Series:
+def encode_populations(df: pd.DataFrame, config: dict) -> pd.Series:
     """
-    Encode three binary flags into a single population_class integer.
+    Assign each source to a population class using the TOML class definitions.
 
-    Priority: starburst (3) > quiescent (2) > mass-completeness (0/1)
-    A starburst quiescent galaxy is assigned to class 3 (sb wins).
+    Class rules are evaluated in list order (first match wins = highest priority).
+    Each rule specifies:
+      requires     : flag columns that must be True  (missing → rule fails)
+      requires_not : flag columns that must be False (missing → ignored)
 
-    Classes
-    -------
-    0  complete_sfg   : SF, mass-complete, not SB
-    1  incomplete_sfg : SF, mass-incomplete, not SB
-    2  qt             : quiescent (any completeness)
-    3  sb             : starburst (SF + SFR/MS > 3)
+    Sources not matching any rule are assigned code -1 and a warning is printed.
+
+    The default rules reproduce the previous hardcoded scheme:
+      3 sb             (starburst + SF + mass-complete)
+      2 qt             (quiescent)
+      1 incomplete_sfg (SF + mass-incomplete)
+      0 complete_sfg   (SF, catch-all)
     """
-    pop_cfg  = config["populations"]
-    do_qt    = pop_cfg.get("flag_quiescent", True)
-    do_mc    = pop_cfg.get("flag_mass_completeness", True)
-    do_sb    = pop_cfg.get("flag_starburst", True)
+    classes   = config.get("populations", {}).get("classes", _DEFAULT_CLASSES)
+    labels    = {c["code"]: c["label"] for c in classes}
+    n         = len(df)
+    pop_class = np.full(n, -1, dtype=int)
 
-    n        = len(df)
-    pop_class = np.zeros(n, dtype=int)
+    for cls in classes:
+        code         = cls["code"]
+        requires     = cls.get("requires", [])
+        requires_not = cls.get("requires_not", [])
 
-    # Apply flags only if enabled and columns are available
-    if do_mc:
-        pop_class[~mass_complete.values] = 1
-    if do_qt:
-        pop_class[~star_forming.values] = 2
-    if do_sb:
-        if do_mc and do_qt:
-            # Only reliable starbursts: SF, mass-complete, non-quiescent
-            sb_ok = (
-                is_starburst.values
-                & star_forming.values
-                & mass_complete.values
-            )
-        else:
-            sb_ok = is_starburst.values
-        pop_class[sb_ok] = 3
+        mask = pop_class == -1  # only consider still-unclassified sources
+        if not mask.any():
+            break
+
+        ok = True
+        for col in requires:
+            if col not in df.columns:
+                warnings.warn(
+                    f"Flag column '{col}' required by class {code} ('{cls['label']}') "
+                    f"not found — class will be empty. "
+                    f"Check flag_quiescent/starburst/mass_completeness settings."
+                )
+                ok = False
+                break
+            mask = mask & df[col].values.astype(bool)
+        if not ok:
+            continue
+
+        for col in requires_not:
+            if col in df.columns:
+                mask = mask & ~df[col].values.astype(bool)
+
+        pop_class[mask] = code
 
     result = pd.Series(pop_class, index=df.index)
 
-    active = sorted(set(pop_class))
-    for code in active:
-        label = _POP_LABELS.get(code, f"class_{code}")
+    for code in sorted(set(pop_class)):
+        label  = labels.get(code, f"class_{code}") if code >= 0 else "unclassified"
         n_code = (pop_class == code).sum()
         print(f"    class {code} ({label:>16}): {n_code:>8,}")
+
+    n_unclassified = (pop_class == -1).sum()
+    if n_unclassified:
+        warnings.warn(
+            f"{n_unclassified:,} sources not matched by any class rule "
+            f"(assigned code -1). Check [[populations.classes]] ordering."
+        )
 
     return result
 
@@ -940,13 +1004,16 @@ def build_catalog(
         is_starburst = pd.Series(False, index=df.index)
         print("  Starburst flag: SKIPPED (flag_starburst=false)")
 
-    # Attach flags to full catalog
+    # Attach built-in flags to full catalog
     df["star_forming"]  = star_forming.astype(int)
     df["mass_complete"] = mass_complete.astype(int)
     df["starburst"]     = is_starburst.astype(int)
 
+    # Apply any custom flag columns defined in [populations.custom_flags]
+    apply_custom_flags(df, config)
+
     print("  Population classes:")
-    pop_class = encode_populations(df, config, star_forming, mass_complete, is_starburst)
+    pop_class = encode_populations(df, config)
     df["population_class"] = pop_class
 
     # ── 4. Subset to quality-passing sources ──────────────────────────────
@@ -1022,13 +1089,19 @@ def build_catalog(
     # ── 9. Exclude classes ────────────────────────────────────────────────
     exclude = pop_cfg.get("exclude_classes", [])
     if exclude:
+        labels = _class_labels(config)
+        # Build {code: warn_if_excluded} from class defs
+        warn_lookup = {
+            c["code"]: c.get("warn_if_excluded", True)
+            for c in config.get("populations", {}).get("classes", _DEFAULT_CLASSES)
+        }
         print(f"\n[6] Excluding population classes: {exclude}")
         for cls in exclude:
             n_excl = (df_sel["population_class"] == cls).sum()
-            label  = _POP_LABELS.get(cls, f"class_{cls}")
+            label  = labels.get(cls, f"class_{cls}")
             df_sel = df_sel[df_sel["population_class"] != cls]
             print(f"  Removed class {cls} ({label}): -{n_excl:,} sources")
-            if cls != 2:
+            if warn_lookup.get(cls, True):
                 print(f"    WARNING: excluding '{label}' may bias stacked fluxes")
         print(f"  Final sample: {len(df_sel):,} sources")
 
