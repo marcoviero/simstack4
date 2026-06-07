@@ -418,23 +418,40 @@ def _schreiber_ms_sfr(log_mass: np.ndarray, z: np.ndarray) -> np.ndarray:
 
 def apply_mass_completeness(df: pd.DataFrame, config: dict) -> pd.Series:
     """
-    Flag mass-complete sources (True = above 90% completeness limit).
+    Flag mass-complete sources (True = above the per-z completeness limit).
 
-    Table reference: Wijesekera+2026 Table A.1.  Sources below the limit
-    are flagged as incomplete (class 1), NOT removed.
+    Priority:
+      1. Inline TOML table at [populations.mass_completeness] (z_bins + mass_limits)
+      2. Named Python table via mass_completeness_table = "<key>"
+
+    Sources below the limit are flagged incomplete (class 1), NOT removed.
     """
     cols     = config["columns"]
     pop_cfg  = config["populations"]
     z_col    = cols["redshift"]
     mass_col = cols["stellar_mass"]
 
-    table_key = pop_cfg.get("mass_completeness_table", "wijesekera2026")
-    table = _MASS_COMPLETENESS_TABLES.get(table_key)
-    if table is None:
-        raise ValueError(
-            f"Unknown mass_completeness_table '{table_key}'. "
-            f"Available: {list(_MASS_COMPLETENESS_TABLES)}"
-        )
+    mc = pop_cfg.get("mass_completeness", {})
+    if mc.get("z_bins") and mc.get("mass_limits"):
+        z_bins  = mc["z_bins"]
+        limits  = mc["mass_limits"]
+        if len(z_bins) != len(limits) + 1:
+            raise ValueError(
+                f"[populations.mass_completeness]: len(z_bins)={len(z_bins)} "
+                f"must equal len(mass_limits)+1={len(limits) + 1}"
+            )
+        table      = {(z_bins[i], z_bins[i + 1]): limits[i] for i in range(len(limits))}
+        table_name = "inline"
+    else:
+        table_key = pop_cfg.get("mass_completeness_table", "wijesekera2026")
+        table     = _MASS_COMPLETENESS_TABLES.get(table_key)
+        if table is None:
+            raise ValueError(
+                f"Unknown mass_completeness_table '{table_key}'. "
+                f"Available: {list(_MASS_COMPLETENESS_TABLES)}. "
+                f"Or define [populations.mass_completeness] inline in your TOML."
+            )
+        table_name = table_key
 
     complete = pd.Series(False, index=df.index)
     for (z_lo, z_hi), mass_lim in table.items():
@@ -444,7 +461,7 @@ def apply_mass_completeness(df: pd.DataFrame, config: dict) -> pd.Series:
     n_c = complete.sum()
     n_i = len(df) - n_c
     print(f"  Mass completeness: {n_c:,} complete, {n_i:,} incomplete "
-          f"(table: {table_key})")
+          f"(table: {table_name})")
     return complete
 
 

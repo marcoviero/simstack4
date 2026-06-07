@@ -50,7 +50,14 @@ flag_quiescent         = true    # NUVrJ quiescent classification (Ilbert+2013)
 flag_starburst         = true    # SFR/SFR_MS > 3 starburst flag (Elbaz+2018)
 flag_mass_completeness = true    # 90% mass-completeness per redshift bin
 exclude_classes        = []      # population classes to drop from output
-mass_completeness_table = "wijesekera2026"   # "wijesekera2026" (only option currently)
+
+# 90% stellar mass completeness limits — Wijesekera+2026 Table A.1
+# z_bins defines N+1 edges; mass_limits[i] applies between z_bins[i] and z_bins[i+1].
+# Override in a paper preset by redefining this entire section.
+# Alternatively set mass_completeness_table = "<name>" to reference a hardcoded Python table.
+[populations.mass_completeness]
+z_bins      = [0.01, 0.5,  1.0,  1.5,  2.0,  2.5,  3.0,  3.5,  4.0,   4.5,  5.0,  6.0,  7.0,   8.0,  10.0]
+mass_limits = [8.50, 9.25, 9.25, 9.50, 9.50, 9.75, 9.75, 10.00, 10.25, 10.25, 10.50, 10.75, 11.00, 11.25]
 
 # Class definitions — evaluated in list order; first matching class wins.
 # requires     : flag column names that must be True (missing column = rule fails)
