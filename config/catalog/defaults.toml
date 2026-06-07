@@ -36,6 +36,10 @@ redshift_min = 0.01
 redshift_max = 9.0
 mass_min     = 7.0    # log10(M*/Msun)
 chi2_max     = 100.0
+snr_min      = 0.0    # minimum detection SNR (0 = disabled)
+snr_col      = "snr_f444w"
+mag_max      = 0.0    # K-band magnitude limit, brighter-end (0 = disabled; e.g. 24.7)
+mag_col      = "mag_model_uvista-ks"
 
 # Population flagging
 # Simstack stacks ALL populations simultaneously — these flags are used as

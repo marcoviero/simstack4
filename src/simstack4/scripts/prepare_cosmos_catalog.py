@@ -311,6 +311,26 @@ def apply_quality_cuts(df: pd.DataFrame, config: dict) -> pd.Series:
         print(f"  chi2 quality:   {mask.sum():>8,} / {n:,}  "
               f"(chi2 < {sel['chi2_max']:.0f})")
 
+    snr_min = sel.get("snr_min", 0.0)
+    if snr_min and snr_min > 0:
+        snr_col = sel.get("snr_col", "snr_f444w")
+        if snr_col in df.columns:
+            mask &= df[snr_col].values >= snr_min
+            print(f"  SNR cut:        {mask.sum():>8,} / {n:,}  "
+                  f"({snr_col} >= {snr_min:.1f})")
+        else:
+            print(f"  SNR cut: SKIPPED ('{snr_col}' not found)")
+
+    mag_max = sel.get("mag_max", 0.0)
+    if mag_max and mag_max > 0:
+        mag_col = sel.get("mag_col", "mag_model_uvista-ks")
+        if mag_col in df.columns:
+            mask &= df[mag_col].values <= mag_max
+            print(f"  Mag cut:        {mask.sum():>8,} / {n:,}  "
+                  f"({mag_col} <= {mag_max:.2f})")
+        else:
+            print(f"  Mag cut: SKIPPED ('{mag_col}' not found)")
+
     return mask
 
 
@@ -1104,6 +1124,22 @@ Population classes:
         "--no-mc", action="store_true",
         help="Disable mass-completeness flagging"
     )
+    parser.add_argument(
+        "--snr-min", type=float, metavar="FLOAT",
+        help="Minimum detection SNR (e.g. 5.0); overrides config"
+    )
+    parser.add_argument(
+        "--snr-col", metavar="COL",
+        help="Column name for detection SNR (default: snr_f444w)"
+    )
+    parser.add_argument(
+        "--mag-max", type=float, metavar="FLOAT",
+        help="K-band magnitude limit, brighter-end (e.g. 24.7); overrides config"
+    )
+    parser.add_argument(
+        "--mag-col", metavar="COL",
+        help="Column name for magnitude cut (default: mag_model_uvista-ks)"
+    )
     args = parser.parse_args()
 
     # Build CLI overrides dict
@@ -1121,6 +1157,14 @@ Population classes:
         overrides.setdefault("populations", {})["flag_starburst"] = False
     if args.no_mc:
         overrides.setdefault("populations", {})["flag_mass_completeness"] = False
+    if args.snr_min is not None:
+        overrides.setdefault("selection", {})["snr_min"] = args.snr_min
+    if args.snr_col is not None:
+        overrides.setdefault("selection", {})["snr_col"] = args.snr_col
+    if args.mag_max is not None:
+        overrides.setdefault("selection", {})["mag_max"] = args.mag_max
+    if args.mag_col is not None:
+        overrides.setdefault("selection", {})["mag_col"] = args.mag_col
 
     config = load_config(
         paper=args.paper,
