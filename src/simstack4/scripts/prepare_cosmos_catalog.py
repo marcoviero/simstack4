@@ -1198,6 +1198,10 @@ Population classes:
         help="Disable mass-completeness flagging"
     )
     parser.add_argument(
+        "--mass-min", type=float, metavar="FLOAT",
+        help="Minimum log10(M*/Msun) threshold (e.g. 9.0); overrides config"
+    )
+    parser.add_argument(
         "--snr-min", type=float, metavar="FLOAT",
         help="Minimum detection SNR (e.g. 5.0); overrides config"
     )
@@ -1230,6 +1234,8 @@ Population classes:
         overrides.setdefault("populations", {})["flag_starburst"] = False
     if args.no_mc:
         overrides.setdefault("populations", {})["flag_mass_completeness"] = False
+    if args.mass_min is not None:
+        overrides.setdefault("selection", {})["mass_min"] = args.mass_min
     if args.snr_min is not None:
         overrides.setdefault("selection", {})["snr_min"] = args.snr_min
     if args.snr_col is not None:
