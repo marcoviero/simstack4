@@ -1,4 +1,7 @@
 """
+DEPRECATED — use prepare-cosmos-catalog --paper p26 instead.
+See docs/CATALOG_PREP.md for migration notes.
+
 COSMOS Catalog Builder for Wijesekera+2026 IRX Analysis
 ========================================================
 

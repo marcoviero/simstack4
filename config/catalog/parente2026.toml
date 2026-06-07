@@ -1,0 +1,39 @@
+# Parente et al. (2026)
+# "Dust temperature evolution and two-component SED modeling in COSMOS"
+# A&A (in press)
+#
+# Usage: prepare-cosmos-catalog --paper p26
+#
+# This file overrides only the keys that differ from config/catalog/defaults.toml.
+
+[paper]
+id          = "p26"
+description = "Parente et al. (2026) — dust temperature, sigma_SFR, metallicity"
+reference   = "Parente et al. 2026, A&A"
+
+# CIGALE provides metallicity (gas-phase) and an independent stellar mass.
+# Required for the DustEvolutionModel in dust_evolution.py.
+[inputs]
+cigale_file = "COSMOSWeb_mastercatalog_v1_cigale.fits"
+
+[selection]
+redshift_min = 0.01   # cover full z range; 15 bins span z=0-8
+redshift_max = 8.0
+mass_min     = 8.5
+
+# flag_mass_completeness=false collapses complete/incomplete into one SFG label
+# (all sources treated as mass-complete). Class 1 (incomplete_sfg) will be empty —
+# excluded to avoid a zero-contribution layer in the Gram matrix.
+# Starbursts (class 3) are kept as a separate population; ULIRGs/AGN not in catalog.
+[populations]
+flag_mass_completeness = false
+exclude_classes        = [1]   # incomplete_sfg is empty when flag_mass_completeness=false
+
+[beta_luv]
+method = "photometric"
+
+# Sersic morphology enables sigma_SFR binning for the T_dust-sigma_SFR plots
+# (Parente+2026 Fig. 6, compared to Sommovigo+2022 radiative-equilibrium model).
+[morphology]
+sersic    = true
+sigma_sfr = true

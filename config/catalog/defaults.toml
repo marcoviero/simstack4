@@ -1,0 +1,122 @@
+# Default catalog preparation settings for COSMOSWeb (2025)
+# Paper-specific configs in this directory override only the keys they need.
+# Usage: prepare-cosmos-catalog  (no flags = use these defaults)
+
+[paper]
+id = "cosmos25"
+description = "Default COSMOSWeb 2025 preparation"
+
+[inputs]
+phot_file   = "COSMOSWeb_mastercatalog_v1.fits"
+sed_file    = "COSMOSWeb_mastercatalog_v1_lephare.fits"
+cigale_file = ""   # empty = not loaded
+
+# Column names in the input FITS catalogs
+[columns]
+ra           = "ra"
+dec          = "dec"
+redshift     = "zfinal"
+stellar_mass = "mass_med"        # log10(M*/Msun)
+sfr          = "sfr_med"         # log10(SFR) or linear
+sfr_is_log   = true
+nuv          = "mabs_nuv"        # rest-frame NUV absolute mag (for NUVrJ)
+r_band       = "mabs_r"          # rest-frame r absolute mag
+j_band       = "mabs_j"          # rest-frame J absolute mag
+l_nuv        = "l_nuv"           # log10(nuL_nu at 2300 Å / L_sun)
+ebv          = "ebv_minchi2"     # E(B-V) from LePhare best-fit
+dust_law     = "law_minchi2"     # attenuation law index (0=Calzetti, 1=Arnouts, 2=Salim)
+star_flag    = "flag_star"       # star flag (0 = galaxy)
+chi2         = "chi2_best"       # LePhare best-fit chi2
+sersic_radius = "radius_sersic"  # Sersic effective radius in degrees (SE++)
+sersic_chi2   = "fmf_chi2"       # SE++ reduced chi2
+metallicity   = "metallicity"    # gas-phase metallicity from CIGALE
+
+[selection]
+redshift_min = 0.01
+redshift_max = 9.0
+mass_min     = 7.0    # log10(M*/Msun)
+chi2_max     = 100.0
+snr_min      = 0.0    # minimum detection SNR (0 = disabled)
+snr_col      = "snr_f444w"
+mag_max      = 0.0    # K-band magnitude limit, brighter-end (0 = disabled; e.g. 24.7)
+mag_col      = "mag_model_uvista-ks"
+
+# Population flagging
+# Simstack stacks ALL populations simultaneously — these flags are used as
+# split dimensions (bin axes), not as hard filters. Sources are only removed
+# if their class appears in exclude_classes.
+[populations]
+flag_quiescent         = true    # NUVrJ quiescent classification (Ilbert+2013)
+flag_starburst         = true    # SFR/SFR_MS > 3 starburst flag (Elbaz+2018)
+flag_mass_completeness = true    # 90% mass-completeness per redshift bin
+exclude_classes        = []      # population classes to drop from output
+
+# 90% stellar mass completeness limits — Wijesekera+2026 Table A.1
+# z_bins defines N+1 edges; mass_limits[i] applies between z_bins[i] and z_bins[i+1].
+# Override in a paper preset by redefining this entire section.
+# Alternatively set mass_completeness_table = "<name>" to reference a hardcoded Python table.
+[populations.mass_completeness]
+z_bins      = [0.01, 0.5,  1.0,  1.5,  2.0,  2.5,  3.0,  3.5,  4.0,   4.5,  5.0,  6.0,  7.0,   8.0,  10.0]
+mass_limits = [8.50, 9.25, 9.25, 9.50, 9.50, 9.75, 9.75, 10.00, 10.25, 10.25, 10.50, 10.75, 11.00, 11.25]
+
+# Class definitions — evaluated in list order; first matching class wins.
+# requires     : flag column names that must be True (missing column = rule fails)
+# requires_not : flag column names that must be False (missing column = ignored)
+# warn_if_excluded : whether removing this class from exclude_classes biases stacked fluxes
+#
+# Built-in flag columns: star_forming, mass_complete, starburst
+# Custom flag columns:   defined in [populations.custom_flags] below
+#
+# To add or reorder classes in a paper preset, restate the entire
+# [[populations.classes]] list — the array is replaced, not merged.
+[[populations.classes]]
+code           = 3
+label          = "sb"
+requires       = ["starburst", "star_forming", "mass_complete"]
+requires_not   = []
+warn_if_excluded = true
+
+[[populations.classes]]
+code           = 2
+label          = "qt"
+requires       = []
+requires_not   = ["star_forming"]
+warn_if_excluded = false
+
+[[populations.classes]]
+code           = 1
+label          = "incomplete_sfg"
+requires       = ["star_forming"]
+requires_not   = ["mass_complete"]
+warn_if_excluded = true
+
+[[populations.classes]]
+code           = 0
+label          = "complete_sfg"
+requires       = ["star_forming"]
+requires_not   = []
+warn_if_excluded = true
+
+# Optional computed boolean columns from catalog data.
+# Paper presets can add entries here to create new flag columns.
+# Supported ops: ==, !=, >, >=, <, <=
+# Example (AGN):  agn = {column = "flag_chandra", op = "==", value = 1}
+[populations.custom_flags]
+
+# UV slope and luminosity
+# method = "template"    : from E(B-V) and attenuation law
+# method = "photometric" : power-law fit to observed fluxes in rest-frame 1300-2600 A
+# method = "both"        : compute both and include both column sets in output
+[beta_luv]
+method            = "both"
+min_redshift_phot = 0.75           # z below which photometric fit lacks UV coverage
+flux_prefix       = "flux_model"
+err_prefix        = "flux_err-cal_model"
+
+# Sersic morphology (requires SE++ output in photometry catalog)
+[morphology]
+sersic    = false   # flag_sersic_reliable column + Sersic columns kept
+sigma_sfr = false   # log_sigma_sfr = log(SFR / 2*pi*r_e^2)
+
+[output]
+filename = ""   # auto-generated: COSMOSWeb_{paper.id}_catalog.parquet

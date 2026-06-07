@@ -1,0 +1,32 @@
+# Wijesekera, Koprowski et al. (2026)
+# "Evolution of dust attenuation in star-forming galaxies with UV slope,
+#  stellar mass, and redshift out to z~5"
+# A&A (in press)
+#
+# Usage: prepare-cosmos-catalog --paper w26
+#
+# This file overrides only the keys that differ from config/catalog/defaults.toml.
+# All other settings (column names, morphology=false, etc.) come from defaults.
+
+[paper]
+id          = "w26"
+description = "Wijesekera, Koprowski et al. (2026) — IRX-β evolution to z~5"
+reference   = "Wijesekera et al. 2026, A&A"
+
+[selection]
+redshift_min = 0.25   # wider than science bins to model foreground emitters
+redshift_max = 6.0
+mass_min     = 9.0    # science bins start at 9.5 but include lower-mass to avoid bias
+
+# Photometric β is the key observable for the IRX-β relation.
+# Using template-derived β (from E(B-V)) would correlate β with
+# the SED fit, collapsing the IRX-β relation to a near-flat line.
+[beta_luv]
+method = "photometric"
+
+# Quiescent galaxies (class 2) are excluded because:
+#  1. They are IR-faint (negligible contribution to stacked signal)
+#  2. Reducing label count lowers memory usage for the NxN Gram matrix
+# WARNING: excluding other classes (0, 1, 3) biases stacking.
+[populations]
+exclude_classes = [2, 3]   # QT (IR-faint) and SB excluded; paper does not stack SBs separately
