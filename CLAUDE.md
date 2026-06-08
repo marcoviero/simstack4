@@ -56,9 +56,9 @@ TOML config (config/*.toml)
 **Simultaneous fitting**: All populations fit at once via a `(N_pop × N_pix)` layer matrix. One `lstsq` call deblends everything. Never fit populations individually.
 
 **Two bootstrap methods** (`config.error_estimator.bootstrap.method`):
-- `"all_bins"`: A/B-split all populations each iteration — measures joint variance
-- `"per_bin"`: split one population at a time, hold others fixed — measures isolated variance (smaller errors for well-separated bins)
-Both use all sources (A+B = full set). Fluxes come from the full solve; iterations only estimate uncertainty.
+- `"all_bins"`: A/B-split all populations each iteration — captures joint variance including cross-population confusion
+- `"per_bin"`: split one population at a time, hold others fixed — captures isolated variance; slightly overshoots (~1.1–1.2×) in the confused regime due to A/B layer anti-correlation
+Both record `std((x_A − x_B) / 2)` across iterations — the **half-difference estimator**. The former sum `x_A + x_B` collapsed to near-zero for non-overlapping PSFs due to an algebraic cancellation identity (`x_A + x_B = const` when A/B layers are orthogonal with a 50:50 split). Both use all sources (A+B = full set). Fluxes come from the full solve; iterations only estimate uncertainty.
 
 **Generalized binning**: `ClassificationConfig.binning` is `dict[str, BinConfig]`. Any catalog column can be a bin dimension. `PopulationManager` enumerates combinations via `itertools.product`.
 
@@ -138,7 +138,7 @@ Tests use synthetic data with known injected fluxes — no real FITS or catalogs
 |------|-------|-----------|
 | `test_stacking_recovery.py` | 16 | Linear algebra: single/multi-source/population recovery, noise, confusion |
 | `test_luminosity.py` | 35 | Greybody model, L_IR integration, D_L accuracy, SFR |
-| `test_per_bin_errors.py` | 10 | Per-bin vs all-bins bootstrap, variance isolation |
+| `test_per_bin_errors.py` | 14 | Per-bin vs all-bins bootstrap, diff estimator calibration, sum-estimator regression guard |
 | `test_sed_fitting.py` | 51 | SED fitting with covariance and MCMC |
 | `test_integration.py` | 10 | Full pipeline: TOML → catalog → maps → stacking → bootstrap |
 | `test_dust_evolution_recovery.py` | 14 | DustEvolutionModel: parameter recovery, MIPS dropout, warm-fraction ordering |

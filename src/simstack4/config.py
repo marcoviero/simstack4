@@ -50,6 +50,10 @@ class BinningConfig:
     stack_all_z_at_once: bool = True
     add_foreground: bool = True
     crop_circles: bool = True
+    use_noise_weighting: bool = True  # WLS: weight pixels by 1/noise (LinSimStack feature)
+    iterative_sigma_clip: bool = False  # Re-fit after masking 3σ outlier pixels
+    min_sources_per_bin: int = 1  # Warn when a bin has fewer sources than this
+    add_mask_leak: bool = False  # PSF-convolve catalog exclusion mask as nuisance layer
 
 
 @dataclass
@@ -111,11 +115,13 @@ class MapConfig:
     color_correction: float = 1.0
     path_map: str = ""
     path_noise: str = ""
+    path_mask: str = ""  # Optional catalog exclusion mask (1=valid, 0=excluded)
 
     def __post_init__(self):
         """Expand environment variables in paths"""
         self.path_map = os.path.expandvars(self.path_map)
         self.path_noise = os.path.expandvars(self.path_noise)
+        self.path_mask = os.path.expandvars(self.path_mask)
 
 
 @dataclass
@@ -241,6 +247,10 @@ class SimstackConfig:
                 stack_all_z_at_once=binning_dict.get("stack_all_z_at_once", True),
                 add_foreground=binning_dict.get("add_foreground", True),
                 crop_circles=binning_dict.get("crop_circles", True),
+                use_noise_weighting=binning_dict.get("use_noise_weighting", True),
+                iterative_sigma_clip=binning_dict.get("iterative_sigma_clip", False),
+                min_sources_per_bin=binning_dict.get("min_sources_per_bin", 1),
+                add_mask_leak=binning_dict.get("add_mask_leak", False),
             )
 
             # Parse error estimator config (unchanged)
@@ -405,6 +415,7 @@ class SimstackConfig:
                     color_correction=map_config.get("color_correction", 1.0),
                     path_map=path_map,
                     path_noise=map_config.get("path_noise", ""),
+                    path_mask=map_config.get("path_mask", ""),
                 )
 
             return cls(

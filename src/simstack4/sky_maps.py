@@ -46,6 +46,7 @@ class MapData:
         None  # True where observed (non-NaN, non-zero)
     )
     psf_file: str | None = None  # Optional path to measured PSF FITS file
+    catalog_mask: np.ndarray | None = None  # bool: True=valid, False=excluded by catalog
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -192,6 +193,25 @@ class SkyMaps:
                 except Exception as e:
                     logger.warning(f"Failed to load noise from second HDU: {e}")
 
+        # Load catalog exclusion mask if specified (1=valid, 0=excluded)
+        mask_data = None
+        if map_config.path_mask:
+            mask_path = Path(map_config.path_mask)
+            if mask_path.exists():
+                try:
+                    with fits.open(mask_path) as mask_hdul:
+                        mask_hdu = (
+                            mask_hdul[0] if len(mask_hdul) == 1 else mask_hdul[1]
+                        )
+                        raw = mask_hdu.data.copy()
+                        while len(raw.shape) > 2:
+                            raw = raw[0]
+                        mask_data = raw.astype(bool)
+                except Exception as e:
+                    logger.warning(f"Failed to load catalog mask for {map_name}: {e}")
+            else:
+                logger.warning(f"Catalog mask not found for {map_name}: {mask_path}")
+
         # Get units from header
         units = header.get("BUNIT", "unknown")
         if "MJy/sr" in units:
@@ -216,6 +236,7 @@ class SkyMaps:
             map_name=map_name,
             units=units,
             psf_file=map_config.beam.psf_file,
+            catalog_mask=mask_data,
         )
 
         # Convert units if needed

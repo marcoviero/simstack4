@@ -137,6 +137,10 @@ class SimstackAlgorithm:
         # Algorithm settings
         self.crop_circles = config.binning.crop_circles
         self.add_foreground = config.binning.add_foreground
+        self.use_noise_weighting = config.binning.use_noise_weighting
+        self.iterative_sigma_clip = config.binning.iterative_sigma_clip
+        self.min_sources_per_bin = config.binning.min_sources_per_bin
+        self.add_mask_leak = config.binning.add_mask_leak
 
         # Bootstrap settings
         self.bootstrap_enabled = config.error_estimator.bootstrap.enabled
@@ -160,7 +164,9 @@ class SimstackAlgorithm:
         logger.info(
             f"  crop_circles={self.crop_circles}, "
             f"add_foreground={self.add_foreground}, "
-            f"bootstrap={self.bootstrap_enabled}"
+            f"bootstrap={self.bootstrap_enabled}, "
+            f"use_noise_weighting={self.use_noise_weighting}, "
+            f"iterative_sigma_clip={self.iterative_sigma_clip}"
         )
         if self.bootstrap_enabled:
             logger.info(
@@ -330,10 +336,19 @@ class SimstackAlgorithm:
 
             n_layers = cache.shape[0]
             obs_vector = crop_info["obs_vector"]
+            noise_vector = crop_info.get("noise_vector")
 
-            # ---- 2b. Gram matrix and projection ----
-            G_base = cache @ cache.T  # (n_layers, n_layers)
-            h_base = cache @ obs_vector  # (n_layers,)
+            # ---- 2b. Gram matrix and projection (optionally noise-weighted) ----
+            # WLS: pre-scale cache and obs_vector by 1/noise so that G = AᵀW²A
+            # and h = AᵀW²b, equivalent to chi-square minimization.
+            if self.use_noise_weighting and noise_vector is not None:
+                cache_eff = cache / noise_vector  # (n_layers, n_crop) / (n_crop,)
+                obs_eff = obs_vector / noise_vector
+            else:
+                cache_eff = cache
+                obs_eff = obs_vector
+            G_base = cache_eff @ cache_eff.T  # (n_layers, n_layers)
+            h_base = cache_eff @ obs_eff  # (n_layers,)
 
             # ---- 2c. Get PSF kernel + crop geometry ----
             psf_kernel = self.sky_maps.create_psf_kernel(map_name)
@@ -378,6 +393,11 @@ class SimstackAlgorithm:
                 pop = self.population_manager.populations[population_ids[k]]
                 if pop.n_sources == 0:
                     return k, 0.0
+                if pop.n_sources < self.min_sources_per_bin:
+                    logger.warning(
+                        f"Population {population_ids[k]} has {pop.n_sources} sources "
+                        f"(< min_sources_per_bin={self.min_sources_per_bin})"
+                    )
 
                 ra_all, dec_all = self._get_coordinates_from_indices(pop.indices)
                 x_pix_all, y_pix_all = self.sky_maps.world_to_pixel(
@@ -410,13 +430,16 @@ class SimstackAlgorithm:
                         else:
                             layer_A -= np.mean(layer_A)
 
+                    # Apply noise weighting to layer_A to match the weighted cache
+                    layer_A_eff = layer_A / noise_vector if noise_vector is not None and self.use_noise_weighting else layer_A
+
                     # layer_B = cache[k] - layer_A: use algebraic identities
                     # to avoid a second DGEMV (see commit note on this branch).
-                    A_dot_base = cache @ layer_A
+                    A_dot_base = cache_eff @ layer_A_eff
                     B_dot_base = G_base[:, k] - A_dot_base
 
-                    A_dot_A = np.dot(layer_A, layer_A)
-                    h_A = np.dot(layer_A, obs_vector)
+                    A_dot_A = np.dot(layer_A_eff, layer_A_eff)
+                    h_A = np.dot(layer_A_eff, obs_eff)
                     A_dot_B = A_dot_base[k] - A_dot_A
                     B_dot_B = G_base[k, k] - 2 * A_dot_base[k] + A_dot_A
                     h_B = h_base[k] - h_A
@@ -449,7 +472,7 @@ class SimstackAlgorithm:
                     except np.linalg.LinAlgError:
                         x_new, _, _, _ = np.linalg.lstsq(G_new, h_new, rcond=None)
 
-                    flux_k_samples.append(x_new[k] + x_new[k + 1])
+                    flux_k_samples.append((x_new[k] - x_new[k + 1]) / 2.0)
 
                 return k, np.std(flux_k_samples, ddof=1)
 
@@ -485,7 +508,7 @@ class SimstackAlgorithm:
                     per_bin_errors[map_name][k] = err
 
             # Free this map's cache
-            del cache, G_base, h_base, obs_vector
+            del cache, cache_eff, G_base, h_base, obs_vector, obs_eff
             elapsed = time.time() - t_map_start
             logger.info(
                 f"  {map_name} per_bin complete: {elapsed:.0f}s "
@@ -545,7 +568,8 @@ class SimstackAlgorithm:
         map_shape = map_data.shape
         n_full = map_shape[0] * map_shape[1]
         n_pops = len(population_ids)
-        n_layers = n_pops + (1 if self.add_foreground else 0)
+        has_mask_leak = self.add_mask_leak and map_data.catalog_mask is not None
+        n_layers = n_pops + (1 if self.add_foreground else 0) + (1 if has_mask_leak else 0)
 
         # ---- Step 1: Compute crop mask (no layer data needed) ----
         if self.crop_circles:
@@ -559,8 +583,19 @@ class SimstackAlgorithm:
                 if map_data.valid_pixel_mask is not None
                 else ~np.isnan(map_data.data.ravel())
             )
+            # When mask_leak is enabled, also exclude catalog-masked pixels so
+            # the leak layer models only spillover at the mask boundary.
+            if has_mask_leak:
+                signal_flat = signal_flat & map_data.catalog_mask.ravel()
             flat_indices = np.where(signal_flat)[0]
             obs_vector = map_data.data.ravel()[flat_indices].copy()
+
+        # Extract noise for WLS (same crop as obs_vector)
+        if map_data.noise is not None:
+            noise_vector = map_data.noise.ravel()[flat_indices].copy()
+            noise_vector = np.where(noise_vector > 0, noise_vector, np.nanmedian(noise_vector[noise_vector > 0]))
+        else:
+            noise_vector = None
 
         n_crop = len(flat_indices)
         logger.info(
@@ -583,17 +618,27 @@ class SimstackAlgorithm:
                 # layer_full freed on next iteration
             # else: row stays zero
 
+        # Extra layers: foreground then mask_leak (order must match _stack_single_map)
+        extra_idx = n_pops
         if self.add_foreground:
-            cache[n_layers - 1] = 1.0  # uniform foreground
+            cache[extra_idx] = 1.0  # uniform foreground
+            extra_idx += 1
+        if has_mask_leak:
+            leak_full = self._build_mask_leak_layer(map_name, map_shape)
+            cache[extra_idx] = leak_full[flat_indices]
 
         # crop_circles=False: flat_indices already covers only signal pixels,
         # but layers were mean-subtracted over the full map.  Re-centre each
-        # population layer over the signal pixels so layers and obs_vector
-        # share the same reference frame.
+        # population layer (and the leak layer) over the signal pixels so layers
+        # and obs_vector share the same reference frame.
         if not self.crop_circles:
             for i in range(n_pops):
                 if np.any(cache[i] != 0):
                     cache[i] -= np.mean(cache[i])
+            if has_mask_leak:
+                leak_cache_idx = n_pops + (1 if self.add_foreground else 0)
+                if np.any(cache[leak_cache_idx] != 0):
+                    cache[leak_cache_idx] -= np.mean(cache[leak_cache_idx])
 
         # Build flat→crop lookup
         flat_to_crop = np.full(n_full, -1, dtype=np.int32)
@@ -612,6 +657,7 @@ class SimstackAlgorithm:
         crop_info = {
             "flat_to_crop": flat_to_crop,
             "obs_vector": obs_vector,
+            "noise_vector": noise_vector,
             "n_crop": n_crop,
             "flat_indices": flat_indices,
             "signal_mask_crop": signal_mask_crop,
@@ -826,7 +872,7 @@ class SimstackAlgorithm:
             flux_B = combined[n_populations : 2 * n_populations]
             foreground_flux = 0.0
 
-        total_flux_densities = flux_A + flux_B
+        total_flux_densities = (flux_A - flux_B) / 2.0
 
         final_labels = population_ids.copy()
         if self.add_foreground:
@@ -1037,10 +1083,22 @@ class SimstackAlgorithm:
             layer_matrix = np.vstack([layer_matrix, foreground_layer[np.newaxis, :]])
             population_labels.append("foreground")
 
+        # Add mask-leak nuisance layer if requested and mask is loaded
+        has_mask_leak = self.add_mask_leak and map_data.catalog_mask is not None
+        if has_mask_leak:
+            leak_layer_full = self._build_mask_leak_layer(map_name, map_data.shape)
+            layer_matrix = np.vstack([layer_matrix, leak_layer_full[np.newaxis, :]])
+            population_labels.append("mask_leak")
+
         # Crop if requested
         if self.crop_circles:
-            layer_matrix, observed_vector, valid_mask = self._crop_to_circles(
+            layer_matrix, observed_vector, flat_indices = self._crop_to_circles(
                 layer_matrix, map_data.data, map_name
+            )
+            noise_vector = (
+                map_data.noise.ravel()[flat_indices]
+                if map_data.noise is not None
+                else None
             )
         else:
             # Restrict to signal pixels (non-zero, non-NaN) as defined by
@@ -1053,18 +1111,33 @@ class SimstackAlgorithm:
                 if map_data.valid_pixel_mask is not None
                 else ~np.isnan(map_data.data.ravel())
             )
+            # When mask_leak is enabled, exclude catalog-masked pixels from the
+            # fit domain so the leak layer models only spillover into valid pixels.
+            # (crop_circles mode already excludes most masked regions implicitly.)
+            if has_mask_leak:
+                signal_mask = signal_mask & map_data.catalog_mask.ravel()
             layer_matrix = layer_matrix[:, signal_mask]
             observed_vector = map_data.data.ravel()[signal_mask]
+            noise_vector = (
+                map_data.noise.ravel()[signal_mask]
+                if map_data.noise is not None
+                else None
+            )
             # Layers were mean-subtracted over the full map; re-centre over
-            # signal pixels to match the map's reference frame.
+            # the (possibly narrower) signal pixels to match the map's reference frame.
             n_pop_layers = len(layer_specs)
             for i in range(n_pop_layers):
                 if np.any(layer_matrix[i] != 0):
                     layer_matrix[i] -= np.mean(layer_matrix[i])
+            # Re-centre leak layer over the cropped domain (foreground is constant, skipped)
+            if has_mask_leak:
+                leak_idx = len(population_labels) - 1
+                if np.any(layer_matrix[leak_idx] != 0):
+                    layer_matrix[leak_idx] -= np.mean(layer_matrix[leak_idx])
 
         # Solve
         flux_densities, flux_errors, fit_stats = self._solve_linear_system(
-            layer_matrix, observed_vector, map_data
+            layer_matrix, observed_vector, noise_vector
         )
 
         return {
@@ -1075,19 +1148,66 @@ class SimstackAlgorithm:
             "n_valid_pixels": len(observed_vector),
         }
 
+    def _build_mask_leak_layer(self, map_name: str, map_shape: tuple[int, int]) -> np.ndarray:
+        """PSF-convolve catalog-excluded regions to model flux leaking across the mask boundary.
+
+        Uses the same PSF kernel as source layers so the leak shape is consistent
+        with the population layers. Returns a mean-subtracted, ravelled (n_pix,) array.
+        The layer amplitude absorbs aggregate contamination from masked bright sources
+        into the linear system without attributing it to science populations.
+        Mask convention: catalog_mask=True means valid/included; excluded = ~catalog_mask.
+        """
+        map_data = self.sky_maps[map_name]
+        excluded = (~map_data.catalog_mask).astype(np.float64)
+        # Convolve with the real PSF (honours psf_file if provided)
+        leak = self.sky_maps.convolve_with_psf(excluded, map_name)
+        leak -= np.nanmean(leak)
+        return leak.ravel()
+
     def _solve_linear_system(
-        self, layer_matrix: np.ndarray, observed_vector: np.ndarray, map_data: MapData
+        self,
+        layer_matrix: np.ndarray,
+        observed_vector: np.ndarray,
+        noise_vector: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, dict[str, float]]:
-        """Solve linear system for flux densities"""
+        """Solve linear system for flux densities.
+
+        When noise_vector is provided and use_noise_weighting is True, applies
+        inverse-variance weighting (WLS) by pre-scaling layers and data by 1/noise
+        before the lstsq solve — equivalent to chi-square minimization.
+        """
         n_populations, n_pixels = layer_matrix.shape
 
         if n_pixels == 0:
             raise AlgorithmError("No valid pixels for fitting")
 
         try:
+            # Apply WLS pre-scaling if noise is available
+            if self.use_noise_weighting and noise_vector is not None:
+                safe_noise = np.where(noise_vector > 0, noise_vector, np.nanmedian(noise_vector[noise_vector > 0]))
+                layer_matrix_fit = layer_matrix / safe_noise  # broadcast: (n_pop, n_pix) / (n_pix,)
+                observed_fit = observed_vector / safe_noise
+            else:
+                layer_matrix_fit = layer_matrix
+                observed_fit = observed_vector
+
             flux_densities, residuals, rank, singular_values = linalg.lstsq(
-                layer_matrix.T, observed_vector
+                layer_matrix_fit.T, observed_fit
             )
+
+            # Optional: one round of iterative sigma-clipping on noise-scaled residuals
+            if self.iterative_sigma_clip and n_pixels > n_populations + 1:
+                model_scaled = layer_matrix_fit.T @ flux_densities
+                scaled_resid = observed_fit - model_scaled
+                keep = np.abs(scaled_resid) < 3.0
+                if keep.sum() > n_populations:
+                    # Update views so the covariance block below uses the clipped system
+                    layer_matrix_fit = layer_matrix_fit[:, keep]
+                    observed_fit = observed_fit[keep]
+                    flux_densities, residuals, rank, singular_values = linalg.lstsq(
+                        layer_matrix_fit.T, observed_fit
+                    )
+                    n_pixels = keep.sum()
 
             # Calculate systematic errors (bootstrap errors calculated separately)
             if n_pixels > n_populations:
@@ -1095,19 +1215,19 @@ class SimstackAlgorithm:
                     if hasattr(residuals, "__len__") and len(residuals) > 0:
                         mse = residuals[0] / (n_pixels - n_populations)
                     else:
-                        model_prediction = layer_matrix.T @ flux_densities
-                        mse = np.sum((observed_vector - model_prediction) ** 2) / (
+                        model_prediction = layer_matrix_fit.T @ flux_densities
+                        mse = np.sum((observed_fit - model_prediction) ** 2) / (
                             n_pixels - n_populations
                         )
 
-                    covariance = linalg.inv(layer_matrix @ layer_matrix.T) * mse
+                    covariance = linalg.inv(layer_matrix_fit @ layer_matrix_fit.T) * mse
                     systematic_errors = np.sqrt(np.diag(covariance))
                 except linalg.LinAlgError:
                     systematic_errors = np.abs(flux_densities) * 0.1
             else:
                 systematic_errors = np.abs(flux_densities) * 0.1
 
-            # Calculate fit statistics
+            # Calculate fit statistics in original (unscaled) units
             model_prediction = layer_matrix.T @ flux_densities
             chi_squared = np.sum((observed_vector - model_prediction) ** 2)
             dof = max(1, n_pixels - n_populations)

@@ -314,8 +314,8 @@ class SimstackWrapper:
         bootstrap_covariances = {}
 
         for pop_idx, pop_id in enumerate(population_labels):
-            if pop_id == "foreground":
-                continue  # Skip foreground
+            if pop_id in ("foreground", "mask_leak"):
+                continue  # Skip nuisance layers
 
             # Collect flux measurements across bootstrap iterations
             pop_fluxes = []
