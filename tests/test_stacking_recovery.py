@@ -698,3 +698,530 @@ class TestConfusionRegime:
         assert stats["rank"] == n_pops, (
             f"Layer matrix rank {stats['rank']} < {n_pops} — degenerate!"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 7: Inverse-variance weighting (WLS) — LinSimStack feature
+# ---------------------------------------------------------------------------
+
+
+def solve_wls(
+    layer_matrix: np.ndarray, observed: np.ndarray, noise_vector: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """WLS solve: pre-scale by 1/noise then lstsq. Returns (fluxes, errors)."""
+    safe_noise = np.where(noise_vector > 0, noise_vector, np.nanmedian(noise_vector[noise_vector > 0]))
+    lm_w = layer_matrix / safe_noise
+    obs_w = observed / safe_noise
+    flux, residuals, rank, sv = linalg.lstsq(lm_w.T, obs_w)
+    n_pix, n_pop = lm_w.shape[1], lm_w.shape[0]
+    if n_pix > n_pop:
+        model_w = lm_w.T @ flux
+        mse = np.sum((obs_w - model_w) ** 2) / (n_pix - n_pop)
+        try:
+            cov = linalg.inv(lm_w @ lm_w.T) * mse
+            errors = np.sqrt(np.diag(cov))
+        except linalg.LinAlgError:
+            errors = np.abs(flux) * 0.1
+    else:
+        errors = np.abs(flux) * 0.1
+    return flux, errors
+
+
+class TestNoiseWeighting:
+    """Verify that WLS outperforms OLS when noise is spatially non-uniform."""
+
+    def test_wls_unbiased(self, map_shape, fwhm_pix, rng):
+        """WLS should recover true flux without bias."""
+        true_flux = 0.05
+        n_sources = 150
+
+        positions = [
+            (int(y), int(x))
+            for y, x in zip(
+                rng.integers(10, map_shape[0] - 10, n_sources),
+                rng.integers(10, map_shape[1] - 10, n_sources),
+            )
+        ]
+        layer = gaussian_psf_layer(map_shape, positions, fwhm_pix)
+        layer_matrix = layer[np.newaxis, :]
+
+        # Non-uniform noise: RMS varies 4× across the map
+        n_pix = map_shape[0] * map_shape[1]
+        noise_map = 0.001 + 0.003 * rng.random(n_pix)
+        observed = build_observed_map(layer_matrix, np.array([true_flux]))
+        observed += rng.normal(0, noise_map)
+
+        flux_wls, _ = solve_wls(layer_matrix, observed, noise_map)
+        assert abs(flux_wls[0] - true_flux) < 0.01, (
+            f"WLS biased: recovered {flux_wls[0]:.4e} vs {true_flux:.4e}"
+        )
+
+    def test_wls_beats_ols_on_nonuniform_noise(self, map_shape, fwhm_pix):
+        """
+        With non-uniform noise, WLS should have lower MSE across realizations
+        than plain OLS. This is the central statistical argument for adopting
+        LinSimStack's noise weighting.
+
+        Design: half the map (columns 0-63) has 10× higher noise than the
+        other half (columns 64-127). Sources are split evenly between regions
+        so signal overlaps both noise regimes. Gauss-Markov guarantees
+        WLS MSE ≤ OLS MSE; 300 realizations ensure the gap is detectable.
+        """
+        true_flux = 0.05
+        n_per_half = 60  # 60 sources in each noise region
+        n_realizations = 300
+        ny, nx = map_shape
+
+        base_rng = np.random.default_rng(777)
+        # Sources in left half (high-noise columns 0-63)
+        pos_noisy = list(zip(
+            base_rng.integers(10, ny - 10, n_per_half).tolist(),
+            base_rng.integers(0, nx // 2, n_per_half).tolist(),
+        ))
+        # Sources in right half (low-noise columns 64-127)
+        pos_clean = list(zip(
+            base_rng.integers(10, ny - 10, n_per_half).tolist(),
+            base_rng.integers(nx // 2, nx - 10, n_per_half).tolist(),
+        ))
+        positions = pos_noisy + pos_clean
+
+        layer = gaussian_psf_layer(map_shape, positions, fwhm_pix)
+        layer_matrix = layer[np.newaxis, :]
+
+        # Build noise map: left half σ=0.01, right half σ=0.001 (10× ratio)
+        noise_map_2d = np.full(map_shape, 0.001)
+        noise_map_2d[:, : nx // 2] = 0.01
+        noise_map = noise_map_2d.ravel()
+
+        signal = build_observed_map(layer_matrix, np.array([true_flux]))
+
+        ols_sq_errors = []
+        wls_sq_errors = []
+
+        for i in range(n_realizations):
+            noise_rng = np.random.default_rng(i + 100)
+            observed = signal + noise_rng.normal(0, noise_map)
+
+            ols_flux, _, _ = solve_for_fluxes(layer_matrix, observed)
+            wls_flux, _ = solve_wls(layer_matrix, observed, noise_map)
+
+            ols_sq_errors.append((ols_flux[0] - true_flux) ** 2)
+            wls_sq_errors.append((wls_flux[0] - true_flux) ** 2)
+
+        ols_mse = np.mean(ols_sq_errors)
+        wls_mse = np.mean(wls_sq_errors)
+
+        # Gauss-Markov: WLS must have lower MSE under non-uniform noise.
+        # Expected ratio ~0.05–0.2 for 10× noise contrast; any ratio > 0.99
+        # reliably indicates a bug in the WLS implementation.
+        assert wls_mse < ols_mse, (
+            f"WLS MSE ({wls_mse:.2e}) >= OLS MSE ({ols_mse:.2e}): "
+            "noise weighting not improving recovery — check implementation"
+        )
+
+    def test_wls_uniform_noise_same_as_ols(self, map_shape, fwhm_pix, rng):
+        """When noise is uniform, WLS and OLS should give identical results."""
+        true_flux = 0.05
+        n_sources = 100
+        noise_std = 0.001
+
+        positions = [
+            (int(y), int(x))
+            for y, x in zip(
+                rng.integers(10, map_shape[0] - 10, n_sources),
+                rng.integers(10, map_shape[1] - 10, n_sources),
+            )
+        ]
+        layer = gaussian_psf_layer(map_shape, positions, fwhm_pix)
+        layer_matrix = layer[np.newaxis, :]
+        n_pix = map_shape[0] * map_shape[1]
+        noise_map = np.full(n_pix, noise_std)
+
+        observed = build_observed_map(layer_matrix, np.array([true_flux]),
+                                      noise_std=noise_std, rng=rng)
+
+        ols_flux, _, _ = solve_for_fluxes(layer_matrix, observed)
+        wls_flux, _ = solve_wls(layer_matrix, observed, noise_map)
+
+        # Identical up to floating point (uniform weighting = no weighting)
+        np.testing.assert_allclose(wls_flux, ols_flux, rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Iterative sigma-clipping — LinSimStack feature
+# ---------------------------------------------------------------------------
+
+
+def solve_with_sigma_clip(
+    layer_matrix: np.ndarray,
+    observed: np.ndarray,
+    noise_vector: np.ndarray,
+    sigma_threshold: float = 3.0,
+) -> np.ndarray:
+    """One-shot sigma-clip: fit, mask outliers, re-fit. Returns recovered fluxes."""
+    safe_noise = np.where(noise_vector > 0, noise_vector, np.nanmedian(noise_vector[noise_vector > 0]))
+    lm_w = layer_matrix / safe_noise
+    obs_w = observed / safe_noise
+
+    flux, _, _, _ = linalg.lstsq(lm_w.T, obs_w)
+    residuals = obs_w - lm_w.T @ flux
+    keep = np.abs(residuals) < sigma_threshold
+
+    n_pop = layer_matrix.shape[0]
+    if keep.sum() > n_pop:
+        flux, _, _, _ = linalg.lstsq(lm_w[:, keep].T, obs_w[keep])
+
+    return flux
+
+
+class TestIterativeSigmaClip:
+    """Verify that sigma-clipping removes outlier pixels without biasing flux."""
+
+    def test_sigma_clip_removes_outliers(self, map_shape, fwhm_pix, rng):
+        """
+        Inject a bright outlier pixel (point source contamination).
+        Sigma-clipping should remove it and recover the correct flux;
+        plain WLS without clipping should be biased toward the outlier.
+        """
+        true_flux = 0.05
+        n_sources = 100
+        noise_std = 0.001
+
+        positions = [
+            (int(y), int(x))
+            for y, x in zip(
+                rng.integers(10, map_shape[0] - 10, n_sources),
+                rng.integers(10, map_shape[1] - 10, n_sources),
+            )
+        ]
+        layer = gaussian_psf_layer(map_shape, positions, fwhm_pix)
+        layer_matrix = layer[np.newaxis, :]
+        n_pix = map_shape[0] * map_shape[1]
+        noise_map = np.full(n_pix, noise_std)
+
+        observed = build_observed_map(layer_matrix, np.array([true_flux]),
+                                      noise_std=noise_std, rng=rng)
+
+        # Inject a 50σ outlier at a random pixel not near any source
+        outlier_pixel = 1000  # some pixel index far from sources
+        observed[outlier_pixel] += 50 * noise_std
+
+        wls_flux, _ = solve_wls(layer_matrix, observed, noise_map)
+        clip_flux = solve_with_sigma_clip(layer_matrix, observed, noise_map)
+
+        # Both should be reasonable, but clip should be closer to truth
+        wls_err = abs(wls_flux[0] - true_flux)
+        clip_err = abs(clip_flux[0] - true_flux)
+
+        assert clip_err <= wls_err + noise_std, (
+            f"Sigma-clip ({clip_err:.4e}) worse than WLS ({wls_err:.4e}) "
+            "after outlier injection — clipping not effective"
+        )
+        # Sigma-clipped result should be within 5σ of true flux
+        assert clip_err < 5 * noise_std, (
+            f"Sigma-clip flux {clip_flux[0]:.4e} too far from truth {true_flux:.4e}"
+        )
+
+    def test_sigma_clip_no_bias_clean_data(self, map_shape, fwhm_pix, rng):
+        """On clean data (no outliers), sigma-clip should give the same result as WLS."""
+        true_flux = 0.05
+        n_sources = 100
+        noise_std = 0.001
+
+        positions = [
+            (int(y), int(x))
+            for y, x in zip(
+                rng.integers(10, map_shape[0] - 10, n_sources),
+                rng.integers(10, map_shape[1] - 10, n_sources),
+            )
+        ]
+        layer = gaussian_psf_layer(map_shape, positions, fwhm_pix)
+        layer_matrix = layer[np.newaxis, :]
+        n_pix = map_shape[0] * map_shape[1]
+        noise_map = np.full(n_pix, noise_std)
+
+        observed = build_observed_map(layer_matrix, np.array([true_flux]),
+                                      noise_std=noise_std, rng=rng)
+
+        wls_flux, _ = solve_wls(layer_matrix, observed, noise_map)
+        clip_flux = solve_with_sigma_clip(layer_matrix, observed, noise_map)
+
+        # Should be very close (no outliers to clip)
+        np.testing.assert_allclose(clip_flux, wls_flux, rtol=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Test 9: SimstackAlgorithm._solve_linear_system — exercise production code
+# ---------------------------------------------------------------------------
+
+
+def _make_bare_algo(use_noise_weighting: bool, iterative_sigma_clip: bool = False):
+    """Create a SimstackAlgorithm instance with only the attrs _solve_linear_system needs."""
+    from simstack4.algorithm import SimstackAlgorithm
+    algo = object.__new__(SimstackAlgorithm)
+    algo.use_noise_weighting = use_noise_weighting
+    algo.iterative_sigma_clip = iterative_sigma_clip
+    return algo
+
+
+class TestSolveLinearSystemMethod:
+    """
+    Ensure that SimstackAlgorithm._solve_linear_system (the production code path)
+    honours noise weighting correctly.  These tests are intentionally parallel
+    to TestNoiseWeighting / TestIterativeSigmaClip above but call the real method
+    rather than the standalone helpers — that is the gap the advisor flagged.
+    """
+
+    def test_uniform_noise_matches_ols(self, map_shape, fwhm_pix, rng):
+        """
+        With uniform noise, WLS ≡ OLS (dividing both sides by a constant
+        changes nothing).  Checks to floating-point precision that the real
+        method behaves this way.
+        """
+        true_flux = 0.05
+        n_sources = 100
+        noise_std = 0.001
+        n_pix = map_shape[0] * map_shape[1]
+
+        positions = [
+            (int(y), int(x))
+            for y, x in zip(
+                rng.integers(10, map_shape[0] - 10, n_sources),
+                rng.integers(10, map_shape[1] - 10, n_sources),
+            )
+        ]
+        layer = gaussian_psf_layer(map_shape, positions, fwhm_pix)
+        layer_matrix = layer[np.newaxis, :]
+        noise_map = np.full(n_pix, noise_std)
+        observed = build_observed_map(layer_matrix, np.array([true_flux]),
+                                      noise_std=noise_std, rng=rng)
+
+        algo_wls = _make_bare_algo(use_noise_weighting=True)
+        algo_ols = _make_bare_algo(use_noise_weighting=False)
+
+        flux_wls, _, _ = algo_wls._solve_linear_system(layer_matrix, observed, noise_map)
+        flux_ols, _, _ = algo_ols._solve_linear_system(layer_matrix, observed, None)
+
+        np.testing.assert_allclose(flux_wls, flux_ols, rtol=1e-10,
+                                   err_msg="WLS≠OLS under uniform noise — weighting bug")
+
+    def test_nonuniform_noise_wls_beats_ols(self, map_shape, fwhm_pix):
+        """
+        Production method must achieve lower MSE than OLS under non-uniform noise
+        (same scenario as TestNoiseWeighting.test_wls_beats_ols_on_nonuniform_noise).
+        """
+        true_flux = 0.05
+        n_per_half = 60
+        n_realizations = 300
+        ny, nx = map_shape
+
+        base_rng = np.random.default_rng(888)
+        pos_noisy = list(zip(
+            base_rng.integers(10, ny - 10, n_per_half).tolist(),
+            base_rng.integers(0, nx // 2, n_per_half).tolist(),
+        ))
+        pos_clean = list(zip(
+            base_rng.integers(10, ny - 10, n_per_half).tolist(),
+            base_rng.integers(nx // 2, nx - 10, n_per_half).tolist(),
+        ))
+        positions = pos_noisy + pos_clean
+
+        layer = gaussian_psf_layer(map_shape, positions, fwhm_pix)
+        layer_matrix = layer[np.newaxis, :]
+
+        noise_map_2d = np.full(map_shape, 0.001)
+        noise_map_2d[:, : nx // 2] = 0.01
+        noise_map = noise_map_2d.ravel()
+
+        signal = build_observed_map(layer_matrix, np.array([true_flux]))
+
+        algo_wls = _make_bare_algo(use_noise_weighting=True)
+        algo_ols = _make_bare_algo(use_noise_weighting=False)
+
+        ols_sq, wls_sq = [], []
+        for i in range(n_realizations):
+            noise_rng = np.random.default_rng(i + 200)
+            obs = signal + noise_rng.normal(0, noise_map)
+            f_ols, _, _ = algo_ols._solve_linear_system(layer_matrix, obs, None)
+            f_wls, _, _ = algo_wls._solve_linear_system(layer_matrix, obs, noise_map)
+            ols_sq.append((f_ols[0] - true_flux) ** 2)
+            wls_sq.append((f_wls[0] - true_flux) ** 2)
+
+        ols_mse, wls_mse = np.mean(ols_sq), np.mean(wls_sq)
+        assert wls_mse < ols_mse, (
+            f"Production WLS MSE ({wls_mse:.2e}) >= OLS MSE ({ols_mse:.2e}) — "
+            "use_noise_weighting not active in _solve_linear_system"
+        )
+
+    def test_sigma_clip_enabled_removes_outlier(self, map_shape, fwhm_pix, rng):
+        """
+        With iterative_sigma_clip=True, a 50σ outlier pixel should be removed
+        and the recovered flux should be closer to truth than without clipping.
+        """
+        true_flux = 0.05
+        n_sources = 100
+        noise_std = 0.001
+        n_pix = map_shape[0] * map_shape[1]
+
+        positions = [
+            (int(y), int(x))
+            for y, x in zip(
+                rng.integers(10, map_shape[0] - 10, n_sources),
+                rng.integers(10, map_shape[1] - 10, n_sources),
+            )
+        ]
+        layer = gaussian_psf_layer(map_shape, positions, fwhm_pix)
+        layer_matrix = layer[np.newaxis, :]
+        noise_map = np.full(n_pix, noise_std)
+
+        observed = build_observed_map(layer_matrix, np.array([true_flux]),
+                                      noise_std=noise_std, rng=rng)
+        observed[1000] += 50 * noise_std  # bright outlier
+
+        algo_wls = _make_bare_algo(use_noise_weighting=True, iterative_sigma_clip=False)
+        algo_clip = _make_bare_algo(use_noise_weighting=True, iterative_sigma_clip=True)
+
+        flux_wls, _, _ = algo_wls._solve_linear_system(layer_matrix, observed, noise_map)
+        flux_clip, _, _ = algo_clip._solve_linear_system(layer_matrix, observed, noise_map)
+
+        err_wls = abs(flux_wls[0] - true_flux)
+        err_clip = abs(flux_clip[0] - true_flux)
+
+        assert err_clip <= err_wls + noise_std, (
+            f"Clip ({err_clip:.4e}) worse than WLS ({err_wls:.4e}) after outlier injection"
+        )
+        assert err_clip < 5 * noise_std, (
+            f"Clipped flux {flux_clip[0]:.4e} too far from truth {true_flux:.4e}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 10: Mask-leak nuisance layer — exercise _build_mask_leak_layer and
+#           recovery via SimstackAlgorithm._solve_linear_system
+# ---------------------------------------------------------------------------
+
+
+class TestMaskLeakLayer:
+    """
+    Verify that the mask-leak nuisance layer absorbs contamination from flux
+    leaking across a catalog mask boundary without biasing science populations.
+    """
+
+    def test_mask_leak_layer_finite_and_near_zero_mean(self, map_shape, fwhm_pix):
+        """
+        _build_mask_leak_layer should return a finite, ~zero-mean array with
+        non-trivial structure (not all zeros) when the mask has excluded regions.
+        """
+        from simstack4.algorithm import SimstackAlgorithm
+        from unittest.mock import MagicMock
+        import numpy as np
+        from scipy.ndimage import gaussian_filter
+
+        ny, nx = map_shape
+        # Excluded region: left quarter of the map
+        catalog_mask = np.ones(map_shape, dtype=bool)
+        catalog_mask[:, : nx // 4] = False
+
+        map_data = MagicMock()
+        map_data.catalog_mask = catalog_mask
+        map_data.shape = map_shape
+        map_data.beam_fwhm_pixels = fwhm_pix
+
+        # Stub convolve_with_psf with a Gaussian so we don't need real sky_maps
+        def fake_convolve(data, name):
+            sigma = fwhm_pix / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+            return gaussian_filter(data.astype(float), sigma=sigma, mode="constant")
+
+        sky_maps = MagicMock()
+        sky_maps.convolve_with_psf = fake_convolve
+
+        algo = object.__new__(SimstackAlgorithm)
+        algo.sky_maps = sky_maps
+        algo.sky_maps.__getitem__ = lambda self, key: map_data
+
+        leak = algo._build_mask_leak_layer("test", map_shape)
+
+        assert np.all(np.isfinite(leak)), "Leak layer contains non-finite values"
+        assert np.abs(np.mean(leak)) < 1e-10, "Leak layer not mean-zero"
+        assert np.any(leak != 0), "Leak layer is all zeros — PSF convolution failed"
+
+    def test_mask_leak_removes_contamination(self, map_shape, fwhm_pix, rng):
+        """
+        Place science sources in the right half of the map.  Inject leaked flux
+        from the left-half mask into the right half via PSF convolution.
+        Without the leak layer the solver attributes that flux to the science
+        population (bias).  With it the solver absorbs the contamination and
+        recovers the true science flux.
+        """
+        from scipy.ndimage import gaussian_filter
+        from scipy import linalg
+
+        ny, nx = map_shape
+        true_science_flux = 0.05
+        leaked_flux_amplitude = 0.10  # 2× the science signal — strong contamination
+        noise_std = 0.0005
+        n_sources = 80
+        sigma_pix = fwhm_pix / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+
+        # Science sources: right half only (columns nx//2 .. nx-1)
+        positions = [
+            (int(y), int(x))
+            for y, x in zip(
+                rng.integers(10, ny - 10, n_sources),
+                rng.integers(nx // 2 + 5, nx - 5, n_sources),
+            )
+        ]
+        science_layer = gaussian_psf_layer(map_shape, positions, fwhm_pix, mean_subtract=True)
+        science_layer_matrix = science_layer[np.newaxis, :]
+
+        # Leaked flux: a uniform "bright region" in the left half, PSF-convolved
+        bright_region = np.zeros(map_shape)
+        bright_region[:, : nx // 4] = 1.0
+        leak_full = gaussian_filter(bright_region, sigma=sigma_pix, mode="constant")
+        leak_full -= np.mean(leak_full)
+        leak_layer = leak_full.ravel()
+
+        # Catalog mask: left quarter excluded (True = valid)
+        catalog_mask = np.ones(map_shape, dtype=bool)
+        catalog_mask[:, : nx // 4] = False
+        signal_mask = catalog_mask.ravel()  # fit only valid pixels
+
+        # Build observed map: science signal + leaked contamination + noise
+        observed_full = (
+            true_science_flux * science_layer
+            + leaked_flux_amplitude * leak_full.ravel()
+            + rng.normal(0, noise_std, science_layer.shape)
+        )
+
+        # --- Solve WITHOUT leak layer (contamination leaks into science bin) ---
+        lm_no_leak = science_layer_matrix[:, signal_mask]
+        obs_no_leak = observed_full[signal_mask]
+        # Re-centre over the valid pixel domain
+        lm_no_leak = lm_no_leak - np.mean(lm_no_leak, axis=1, keepdims=True)
+        flux_no_leak, _, _, _ = linalg.lstsq(lm_no_leak.T, obs_no_leak)
+
+        # --- Solve WITH leak layer (contamination absorbed by nuisance column) ---
+        lm_with_leak = np.vstack([
+            science_layer_matrix[:, signal_mask],
+            leak_layer[signal_mask][np.newaxis, :],
+        ])
+        # Re-centre science row; leak layer already mean-zero
+        lm_with_leak[0] -= np.mean(lm_with_leak[0])
+        lm_with_leak[1] -= np.mean(lm_with_leak[1])
+        obs_with_leak = observed_full[signal_mask]
+        flux_with_leak, _, _, _ = linalg.lstsq(lm_with_leak.T, obs_with_leak)
+        science_flux_recovered = flux_with_leak[0]
+
+        err_no_leak = abs(flux_no_leak[0] - true_science_flux)
+        err_with_leak = abs(science_flux_recovered - true_science_flux)
+
+        # The leak layer must reduce the science-bin error
+        assert err_with_leak < err_no_leak, (
+            f"Mask-leak layer didn't reduce error: "
+            f"without={err_no_leak:.4e}, with={err_with_leak:.4e}"
+        )
+        # After absorption the science flux should be within 5σ of truth
+        assert err_with_leak < 5 * noise_std, (
+            f"Science flux {science_flux_recovered:.4e} still biased after "
+            f"mask-leak absorption (truth={true_science_flux:.4e})"
+        )

@@ -526,13 +526,14 @@ class SimstackResults:
         """
         logger.info("Processing stacking results...")
 
+        _NUISANCE = frozenset({"foreground", "mask_leak"})
         pop_labels = [
-            lbl for lbl in self.raw_results.population_labels if lbl != "foreground"
+            lbl for lbl in self.raw_results.population_labels if lbl not in _NUISANCE
         ]
         pop_indices = {
             lbl: i
             for i, lbl in enumerate(self.raw_results.population_labels)
-            if lbl != "foreground"
+            if lbl not in _NUISANCE
         }
 
         # === Pass 1: Fit all with SNR-scaled Schreiber prior ===
