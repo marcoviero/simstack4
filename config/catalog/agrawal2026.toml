@@ -23,68 +23,47 @@ method = "photometric"
 # Photo-z quality flag: sigma_z/(1+z) <= dz_max marks a source as reliable.
 # Critical for emission line work — an uncertain photo-z shifts the line
 # in or out of the stacking band and biases the measured excess/deficit.
-# Class rules below split each population into reliable/unreliable-z subsets.
+# No mass completeness split (all treated as one SF tier).
+# QT is not split by photo-z quality — quiescent galaxies contribute little
+# to line emission; stacking them as one class is sufficient.
 [populations]
-flag_photoz_quality = true
+flag_photoz_quality    = true
+flag_mass_completeness = false
 
-# Class definitions for [CII] / line excess science.
+# 5-class scheme: SF and SB each split by photo-z quality; QT unsplit.
 # photoz_reliable is True when sigma_z/(1+z) <= 0.05 (see defaults.toml).
-# Reliable-z sources get even class codes (0, 2, 4, 6);
-# uncertain-z sources get odd codes (1, 3, 5, 7) and are stacked separately
-# so their contribution can be inspected or suppressed in post-processing.
 [[populations.classes]]
-code           = 6
+code           = 3
 label          = "sb_relz"
-requires       = ["starburst", "star_forming", "mass_complete", "photoz_reliable"]
+requires       = ["starburst", "star_forming", "photoz_reliable"]
 requires_not   = []
 warn_if_excluded = true
 
 [[populations.classes]]
-code           = 7
+code           = 4
 label          = "sb_uncz"
-requires       = ["starburst", "star_forming", "mass_complete"]
+requires       = ["starburst", "star_forming"]
 requires_not   = ["photoz_reliable"]
 warn_if_excluded = true
 
 [[populations.classes]]
-code           = 4
-label          = "qt_relz"
-requires       = ["photoz_reliable"]
+code           = 2
+label          = "qt"
+requires       = []
 requires_not   = ["star_forming"]
 warn_if_excluded = false
 
 [[populations.classes]]
-code           = 5
-label          = "qt_uncz"
-requires       = []
-requires_not   = ["star_forming", "photoz_reliable"]
-warn_if_excluded = false
-
-[[populations.classes]]
-code           = 2
-label          = "incomplete_sfg_relz"
-requires       = ["star_forming", "photoz_reliable"]
-requires_not   = ["mass_complete"]
-warn_if_excluded = true
-
-[[populations.classes]]
-code           = 3
-label          = "incomplete_sfg_uncz"
-requires       = ["star_forming"]
-requires_not   = ["mass_complete", "photoz_reliable"]
-warn_if_excluded = true
-
-[[populations.classes]]
 code           = 0
-label          = "complete_sfg_relz"
-requires       = ["star_forming", "mass_complete", "photoz_reliable"]
+label          = "sfg_relz"
+requires       = ["star_forming", "photoz_reliable"]
 requires_not   = []
 warn_if_excluded = true
 
 [[populations.classes]]
 code           = 1
-label          = "complete_sfg_uncz"
-requires       = ["star_forming", "mass_complete"]
+label          = "sfg_uncz"
+requires       = ["star_forming"]
 requires_not   = ["photoz_reliable"]
 warn_if_excluded = true
 
