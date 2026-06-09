@@ -30,6 +30,8 @@ chi2         = "chi2_best"       # LePhare best-fit chi2
 sersic_radius = "radius_sersic"  # Sersic effective radius in degrees (SE++)
 sersic_chi2   = "fmf_chi2"       # SE++ reduced chi2
 metallicity   = "metallicity"    # gas-phase metallicity from CIGALE
+zpdf_l68      = "zpdf_l68"       # lower 68% CI of photo-z PDF (from LePhare)
+zpdf_u68      = "zpdf_u68"       # upper 68% CI of photo-z PDF (from LePhare)
 
 [selection]
 redshift_min = 0.01
@@ -49,7 +51,15 @@ mag_col      = "mag_model_uvista-ks"
 flag_quiescent         = true    # NUVrJ quiescent classification (Ilbert+2013)
 flag_starburst         = true    # SFR/SFR_MS > 3 starburst flag (Elbaz+2018)
 flag_mass_completeness = true    # 90% mass-completeness per redshift bin
+flag_photoz_quality    = false   # photo-z reliability: sigma_z/(1+z) <= dz_max
 exclude_classes        = []      # population classes to drop from output
+
+# Photo-z quality threshold — opt-in (flag_photoz_quality = true to enable).
+# Adds photoz_reliable boolean: True when sigma_z/(1+z) <= dz_max.
+# sigma_z = (zpdf_u68 - zpdf_l68) / 2  (half-width of the 68% PDF interval).
+# Class rules can reference photoz_reliable just like mass_complete.
+[populations.photoz_quality]
+dz_max = 0.05   # sigma_z/(1+z) threshold; 0.05 excludes catastrophic outliers
 
 # 90% stellar mass completeness limits — Wijesekera+2026 Table A.1
 # z_bins defines N+1 edges; mass_limits[i] applies between z_bins[i] and z_bins[i+1].

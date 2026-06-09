@@ -466,7 +466,61 @@ def apply_mass_completeness(df: pd.DataFrame, config: dict) -> pd.Series:
 
 
 # =========================================================================
-# Step 5: Starburst flag
+# Step 5: Photo-z quality flag
+# =========================================================================
+
+
+def apply_photoz_quality(df: pd.DataFrame, config: dict) -> pd.Series:
+    """
+    Flag sources with reliable photometric redshifts.
+
+    True  = sigma_z / (1+z) <= dz_max  (photo-z reliable)
+    False = sigma_z / (1+z) >  dz_max  (uncertain; keep but flag)
+
+    sigma_z = (zpdf_u68 - zpdf_l68) / 2  (half-width of 68% PDF interval).
+    Columns come from [columns].zpdf_l68 / zpdf_u68 (default: "zpdf_l68",
+    "zpdf_u68" in the LePhare table). dz_max comes from
+    [populations.photoz_quality].dz_max (default 0.05).
+    """
+    cols    = config["columns"]
+    pop_cfg = config["populations"]
+    pz_cfg  = pop_cfg.get("photoz_quality", {})
+    dz_max  = pz_cfg.get("dz_max", 0.05)
+
+    z_col  = cols["redshift"]
+    lo_col = cols.get("zpdf_l68", "zpdf_l68")
+    hi_col = cols.get("zpdf_u68", "zpdf_u68")
+
+    if lo_col not in df.columns or hi_col not in df.columns:
+        warnings.warn(
+            f"Photo-z PDF columns '{lo_col}' / '{hi_col}' not found in catalog. "
+            "Setting photoz_reliable=True for all sources. "
+            "Check that the LePhare table is loaded and [columns].zpdf_l68/zpdf_u68 are set.",
+            stacklevel=2,
+        )
+        return pd.Series(True, index=df.index)
+
+    z      = df[z_col].values.astype(float)
+    lo     = df[lo_col].values.astype(float)
+    hi     = df[hi_col].values.astype(float)
+    sigma_z_norm = (hi - lo) / 2.0 / np.where(np.isfinite(z) & (z > 0), 1.0 + z, np.nan)
+
+    reliable = pd.Series(
+        np.isfinite(sigma_z_norm) & (sigma_z_norm <= dz_max),
+        index=df.index,
+    )
+
+    n_rel = reliable.sum()
+    n_tot = len(df)
+    print(
+        f"  Photo-z quality:   {n_rel:>8,} / {n_tot:,} reliable "
+        f"(sigma_z/(1+z) <= {dz_max})"
+    )
+    return reliable
+
+
+# =========================================================================
+# Step 6: Starburst flag
 # =========================================================================
 
 
@@ -1015,6 +1069,12 @@ def build_catalog(
         mass_complete = pd.Series(True, index=df.index)
         print("  Mass completeness: SKIPPED (flag_mass_completeness=false)")
 
+    if pop_cfg.get("flag_photoz_quality", False):
+        photoz_reliable = apply_photoz_quality(df, config)
+    else:
+        photoz_reliable = pd.Series(True, index=df.index)
+        print("  Photo-z quality:   SKIPPED (flag_photoz_quality=false)")
+
     if pop_cfg.get("flag_starburst", True):
         is_starburst = flag_starbursts(df, config)
     else:
@@ -1022,9 +1082,10 @@ def build_catalog(
         print("  Starburst flag: SKIPPED (flag_starburst=false)")
 
     # Attach built-in flags to full catalog
-    df["star_forming"]  = star_forming.astype(int)
-    df["mass_complete"] = mass_complete.astype(int)
-    df["starburst"]     = is_starburst.astype(int)
+    df["star_forming"]    = star_forming.astype(int)
+    df["mass_complete"]   = mass_complete.astype(int)
+    df["photoz_reliable"] = photoz_reliable.astype(int)
+    df["starburst"]       = is_starburst.astype(int)
 
     # Apply any custom flag columns defined in [populations.custom_flags]
     apply_custom_flags(df, config)
@@ -1163,9 +1224,9 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Paper presets:
-  --paper w26   Wijesekera+2026 (z=0.5-5, photometric β, exclude QT)
-  --paper p26   Parente+2026    (z=0.5-5, Sersic+sigma_SFR, all classes)
-  --paper a26   Agrawal+2026    (placeholder)
+  --paper w26   Wijesekera+2026 (z=0.25-6, photometric β, exclude QT+SB)
+  --paper p26   Parente+2026    (z=0-8, one SFG label, Sersic+sigma_SFR)
+  --paper a26   Agrawal+2026    (z=0-6, [CII] excess, photo-z quality enabled)
 
 Population classes:
   0  complete_sfg   : SF, mass-complete, not SB
@@ -1215,6 +1276,14 @@ Population classes:
         help="Disable mass-completeness flagging"
     )
     parser.add_argument(
+        "--pz-quality", action="store_true",
+        help="Enable photo-z quality flagging (sigma_z/(1+z) <= dz-max)"
+    )
+    parser.add_argument(
+        "--pz-max", type=float, metavar="FLOAT",
+        help="Photo-z quality threshold sigma_z/(1+z) (default: 0.05); overrides config"
+    )
+    parser.add_argument(
         "--mass-min", type=float, metavar="FLOAT",
         help="Minimum log10(M*/Msun) threshold (e.g. 9.0); overrides config"
     )
@@ -1251,6 +1320,10 @@ Population classes:
         overrides.setdefault("populations", {})["flag_starburst"] = False
     if args.no_mc:
         overrides.setdefault("populations", {})["flag_mass_completeness"] = False
+    if args.pz_quality:
+        overrides.setdefault("populations", {})["flag_photoz_quality"] = True
+    if args.pz_max is not None:
+        overrides.setdefault("populations", {}).setdefault("photoz_quality", {})["dz_max"] = args.pz_max
     if args.mass_min is not None:
         overrides.setdefault("selection", {})["mass_min"] = args.mass_min
     if args.snr_min is not None:

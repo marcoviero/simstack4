@@ -20,6 +20,53 @@ mass_min     = 8.5
 [beta_luv]
 method = "photometric"
 
+# Photo-z quality flag: sigma_z/(1+z) <= dz_max marks a source as reliable.
+# Critical for emission line work — an uncertain photo-z shifts the line
+# in or out of the stacking band and biases the measured excess/deficit.
+# No mass completeness split (all treated as one SF tier).
+# QT is not split by photo-z quality — quiescent galaxies contribute little
+# to line emission; stacking them as one class is sufficient.
+[populations]
+flag_photoz_quality    = true
+flag_mass_completeness = false
+
+# 5-class scheme: SF and SB each split by photo-z quality; QT unsplit.
+# photoz_reliable is True when sigma_z/(1+z) <= 0.05 (see defaults.toml).
+[[populations.classes]]
+code           = 3
+label          = "sb_relz"
+requires       = ["starburst", "star_forming", "photoz_reliable"]
+requires_not   = []
+warn_if_excluded = true
+
+[[populations.classes]]
+code           = 4
+label          = "sb_uncz"
+requires       = ["starburst", "star_forming"]
+requires_not   = ["photoz_reliable"]
+warn_if_excluded = true
+
+[[populations.classes]]
+code           = 2
+label          = "qt"
+requires       = []
+requires_not   = ["star_forming"]
+warn_if_excluded = false
+
+[[populations.classes]]
+code           = 0
+label          = "sfg_relz"
+requires       = ["star_forming", "photoz_reliable"]
+requires_not   = []
+warn_if_excluded = true
+
+[[populations.classes]]
+code           = 1
+label          = "sfg_uncz"
+requires       = ["star_forming"]
+requires_not   = ["photoz_reliable"]
+warn_if_excluded = true
+
 # Sersic morphology not required by the primary [CII] analysis but included
 # for potential extension: σ_SFR as a predictor of line deficit
 # (cf. Sommovigo+2022 radiative equilibrium; Parente+2026 T_dust-σ_SFR).
