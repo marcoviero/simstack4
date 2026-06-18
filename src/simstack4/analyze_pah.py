@@ -427,6 +427,8 @@ def measure_pah_excess(
                 extra["metallicity"] = val
             elif "ssfr" in kl:
                 extra["log_ssfr"] = val
+            elif "delta_ms" in kl:
+                extra["delta_ms"] = val
 
         # Derive log_ssfr if not present
         if "log_ssfr" not in extra:

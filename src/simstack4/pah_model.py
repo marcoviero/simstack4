@@ -113,6 +113,7 @@ class PAHModel:
         T_warm=60.0,
         warm_frac=0.3,
         include_minor=False,
+        include_silicate=False,
     ):
         if coeffs is not None:
             self.coeffs = np.asarray(coeffs, dtype=float)
@@ -122,6 +123,7 @@ class PAHModel:
 
         self.T_warm = T_warm
         self.warm_frac = warm_frac
+        self.include_silicate = include_silicate
 
         self.features = list(PAH_FEATURES)
         if include_minor:
@@ -1538,33 +1540,62 @@ class PAHModel:
                 [np.interp(z_m, z_union, T_grid[gi]) for gi in range(n_groups)]
             )
 
+        # ── Silicate absorption template (optional) ────────────────
+        # 9.7 μm Drude profile (Draine 2003): τ_sil × D(λ_rest)
+        # Integrated through the MIPS 24 μm bandpass; τ_sil ≥ 0.
+        include_silicate = getattr(self, "include_silicate", False)
+        if include_silicate:
+            _sil_lam_0, _sil_gamma = 9.7, 3.3  # centre, FWHM (μm)
+
+            def _compute_sil_template(z_arr):
+                result = np.zeros(len(z_arr))
+                for i, zi in enumerate(z_arr):
+                    rest_lam = bp_lam_f / (1 + zi)
+                    x = rest_lam / _sil_lam_0
+                    drude = (_sil_gamma / _sil_lam_0) ** 2 / (
+                        (x - 1.0 / x) ** 2 + (_sil_gamma / _sil_lam_0) ** 2
+                    )
+                    result[i] = _trapz(drude * bp_resp_f, bp_lam_f) / bp_norm
+                return result
+
+            S_grid = _compute_sil_template(z_union)
+
+            def _S_for(z_m):
+                return np.interp(z_m, z_union, S_grid)
+        else:
+            def _S_for(z_m):
+                return np.zeros(len(z_m))
+
         # ── Parameter layout ───────────────────────────────────────
-        # [α_0..α_{M-1}, r_1..r_{G-1}, a_0,b_0,c_0, a_1,b_1,c_1, ...]
+        # [α_0..α_{M-1}, r_1..r_{G-1}, (τ_sil,) a_0,b_0,c_0, ...]
         n_alpha = M
         n_ratios = n_groups - 1  # r_0 fixed to 1
+        n_sil = 1 if include_silicate else 0
         n_base = M * 3
-        n_params = n_alpha + n_ratios + n_base
+        n_params = n_alpha + n_ratios + n_sil + n_base
 
         def _unpack(p):
             alpha = p[:M]
             ratios = np.concatenate([[1.0], p[M : M + n_ratios]])
-            baseline = p[M + n_ratios :].reshape(M, 3)
-            return alpha, ratios, baseline
+            tau_sil = float(p[M + n_ratios]) if include_silicate else 0.0
+            baseline = p[M + n_ratios + n_sil :].reshape(M, 3)
+            return alpha, ratios, tau_sil, baseline
 
-        def _pred(alpha_m, ratios, bcoeffs, z_m, T_m):
+        def _pred(alpha_m, ratios, bcoeffs, z_m, T_m, tau_sil):
             bl = 10 ** (bcoeffs[0] * z_m + bcoeffs[1] * z_m**2 + bcoeffs[2])
             pah = np.ones(len(z_m))
             for gi in range(n_groups):
                 pah += alpha_m * ratios[gi] * T_m[gi]
-            return bl * pah
+            sil = np.exp(-tau_sil * _S_for(z_m))
+            return bl * pah * sil
 
         def _residuals(p):
-            alpha, ratios, baseline = _unpack(p)
+            alpha, ratios, tau_sil, baseline = _unpack(p)
             parts = []
             for m, (_, z_m, flux_m, w_m, _) in enumerate(bins_data):
                 T_m = _T_for(z_m)
                 parts.append(
-                    w_m * (flux_m - _pred(alpha[m], ratios, baseline[m], z_m, T_m))
+                    w_m * (flux_m - _pred(alpha[m], ratios, baseline[m], z_m, T_m, tau_sil))
                 )
             return np.concatenate(parts)
 
@@ -1592,12 +1623,14 @@ class PAHModel:
             p0_alpha.append(max(alpha_est, 0.01))
 
         p0_ratios = np.ones(n_ratios) * 0.5
-        p0 = np.array(p0_alpha + list(p0_ratios) + p0_base)
+        p0_sil = [0.0] if include_silicate else []
+        p0 = np.array(p0_alpha + list(p0_ratios) + p0_sil + p0_base)
 
         bounds_lo = np.concatenate(
             [
                 np.zeros(M),
                 np.zeros(n_ratios),
+                np.zeros(n_sil),
                 np.full(n_base, -10.0),
             ]
         )
@@ -1605,6 +1638,7 @@ class PAHModel:
             [
                 np.full(M, 5.0),
                 np.full(n_ratios, 5.0),
+                np.full(n_sil, 2.0),
                 np.full(n_base, 10.0),
             ]
         )
@@ -1627,9 +1661,10 @@ class PAHModel:
         except np.linalg.LinAlgError:
             perr = np.full(n_params, np.nan)
 
-        alpha_opt, ratios_opt, baseline_opt = _unpack(opt.x)
+        alpha_opt, ratios_opt, tau_sil_opt, baseline_opt = _unpack(opt.x)
         alpha_err = perr[:M]
         ratio_err = perr[M : M + n_ratios]
+        tau_sil_err = float(perr[M + n_ratios]) if include_silicate else 0.0
 
         n_data = sum(len(b[1]) for b in bins_data)
         chi2_red = float(np.sum(opt.fun**2) / max(n_data - n_params, 1))
@@ -1643,7 +1678,7 @@ class PAHModel:
                 + baseline_opt[m, 1] * z_m**2
                 + baseline_opt[m, 2]
             )
-            mdl_m = _pred(alpha_opt[m], ratios_opt, baseline_opt[m], z_m, T_m)
+            mdl_m = _pred(alpha_opt[m], ratios_opt, baseline_opt[m], z_m, T_m, tau_sil_opt)
             ferr_m = np.where(w_m > 0, 1.0 / w_m, np.median(flux_m) * 0.03)
             model_per_bin[label] = {
                 "z": z_m,
@@ -1665,6 +1700,8 @@ class PAHModel:
                 ri = ratios_opt[gi]
                 ei = ratio_err[gi - 1] if gi > 0 else 0.0
                 print(f"    Group {gi} {names}: r = {ri:.3f} ± {ei:.3f}")
+            if include_silicate:
+                print(f"  Silicate absorption: τ_sil = {tau_sil_opt:.4f} ± {tau_sil_err:.4f}")
             print(f"  Per-bin PAH amplitudes:")
             for m, (label, _, _, _, ctr) in enumerate(bins_data):
                 print(f"    {label}: α = {alpha_opt[m]:.4f} ± {alpha_err[m]:.4f}")
@@ -1676,8 +1713,10 @@ class PAHModel:
             "alpha_err_per_bin": alpha_err,
             "group_ratios": ratios_opt,
             "ratio_errors": np.concatenate([[0.0], ratio_err]),
+            "tau_sil": tau_sil_opt,
+            "tau_sil_err": tau_sil_err,
             "baseline_coeffs": baseline_opt,
-            "baseline_err": perr[M + n_ratios :].reshape(M, 3),
+            "baseline_err": perr[M + n_ratios + n_sil :].reshape(M, 3),
             "model_per_bin": model_per_bin,
             "chi2_red": chi2_red,
             "success": opt.success,

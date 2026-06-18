@@ -594,9 +594,9 @@ class Greybody:
             "effective_burn_in": effective_burn_in,
         }
 
-    def _inflate_band_errors(self, wavelengths, flux_errors):
+    def _inflate_band_errors(self, wavelengths, flux_errors, redshift=None):
         """
-        Inflate uncertainties for specific bands.
+        Inflate uncertainties for specific bands, optionally redshift-dependent.
 
         Parameters
         ----------
@@ -604,17 +604,28 @@ class Greybody:
             Wavelengths in microns.
         flux_errors : array
             Original flux errors.
+        redshift : float, optional
+            Source redshift, used when inflation_factors values are z-range dicts.
 
         Returns
         -------
         Inflated copy (or original if no inflation configured).
+
+        Notes
+        -----
+        inflation_factors values may be:
+        - scalar: ``{24: 10000}`` — uniform inflation regardless of z
+        - z-range dict: ``{70: {(0.0, 0.8): 1.0, (0.8, 99): 10000}}``
+          The first matching range is used; if no range matches (e.g. redshift
+          is None), the maximum factor across all ranges is applied.
         """
         if self.inflation_factors is None:
             return flux_errors
 
         inflated_errors = flux_errors.copy()
 
-        for key, factor in self.inflation_factors.items():
+        for key, value in self.inflation_factors.items():
+            # Resolve wavelength mask
             if isinstance(key, tuple):
                 wave_min, wave_max = key
                 mask = (wavelengths >= wave_min) & (wavelengths <= wave_max)
@@ -622,14 +633,27 @@ class Greybody:
                 wave_target = float(key)
                 mask = np.abs(wavelengths - wave_target) < (wave_target * 0.1)
 
-            inflated_errors[mask] *= factor
+            if not np.any(mask):
+                continue
 
-            if np.any(mask):
-                affected_waves = wavelengths[mask]
-                logger.info(
-                    f"Inflated errors by {factor}x for {key} "
-                    f"(affected: {affected_waves})"
-                )
+            # Resolve inflation factor (scalar or z-range dict)
+            if isinstance(value, dict):
+                factor = None
+                if redshift is not None:
+                    for (z_lo, z_hi), f in value.items():
+                        if z_lo <= redshift < z_hi:
+                            factor = float(f)
+                            break
+                if factor is None:
+                    factor = float(max(value.values()))
+            else:
+                factor = float(value)
+
+            inflated_errors[mask] *= factor
+            logger.info(
+                f"Inflated errors by {factor}x for {key} "
+                f"(affected: {wavelengths[mask]})"
+            )
 
         return inflated_errors
 
@@ -648,7 +672,7 @@ class Greybody:
             Used by two-pass empirical Bayes fitting.
         """
         # Apply error inflation before anything else
-        flux_errors = self._inflate_band_errors(wavelengths, flux_errors)
+        flux_errors = self._inflate_band_errors(wavelengths, flux_errors, redshift=redshift)
 
         # Validate and filter data (in observed frame)
         valid_mask, fit_mask = self._validate_data(wavelengths, fluxes, flux_errors)
@@ -1037,8 +1061,14 @@ class Greybody:
             This REPLACES the power-law, not adds to it.
         """
         # ── Hardcoded coefficients ────────────────────────────────────
-        # PAH features (same as _pah_flux)
-        _pah_coeffs = np.array([0.017, -0.206, 0.066, -1.577])
+        # log10(f24/fpeak) = a*logM* + b*z + c*PAH_strength + d
+        # Calibrated from 4-run PAH tomographic stacking (Δz=0.15, 197 Tier B points):
+        #   a=-0.10: PAH amplitude decreases with M* (slope -0.10/dex, SNR~1.3/bin)
+        #   b=-0.206, c=0.066: z and bandpass-strength terms unchanged from prior fit
+        #   d=-0.349: normalization offset to preserve f24/fpeak~2% at logM*=10.5, z=1.5
+        # Per-bin α: {8.5-10.3: 1.077±0.833, 10.3-10.7: 0.871±0.675, 10.7-12.0: 0.694±0.539}
+        # τ_sil = 0.000±0.081 (no silicate absorption detected).
+        _pah_coeffs = np.array([-0.10, -0.206, 0.066, -0.349])
 
         _pah_features = [
             (6.2, 0.1262, 0.19),  # C-C stretch
@@ -1185,10 +1215,12 @@ class Greybody:
         flux : array
             PAH + warm dust flux density (same units as greybody).
         """
-        # ── Hardcoded from COSMOS stacking fit ────────────────────────
+        # ── Calibrated from PAH tomographic stacking (2026-06-12) ────
         # log10(f24/fpeak) = a*logM* + b*z + c*PAH_strength + d
-        # Fit directly to the observable flux ratio — no conversion needed.
-        _pah_coeffs = np.array([0.017, -0.206, 0.066, -1.577])
+        # 4 dither runs, Δz=0.15, 197 Tier B points across 3 mass bins.
+        # a=-0.10: PAH/FIR decreases with M* (−0.10/dex, SNR~1.3/bin)
+        # d=-0.349: adjusted from -1.577 to preserve normalization at pivot logM*=10.5.
+        _pah_coeffs = np.array([-0.10, -0.206, 0.066, -0.349])
         """
           6.2 C-C         6.20um  0.19um     0.1262  0.21   13.2%
           7.7 C-C         7.70um  0.70um     0.4577  0.75   47.8%

@@ -3929,3 +3929,246 @@ def plot_pah_multibin_forward_fit(result, features, save_path=None):
         print(f"Saved: {save_path}")
 
     return fig
+
+
+# ============================================================================
+# PAH dithered-stacking diagnostics (pah_dither / pah_spectrum modules)
+# ============================================================================
+
+
+def plot_dither_kernels(
+    z_grid,
+    bands=("MIPS_24", "MIPS_70"),
+    sigma_z0_list=None,
+    features=None,
+    feature_groups=None,
+    save_path=None,
+):
+    """Feature-group kernels T_g,b(z) per band, optionally photo-z smeared.
+
+    Shows which redshifts each PAH group modulates each bandpass at, and
+    how σ_z smearing erodes the modulation contrast.
+    """
+    from scipy.ndimage import gaussian_filter1d
+
+    from .pah_spectrum import DEFAULT_GROUPS, feature_band_curves
+
+    groups = DEFAULT_GROUPS if feature_groups is None else feature_groups
+    sigma_z0_list = sigma_z0_list or [0.0]
+    fig, axes = plt.subplots(1, len(bands), figsize=(7 * len(bands), 4.5), sharey=True)
+    axes = np.atleast_1d(axes)
+    colors = plt.cm.viridis(np.linspace(0, 0.9, len(groups)))
+    dz = z_grid[1] - z_grid[0]
+    for ax, band in zip(axes, bands, strict=False):
+        T = feature_band_curves(z_grid, band, features, groups)
+        for g in range(T.shape[1]):
+            for k, sz0 in enumerate(sigma_z0_list):
+                curve = T[:, g]
+                if sz0 > 0:
+                    sig_pix = sz0 * (1 + np.median(z_grid)) / dz
+                    curve = gaussian_filter1d(curve, sig_pix)
+                ax.plot(
+                    z_grid,
+                    curve,
+                    color=colors[g],
+                    ls=["-", "--", ":"][k % 3],
+                    lw=2 if k == 0 else 1.2,
+                    alpha=1.0 if k == 0 else 0.7,
+                )
+        ax.set_xlabel("redshift")
+        ax.set_title(band.replace("_", " ") + " µm")
+        ax.grid(alpha=0.3)
+    axes[0].set_ylabel("in-band response to unit-peak feature")
+    from .pah_spectrum import DEFAULT_FEATURES
+
+    feats = DEFAULT_FEATURES if features is None else features
+    handles = [
+        plt.Line2D(
+            [0],
+            [0],
+            color=colors[g],
+            lw=2,
+            label="+".join(f"{feats[j][0]:g}" for j in grp) + " µm",
+        )
+        for g, grp in enumerate(groups)
+    ]
+    for k, sz0 in enumerate(sigma_z0_list):
+        handles.append(
+            plt.Line2D(
+                [0],
+                [0],
+                color="gray",
+                ls=["-", "--", ":"][k % 3],
+                label=f"σ_z0={sz0:g}",
+            )
+        )
+    axes[-1].legend(handles=handles, fontsize=8, loc="upper right")
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_fisher_summary(fisher_result, save_path=None):
+    """Three-panel autopsy of a FisherResult: correlation matrix, marginal
+    CRLBs (ratio and flux flavors), and the worst degeneracy direction."""
+    fr = fisher_result
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
+
+    im = axes[0].imshow(fr.corr, vmin=-1, vmax=1, cmap="RdBu_r")
+    axes[0].set_xticks(range(len(fr.labels)))
+    axes[0].set_yticks(range(len(fr.labels)))
+    axes[0].set_xticklabels(fr.labels, rotation=45, ha="right", fontsize=8)
+    axes[0].set_yticklabels(fr.labels, fontsize=8)
+    axes[0].set_title("parameter correlations")
+    plt.colorbar(im, ax=axes[0], fraction=0.046)
+
+    x = np.arange(len(fr.crlb))
+    labels_A = fr.labels[1:]
+    axes[1].bar(x - 0.2, fr.snr, 0.4, label="detection SNR (Ã/σ_Ã)", color="C0")
+    axes[1].set_yscale("log")
+    axes[1].set_xticks(x)
+    axes[1].set_xticklabels(labels_A, rotation=45, ha="right", fontsize=8)
+    ax2 = axes[1].twinx()
+    ax2.bar(x + 0.2, fr.crlb, 0.4, label="ratio CRLB σ(A)", color="C1")
+    ax2.set_yscale("log")
+    axes[1].set_ylabel("detection SNR", color="C0")
+    ax2.set_ylabel("σ(A) incl. continuum", color="C1")
+    axes[1].set_title(f"marginal bounds (C_err={fr.C_err:.3f})")
+
+    worst = fr.eigvecs[:, 0]  # smallest eigenvalue = worst direction
+    axes[2].bar(x, worst, color="C3")
+    axes[2].set_xticks(x)
+    axes[2].set_xticklabels(labels_A, rotation=45, ha="right", fontsize=8)
+    axes[2].set_title(
+        f"worst-constrained direction (λ_min/λ_max={fr.eigvals[0]/fr.eigvals[-1]:.1e})"
+    )
+    axes[2].axhline(0, color="k", lw=0.5)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_strategy_sweep(
+    sweep_df, value="snr_min", x="dz", y="n_stagger", save_path=None
+):
+    """Heatmap of a sweep_strategies figure of merit over two grid axes.
+
+    Extra grid dimensions present in the DataFrame are shown as separate
+    panels (one per unique combination)."""
+    others = [
+        c
+        for c in ("sigma_z0", "f_cat", "n_property_bins")
+        if c not in (x, y) and sweep_df[c].nunique() > 1
+    ]
+    if others:
+        combos = sweep_df[others].drop_duplicates()
+        panels = [
+            (
+                ", ".join(f"{c}={row[c]:g}" for c in others),
+                sweep_df[np.all([sweep_df[c] == row[c] for c in others], axis=0)],
+            )
+            for _, row in combos.iterrows()
+        ]
+    else:
+        panels = [("", sweep_df)]
+    n = len(panels)
+    fig, axes = plt.subplots(1, n, figsize=(5.5 * n, 4.2), squeeze=False)
+    for ax, (title, sub) in zip(axes[0], panels, strict=False):
+        pivot = sub.pivot_table(index=y, columns=x, values=value)
+        im = ax.imshow(pivot.to_numpy(), aspect="auto", origin="lower", cmap="viridis")
+        ax.set_xticks(range(len(pivot.columns)))
+        ax.set_xticklabels([f"{v:g}" for v in pivot.columns])
+        ax.set_yticks(range(len(pivot.index)))
+        ax.set_yticklabels([f"{v:g}" for v in pivot.index])
+        ax.set_xlabel(x)
+        ax.set_ylabel(y)
+        ax.set_title(f"{value} {title}")
+        for (i, j), v in np.ndenumerate(pivot.to_numpy()):
+            ax.text(j, i, f"{v:.1f}", ha="center", va="center", color="w", fontsize=8)
+        plt.colorbar(im, ax=ax, fraction=0.046)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_pseudo_spectrum_overlay(
+    spec_df, truth=None, prop_bin_id=None, value="ratio", save_path=None
+):
+    """Measured pseudo-spectrum vs rest wavelength, with the injected truth.
+
+    spec_df comes from PAHSpectrumModel.pseudo_spectrum. value="ratio"
+    plots the continuum-normalized excess; "excess_snr" the significance.
+    """
+    sub = (
+        spec_df
+        if prop_bin_id is None
+        else spec_df[spec_df["prop_bin_id"] == prop_bin_id]
+    )
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for band, marker, color in (("MIPS_24", "o", "C0"), ("MIPS_70", "s", "C2")):
+        s = sub[sub["band"] == band]
+        if not len(s):
+            continue
+        yerr = s["ratio_err"] if value == "ratio" else None
+        ax.errorbar(
+            s["lam_rest"],
+            s[value],
+            yerr=yerr,
+            fmt=marker,
+            ms=4,
+            color=color,
+            alpha=0.7,
+            lw=1,
+            label=band.replace("_", " "),
+        )
+    if truth is not None and value == "ratio":
+        lam = np.linspace(sub["lam_rest"].min(), sub["lam_rest"].max(), 600)
+        from .dust_evolution import _greybody_nu
+
+        cont = _greybody_nu(2.998e14 / lam, truth.T_warm, truth.beta_warm)
+        spec = truth.rest_spectrum(lam) / truth.continuum_amp
+        ax.plot(
+            lam,
+            spec / cont - 1.0,
+            "k-",
+            lw=1,
+            alpha=0.6,
+            label="injected truth (sharp)",
+        )
+    ax.set_xlabel("rest wavelength [µm]")
+    ax.set_ylabel("F / continuum − 1" if value == "ratio" else "excess SNR")
+    ax.legend(fontsize=9)
+    ax.grid(alpha=0.3)
+    if value == "ratio":
+        ax.set_ylim(-1, max(8.0, np.nanpercentile(sub[value], 98) * 1.3))
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_pah_spectrum_corner(result, params=None, save_path=None):
+    """Corner plot of the PAHSpectrumModel.fit_mcmc posterior."""
+    import corner
+
+    chain = result.sampler.get_chain(discard=0, flat=True)
+    n_burn = chain.shape[0] // 3
+    chain = chain[n_burn:]
+    names = result.param_names
+    if params is not None:
+        idx = [names.index(p) for p in params]
+        chain = chain[:, idx]
+        names = [names[i] for i in idx]
+    fig = corner.corner(
+        chain,
+        labels=names,
+        show_titles=True,
+        title_fmt=".3f",
+        quantiles=[0.16, 0.5, 0.84],
+    )
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig

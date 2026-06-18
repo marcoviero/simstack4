@@ -26,7 +26,8 @@ shortname = "cosmos25"      # Name for output folder
 
 [catalog]
 path = "$CATSPATH/cosmos"     # Path to catalog directory
-file = "COSMOSWeb_sersic_stacking_catalog.parquet"  # Catalog filename
+#file = "COSMOSWeb_sersic_stacking_catalog.parquet"  # Catalog filename
+file = "cosmos_sf_qt_dphotz_split.parquet"  # Catalog filename
 
 [catalog.astrometry]
 ra = "ra"                     # Column name for right ascension
@@ -71,8 +72,9 @@ bins = [0.01, 0.23, 0.33, 0.79, 0.98, 1.43, 1.62, 3.39, 3.88, 4.96]
 [catalog.classification.binning.sigma_sfr]
 id = "log_sigma_sfr"
 label = "SFR Surface Density"
+bins = [-2.5, -1.0, 0, 1.0, 2.5]
 #bins = [-2.0, -1.0, -0.25, 0.25, 1.0, 2.0]
-bins = [-2.0, -1.0, -0.25, -0.25, 0.5, 1.25, 2.0]
+#bins = [-2.0, -1.0, -0.25, -0.25, 0.5, 1.25, 2.0]
 # -2 to -1: local spirals
 # -1 to  0: MS at z~1-2
 #  0 to  1: compact SF, local starbursts

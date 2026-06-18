@@ -64,7 +64,7 @@ Both record `std((x_A − x_B) / 2)` across iterations — the **half-difference
 
 **SED fitting in rest frame**: `Greybody.fit_sed()` converts λ_obs → λ_rest = λ_obs/(1+z). T is T_rest with bounds [15, 60] K. L_IR integrates 8–1000 μm with a 1/(1+z) factor. Always use `CosmologyCalculator` (Planck18) for D_L — the old Hubble-law fallback in `Greybody` is wrong at z > 0.3.
 
-**Fit quality tiers**: Tier A (SNR ≥ 3 in ≥ 3 bands, data-driven), Tier B (2 bands, prior-assisted), Tier C (≤ 1 band, prior-dominated). Default for plots: `min_tier="A"`.
+**Fit quality tiers**: Tier A (SNR ≥ `snr_high` in ≥ 3 bands, data-driven), Tier B (≥ `snr_low` in ≥ 2 bands, prior-assisted), Tier C (≤ 1 qualifying band, prior-dominated). Thresholds are set per analysis call (`snr_high=5.0, snr_low=2.0` in PAH runs). Default for plots: `min_tier="A"`.
 
 **Self-contained output**: `wrapper.py` embeds full config + catalog metadata in JSON so results load without the original TOML or catalog.
 
@@ -75,9 +75,13 @@ Both record `std((x_A − x_B) / 2)` across iterations — the **half-difference
 | `algorithm.py` | Core stacking: layer matrix, PSF stamping, Gram matrix solve, per-bin caching |
 | `wrapper.py` | Pipeline orchestration, JSON save/load, bootstrap covariance |
 | `results.py` | SED fitting across populations, L_IR/SFR/dust mass, I/O |
-| `greybody.py` | Modified blackbody model, temperature priors, MCMC (emcee) |
+| `greybody.py` | Modified blackbody model, temperature priors, MCMC (emcee); `_inflate_band_errors` supports redshift-dependent inflation (`{(z_lo, z_hi): factor}` dict); `_pah_flux_0` / `_physical_wien_flux` for Wien-side PAH+warm-dust (coefficients calibrated from PAH tomography 2026-06-12) |
 | `sed_fitting.py` | `CovarianceGreybodyFitter` (Cholesky), `RegressionGreybodyFitter` |
-| `pah_model.py` | PAH feature emission (sum of Gaussians) for Wien-side SED |
+| `pah_model.py` | `PAHModel`: joint multibin PAH forward model (`fit_forward_model_multibin`), optional 9.7 μm silicate absorption (`include_silicate=True`, Drude profile), simulation/plotting helpers. **Old standalone functions** (`fit_forward_model`, `fit_bayesian_forward_model`) are frozen reference — do not edit. |
+| `analyze_pah.py` | `combine_pah_spectra`: assembles f₂₄/f_peak tomographic spectrum from multiple stacking wrappers; `fit_pah_model` (empirical, diagnostic only); `staggered_pah_zbins`, `adaptive_pah_zbins` |
+| `pah_bandpass.py` | MIPS 24 + MIPS 70 bandpass response curves (`get_bandpass`); 24 μm arrays stay in sync with `pah_model` frozen arrays (guarded by test) |
+| `pah_dither.py` | `DitherScheme` (uniform/adaptive, `to_toml_bins()`), `TruthSpectrum`, `compute_pz_matrix`, `NoiseModel` + shared-source covariance, `simulate_dithered_fluxes`, `fisher_for_scheme`, `sweep_strategies` |
+| `pah_spectrum.py` | `PAHSpectrumModel`: theoretical GLS deconvolution via design matrix + shared-source covariance; `fit_lstsq`, `fit_mcmc`, `pseudo_spectrum`. Distinct from `PAHModel` — see PAH Tomographic Stacking section below. |
 | `populations.py` | `PopulationManager`: arbitrary-dimension binning |
 | `config.py` | TOML → dataclasses: `SplitType`, `BootstrapConfig`, `BinConfig`, `BeamConfig` |
 | `sky_maps.py` | FITS loading, WCS, PSF convolution, `MapData` |
@@ -121,6 +125,53 @@ f_w(z,M*,σ)    = 10^(a0 + a_z·z + a_M·log_M* + a_sigma·log_σ)
 
 **Adapter**: `stacking_results_to_dust_df(wrapper)` converts `SimstackWrapper` output → `DustEvolutionModel` DataFrame (in the science notebook).
 
+## PAH Tomographic Stacking
+
+**Science question**: What is the PAH emission amplitude as a function of stellar mass (and potentially σ_SFR), and how much does it bias MIPS 24 μm stacked fluxes?
+
+**Method** (`analyze_pah.py` + `pah_model.py`): Each stacking run uses fine redshift bins (Δz=0.15). As z varies, the MIPS 24 μm bandpass sweeps rest-frame 5–16 μm, producing a tomographic pseudo-spectrum of f₂₄/f_peak vs λ_rest = 24/(1+z). Four dither runs with offsets Δz×{0, ¼, ½, ¾} give dense wavelength sampling at ~R=53 while keeping ~140 sources per bin.
+
+**Workflow**:
+```python
+# 1. Stack with inflation_factors={24: 10000, 70: {(0.0,0.8): 1.0, (0.8,99): 10000}}
+wrapper_N.run_analysis_only(**ANALYSIS_KWARGS)
+
+# 2. Combine runs into tomographic spectrum
+df = combine_pah_spectra([wrapper_0, wrapper_1, wrapper_2, wrapper_3], split_filter=[0])
+
+# 3. Fit multibin forward model
+result = PAHModel(include_silicate=True).fit_forward_model_multibin(
+    df, group_col="stellar_mass", feature_groups=[[0],[1,2],[4]])
+# → result["alpha_per_bin"], result["tau_sil"], result["group_ratios"]
+```
+
+**Forward model** (per mass bin m, shared feature template):
+```
+flux_m(z) = baseline_m(z) × [1 + α_m · Σ_g r_g · T_g(z)] × exp(−τ_sil · S(z))
+```
+- `α_m` — per-bin PAH amplitude (≥ 0); the science output
+- `r_g` — shared feature-group ratios (r₀ ≡ 1, fitted globally across all mass bins)
+- `T_g(z)` — MIPS bandpass-integrated PAH feature template for group g
+- `τ_sil · S(z)` — optional 9.7 μm Drude silicate absorption (Drude: λ₀=9.7 μm, γ=3.3 μm)
+
+**Measured values (2026-06-12, 4 runs, Δz=0.15, 197 Tier B points)**:
+
+| log M*/M☉ | α | σ_α | τ_sil |
+|-----------|---|-----|-------|
+| 8.5–10.3 | 1.077 | 0.833 | 0.000 ± 0.081 |
+| 10.3–10.7 | 0.871 | 0.675 | (global) |
+| 10.7–12.0 | 0.694 | 0.539 | (global) |
+
+PAH/FIR amplitude decreases with M* at −0.10 dex/dex (PAH deficit). No silicate absorption detected (τ_sil consistent with zero). 70 μm null test passes. See `docs/pah-forward-model-2-summary.md`.
+
+**Two distinct PAH fitting methods** (don't confuse them):
+- `PAHModel.fit_forward_model_multibin` (`pah_model.py`) — practical joint fitter applied to real data; operates directly on f₂₄/f_peak vs z DataFrame
+- `PAHSpectrumModel` (`pah_spectrum.py`) — theoretical GLS deconvolution with full photo-z kernel, Fisher/CRLB strategy evaluation; used for simulation and scheme design
+
+**Inflation factors**: 24 μm is always inflated to 10000 (excluded from SED fit) during PAH runs so f_peak is determined by FIR bands only. 70 μm uses redshift-dependent inflation `{(0.0, 0.8): 1.0, (0.8, 99.0): 10000}` — included as FIR anchor at z < 0.8, excluded above.
+
+**Applying PAH correction to greybody fits**: use measured α(M*) to correct f₂₄ before SED fitting (two-pass: fit greybody with 24 excluded → f_peak → subtract f₂₄_PAH = α·T_m(z)·f_peak → re-fit with reduced inflation ~3–5×). This promotes Tier C → Tier B at z~1.5–2.5 where MIPS probes the 7.7+8.6 μm features. Empirical coefficients in `greybody.py::_pah_flux_0` and `_physical_wien_flux` are calibrated from these measurements: `_pah_coeffs = [-0.10, -0.206, 0.066, -0.349]`.
+
 ## TOML Configuration Reference
 
 Key config sections:
@@ -142,3 +193,7 @@ Tests use synthetic data with known injected fluxes — no real FITS or catalogs
 | `test_sed_fitting.py` | 51 | SED fitting with covariance and MCMC |
 | `test_integration.py` | 10 | Full pipeline: TOML → catalog → maps → stacking → bootstrap |
 | `test_dust_evolution_recovery.py` | 14 | DustEvolutionModel: parameter recovery, MIPS dropout, warm-fraction ordering |
+| `test_pah_dither_strategy.py` | 28 | `DitherScheme`, `NoiseModel`, Fisher/CRLB bounds, shared-source covariance, photo-z kernel |
+| `test_pah_spectrum_recovery.py` | 25 | `PAHSpectrumModel` math, GLS conditioning, band leverage, MCMC recovery |
+| `test_pah_bayesian_recovery.py` | 11 | Bayesian forward model parameter recovery |
+| `test_pah_endtoend.py` | 1 | `@pytest.mark.slow` smoke: map-level spot check through real stacking pipeline |
