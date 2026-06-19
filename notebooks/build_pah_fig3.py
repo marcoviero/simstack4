@@ -212,9 +212,10 @@ def setup_spec_ax(ax, title=''):
             lc = PAH_FEATURES[j][0]
             if LAM_RANGE[0] < lc < LAM_RANGE[1]:
                 ax.axvline(lc, color=FEAT_COLORS[j], lw=0.9, ls=':', alpha=0.4)
-                ax.text(lc, ax.get_ylim()[1] if ax.get_ylim()[1] > 1 else 1.3,
+                ax.text(lc, ax.get_ylim()[1],
                         f'{lc:.1f}', fontsize=7, ha='center', va='top',
-                        color=FEAT_COLORS[j], alpha=0.7)
+                        color=FEAT_COLORS[j], alpha=0.7,
+                        clip_on=True)
 
 def setup_resid_ax(ax):
     ax.set_xlim(*LAM_RANGE)
@@ -260,7 +261,6 @@ ax_A1.legend(handles=legend_els_sim, fontsize=7, loc='upper right', framealpha=0
 
 # ── Panel A2: simulation residuals ────────────────────────────────────────────
 ax_A2 = axes[0, 1]
-ax_A2.set_ylim(-0.18, 0.18)
 setup_resid_ax(ax_A2)
 
 # These will be revealed in the animation; pre-plot final state for static PNG
@@ -275,6 +275,13 @@ for i, (label, mcolor) in enumerate(zip(sim_labels, MASS_COLORS_SIM)):
                      '-', color=mcolor, lw=2.5, alpha=0.8, zorder=5)
     resid_scats_A2.append(sc)
     resid_lines_A2.append(ln)
+
+# Set y-limits to contain full PAH bumps
+_a2_r = np.concatenate([residuals_sim[l]['resid'] for l in sim_labels])
+_a2_m = np.concatenate([residuals_sim[l]['model'] for l in sim_labels])
+_a2_lo, _a2_hi = min(_a2_r.min(), _a2_m.min()), max(_a2_r.max(), _a2_m.max())
+_a2_margin = 0.15 * (_a2_hi - _a2_lo)
+ax_A2.set_ylim(_a2_lo - _a2_margin, _a2_hi + _a2_margin)
 
 # ── Panel A3: injected vs recovered α ────────────────────────────────────────
 ax_A3 = axes[0, 2]
@@ -299,8 +306,14 @@ chi2_text = ax_A3.text(0.05, 0.95, f'χ²_red = {fit_sim["chi2_red"]:.2f}',
 ax_B1, ax_B2, ax_B3 = axes[1, 0], axes[1, 1], axes[1, 2]
 
 if real_df is not None and fit_real is not None:
-    # B1: real pseudo-spectra
-    ax_B1.set_ylim(0.7, 1.6)
+    # B1: real pseudo-spectra — set data-driven ylim BEFORE setup_spec_ax
+    # (setup_spec_ax reads get_ylim() for feature label placement)
+    _b1_flux = np.concatenate([fit_real['model_per_bin'][l]['flux'] for l in real_labels])
+    _b1_mod  = np.concatenate([fit_real['model_per_bin'][l]['model'] for l in real_labels])
+    _b1_lo = min(np.nanpercentile(_b1_flux, 2), np.nanmin(_b1_mod))
+    _b1_hi = max(np.nanpercentile(_b1_flux, 98), np.nanmax(_b1_mod))
+    _b1_margin = 0.18 * (_b1_hi - _b1_lo)
+    ax_B1.set_ylim(_b1_lo - _b1_margin, _b1_hi + _b1_margin)
     setup_spec_ax(ax_B1)
     ax_B1.set_ylabel('$f_{24} / f_\\mathrm{peak}$', fontsize=LABEL_FS)
     for i, (label, mcolor) in enumerate(zip(real_labels, MASS_COLORS_REAL)):
@@ -319,7 +332,6 @@ if real_df is not None and fit_real is not None:
     ax_B1.legend(handles=legend_els_real, fontsize=7, loc='upper right', framealpha=0.8)
 
     # B2: real residuals
-    ax_B2.set_ylim(-0.5, 0.5)
     setup_resid_ax(ax_B2)
     for i, (label, mcolor) in enumerate(zip(real_labels, MASS_COLORS_REAL)):
         rd = residuals_real[label]
@@ -329,6 +341,12 @@ if real_df is not None and fit_real is not None:
                        alpha=0.65, capsize=2, zorder=4)
         ax_B2.plot(rd['lam_rest'][sort_idx], rd['model'][sort_idx],
                    '-', color=mcolor, lw=2.5, alpha=0.8, zorder=5)
+
+    # Set symmetric y-limits from data (clip extreme noise outliers at 2%)
+    _b2_r = np.concatenate([residuals_real[l]['resid'] for l in real_labels])
+    _b2_m = np.concatenate([residuals_real[l]['model'] for l in real_labels])
+    _b2_abs = max(np.nanpercentile(np.abs(_b2_r), 98), np.nanmax(np.abs(_b2_m)))
+    ax_B2.set_ylim(-_b2_abs * 1.25, _b2_abs * 1.25)
 
     # B3: real measured α
     ax_B3.set_xlim(0.4, 1.4); ax_B3.set_ylim(0.4, 1.4)
@@ -394,7 +412,8 @@ fig.text(0.01, 0.74, 'Simulation', va='center', ha='left',
 fig.text(0.01, 0.27, 'Real data', va='center', ha='left',
          rotation=90, fontsize=12, fontweight='bold', color='#2c3e50')
 
-plt.tight_layout(pad=1.2)
+fig.subplots_adjust(left=0.07, right=0.97, top=0.93, bottom=0.07,
+                    hspace=0.55, wspace=0.38)
 
 # ── Static paper PNG ──────────────────────────────────────────────────────────
 png_path = os.path.join(FIGURES_DIR, 'pah_fig3_paper.png')
