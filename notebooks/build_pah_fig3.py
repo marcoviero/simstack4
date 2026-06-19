@@ -243,7 +243,13 @@ def setup_alpha_ax(ax, injected=None):
 
 # ── Panel A1: simulation pseudo-spectra ──────────────────────────────────────
 ax_A1 = axes[0, 0]
-ax_A1.set_ylim(0.85, 1.50)
+# Compute ylim from data — simulate_pah_data baseline ~10^(-0.3z), not ~1.0
+_a1_flux = np.concatenate([fit_sim['model_per_bin'][l]['flux'] for l in sim_labels])
+_a1_mod  = np.concatenate([fit_sim['model_per_bin'][l]['model'] for l in sim_labels])
+_a1_lo   = min(np.nanpercentile(_a1_flux, 2), np.nanmin(_a1_mod))
+_a1_hi   = max(np.nanpercentile(_a1_flux, 98), np.nanmax(_a1_mod))
+_a1_mg   = 0.12 * (_a1_hi - _a1_lo)
+ax_A1.set_ylim(_a1_lo - _a1_mg, _a1_hi + _a1_mg)
 setup_spec_ax(ax_A1)
 
 for i, (label, mcolor) in enumerate(zip(sim_labels, MASS_COLORS_SIM)):
