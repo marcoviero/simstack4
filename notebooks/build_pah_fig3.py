@@ -45,12 +45,7 @@ FIG_BG       = 'white'
 LABEL_FS     = 10
 TICK_FS      = 8
 
-N_MASS  = 3
-blues   = matplotlib.colormaps['Blues']
-MASS_COLORS = [blues(0.35 + 0.25 * i) for i in range(N_MASS)]
-MASS_LABELS = ['log M* 8.5–10.3', 'log M* 10.3–10.7', 'log M* 10.7–12.0']
-
-ALPHA_INJECTED = np.array([1.07, 0.87, 0.69])
+blues          = matplotlib.colormaps['Blues']
 FEATURE_GROUPS = [[0], [1, 2], [4]]   # 6.2 | 7.7+8.6 | 12.7
 
 FPS     = 24
@@ -87,51 +82,21 @@ bp  = get_bandpass('MIPS_24')
 LAM_RANGE = (5.5, 14.5)
 Z_RANGE   = (0.5, 3.5)
 
-z_fine  = np.linspace(*Z_RANGE, 500)
+z_fine    = np.linspace(*Z_RANGE, 500)
 feat_at_z = pah.feature_spectrum(bp.lam_fine[:, None] / (1 + z_fine))
-T_fine  = np.trapezoid(feat_at_z * bp.resp_fine[:, None],
-                       bp.lam_fine, axis=0) / bp.norm
+T_fine    = np.trapezoid(feat_at_z * bp.resp_fine[:, None],
+                         bp.lam_fine, axis=0) / bp.norm
 
-# ── Generate synthetic data for Row A ─────────────────────────────────────────
-# Use PAHModel.simulate_pah_data to produce a DataFrame in the exact format
-# expected by fit_forward_model_multibin.
-# Three mass bins, each spanning the full z range (dithered stacking equivalent).
-BIN_Z_RANGES = [(0.5, 3.5)] * N_MASS
-BIN_CENTERS  = [9.4, 10.5, 11.2]    # representative log M* per bin
-
-sim_result = pah.simulate_pah_data(
-    bin_z_ranges    = BIN_Z_RANGES,
-    alpha_true      = ALPHA_INJECTED,
-    feature_groups  = FEATURE_GROUPS,
-    group_col       = 'stellar_mass',
-    bin_centers     = BIN_CENTERS,
-    n_obs_per_bin   = 70,
-    noise_level     = 0.04,
-    flux_col        = 'f24_to_fpeak',
-    seed            = 42,
-)
-sim_df = sim_result['df']
-
-# Fit: run forward model on simulated data
-print('Fitting forward model on simulated data…')
-fit_sim = pah.fit_forward_model_multibin(
-    sim_df,
-    group_col      = 'stellar_mass',
-    flux_col       = 'f24_to_fpeak',
-    feature_groups = FEATURE_GROUPS,
-    verbose        = True,
-)
-alpha_rec     = np.array(fit_sim['alpha_per_bin'])
-alpha_err_rec = np.array(fit_sim['alpha_err_per_bin'])
-print(f'  Injected α: {ALPHA_INJECTED}')
-print(f'  Recovered α: {alpha_rec.round(3)}')
-print(f'  Errors:      {alpha_err_rec.round(3)}')
-
-# ── Load real data (optional) ─────────────────────────────────────────────────
-real_df    = None
-fit_real   = None
-alpha_real = None
+# ── Load real data FIRST ──────────────────────────────────────────────────────
+# Real data must be loaded before simulation so the simulation can use the
+# same baseline amplitude and noise level, making injection→recovery a fair
+# analog of the actual measurement.
+real_df        = None
+fit_real       = None
+alpha_real     = None
 alpha_err_real = None
+real_labels    = []
+N_MASS_REAL    = 0
 
 try:
     from simstack4.wrapper import SimstackWrapper
@@ -157,34 +122,87 @@ try:
         )
         alpha_real     = np.array(fit_real['alpha_per_bin'])
         alpha_err_real = np.array(fit_real['alpha_err_per_bin'])
+        real_labels    = fit_real['bin_labels']
+        N_MASS_REAL    = len(real_labels)
         print(f'  Real α: {alpha_real.round(3)}')
 except Exception as exc:
     print(f'Real data not available ({exc}); Row B will be empty.')
 
+# ── Derive simulation parameters from real data ───────────────────────────────
+# If real data is available, use its fitted baseline and measured noise so
+# the simulation runs at the same flux scale and SNR as the real measurement.
+# Otherwise fall back to generic defaults.
+if fit_real is not None:
+    N_MASS_SIM      = N_MASS_REAL
+    sim_baseline    = fit_real['baseline_coeffs']   # shape (N_bins, 3)
+    sim_bin_centers = [fit_real['model_per_bin'][l]['bin_center'] for l in real_labels]
+    # Fractional noise: median(flux_err / flux) across all bins
+    frac = [np.nanmedian(fit_real['model_per_bin'][l]['flux_err'] /
+                         np.abs(fit_real['model_per_bin'][l]['flux']))
+            for l in real_labels]
+    sim_noise_level = float(np.nanmedian(frac))
+    # Inject α values slightly different from measured so recovery is non-trivial
+    ALPHA_INJECTED  = np.array([1.10, 0.90, 0.80, 0.70])[:N_MASS_SIM]
+    print(f'  Sim uses real baseline; fractional noise estimate: {sim_noise_level:.2f}')
+else:
+    N_MASS_SIM      = 3
+    sim_baseline    = None          # simulate_pah_data default
+    sim_bin_centers = [9.4, 10.5, 11.2]
+    sim_noise_level = 0.04
+    ALPHA_INJECTED  = np.array([1.07, 0.87, 0.69])
+
+MASS_COLORS_SIM  = [blues(0.30 + 0.18 * i) for i in range(N_MASS_SIM)]
+MASS_COLORS_REAL = [blues(0.30 + 0.18 * i) for i in range(N_MASS_REAL)]
+
+# ── Generate synthetic data for Row A ─────────────────────────────────────────
+# Simulation uses the real data's baseline coefficients and noise level so that
+# A-row and B-row share the same flux scale — the injection→recovery test is
+# a direct analog of the real measurement, not a toy problem at 10× higher SNR.
+print('Generating simulation data…')
+sim_result = pah.simulate_pah_data(
+    bin_z_ranges    = [(0.5, 3.5)] * N_MASS_SIM,
+    alpha_true      = ALPHA_INJECTED,
+    feature_groups  = FEATURE_GROUPS,
+    group_col       = 'stellar_mass',
+    bin_centers     = sim_bin_centers,
+    baseline_coeffs = sim_baseline,
+    n_obs_per_bin   = 65,
+    noise_level     = sim_noise_level,
+    flux_col        = 'f24_to_fpeak',
+    seed            = 42,
+)
+sim_df = sim_result['df']
+
+print('Fitting forward model on simulated data…')
+fit_sim = pah.fit_forward_model_multibin(
+    sim_df,
+    group_col      = 'stellar_mass',
+    flux_col       = 'f24_to_fpeak',
+    feature_groups = FEATURE_GROUPS,
+    verbose        = True,
+)
+alpha_rec     = np.array(fit_sim['alpha_per_bin'])
+alpha_err_rec = np.array(fit_sim['alpha_err_per_bin'])
+sim_labels    = fit_sim['bin_labels']
+print(f'  Injected α: {ALPHA_INJECTED}')
+print(f'  Recovered α: {alpha_rec.round(3)}')
+print(f'  Errors:      {alpha_err_rec.round(3)}')
+
 # ── Helper: compute detrended residuals ───────────────────────────────────────
-def detrend_df(df, fit_result):
-    """Return arrays per bin using model_per_bin from fit_forward_model_multibin."""
+def detrend_df(fit_result):
     result = {}
     for label, d in fit_result['model_per_bin'].items():
         result[label] = {
             'lam_rest': 24.0 / (1 + d['z']),
             'z':        d['z'],
-            'resid':    d['detrended_data'] - 1.0,    # fractional excess above baseline
-            'model':    d['detrended_model'] - 1.0,   # model fractional excess
+            'resid':    d['detrended_data'] - 1.0,
+            'model':    d['detrended_model'] - 1.0,
             'err':      d['detrended_err'],
         }
     return result
 
-residuals_sim  = detrend_df(sim_df,  fit_sim)
-residuals_real = detrend_df(real_df, fit_real) if fit_real is not None else None
-
-# Mass bin label lists for ordered iteration
-sim_labels  = fit_sim['bin_labels']   # e.g. ['8.50-9.95', '9.95-10.85', '10.85-11.55']
-real_labels = fit_real['bin_labels'] if fit_real else []
-N_MASS_SIM  = len(sim_labels)
-N_MASS_REAL = len(real_labels)
-MASS_COLORS_SIM  = [blues(0.30 + 0.25 * i) for i in range(N_MASS_SIM)]
-MASS_COLORS_REAL = [blues(0.30 + 0.18 * i) for i in range(N_MASS_REAL)]
+residuals_sim  = detrend_df(fit_sim)
+residuals_real = detrend_df(fit_real) if fit_real is not None else None
 
 # ── Figure setup: 2 rows × 3 columns ─────────────────────────────────────────
 fig, axes = plt.subplots(2, 3, figsize=(15, 9), dpi=DPI,
