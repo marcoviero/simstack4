@@ -80,6 +80,10 @@ MCMC_MODE3  = dict(n_steps=2000, n_burn=600, progress=False, verbose=False)
 
 ALPHA_TOL = 0.15   # |recovered − truth| / truth tolerance
 
+# Flat power-law baseline (n=0, flux=0.5) — scale the Bayesian fitter expects.
+# The frozen fitter's internal polynomial can trivially absorb a constant baseline.
+BASELINE_COEFFS = np.tile([0.0, np.log10(0.5)], (M, 1))
+
 
 @pytest.fixture(scope="module")
 def pah():
@@ -188,6 +192,7 @@ class TestMode1Recovery:
             BIN_Z_RANGES, ALPHA_MODE1,
             feature_groups=FEATURE_GROUPS,
             r_true=np.array([1.0, 0.6]),
+            baseline_coeffs=BASELINE_COEFFS,
             noise_level=0.01, n_obs_per_bin=50,
         )
         _fit_and_check(pah, sim, group_amplitudes=False, independent_betas=False)
@@ -196,7 +201,9 @@ class TestMode1Recovery:
         """All bins share the same α — β ≈ 0, δ_m ≈ 0."""
         sim = pah.simulate_pah_data(
             BIN_Z_RANGES, np.full(M, 2.0),
-            feature_groups=FEATURE_GROUPS, noise_level=0.01, n_obs_per_bin=50,
+            feature_groups=FEATURE_GROUPS,
+            baseline_coeffs=BASELINE_COEFFS,
+            noise_level=0.01, n_obs_per_bin=50,
         )
         _fit_and_check(pah, sim, group_amplitudes=False, independent_betas=False)
 
@@ -208,7 +215,9 @@ class TestMode2Recovery:
         """Groups differ by 4×; wide z coverage separates the two PAH peaks."""
         sim = pah.simulate_pah_data(
             BIN_Z_RANGES, ALPHA_MODE23,
-            feature_groups=FEATURE_GROUPS, noise_level=0.01, n_obs_per_bin=50,
+            feature_groups=FEATURE_GROUPS,
+            baseline_coeffs=BASELINE_COEFFS,
+            noise_level=0.01, n_obs_per_bin=50,
         )
         _fit_and_check(pah, sim, group_amplitudes=True, independent_betas=False)
 
@@ -220,7 +229,9 @@ class TestMode3Recovery:
         """Mode 3: each PAH feature group gets its own β slope."""
         sim = pah.simulate_pah_data(
             BIN_Z_RANGES, ALPHA_MODE23,
-            feature_groups=FEATURE_GROUPS, noise_level=0.01, n_obs_per_bin=50,
+            feature_groups=FEATURE_GROUPS,
+            baseline_coeffs=BASELINE_COEFFS,
+            noise_level=0.01, n_obs_per_bin=50,
         )
         _fit_and_check(pah, sim, group_amplitudes=True, independent_betas=True)
 
@@ -245,7 +256,9 @@ class TestGroupDifferentiation:
         ])
         sim = pah.simulate_pah_data(
             BIN_Z_RANGES, alpha_true,
-            feature_groups=FEATURE_GROUPS, noise_level=0.01, n_obs_per_bin=50,
+            feature_groups=FEATURE_GROUPS,
+            baseline_coeffs=BASELINE_COEFFS,
+            noise_level=0.01, n_obs_per_bin=50,
         )
         mcmc = MCMC_MODE3 if independent_betas else MCMC_MODE2
         result = pah.fit_bayesian_forward_model(
@@ -271,7 +284,9 @@ class TestGroupDifferentiation:
         """
         sim = pah.simulate_pah_data(
             BIN_Z_RANGES, np.array([[3.0] * M, [0.3] * M]),
-            feature_groups=FEATURE_GROUPS, noise_level=0.02, n_obs_per_bin=50,
+            feature_groups=FEATURE_GROUPS,
+            baseline_coeffs=BASELINE_COEFFS,
+            noise_level=0.02, n_obs_per_bin=50,
         )
         result = pah.fit_bayesian_forward_model(
             sim["df"],

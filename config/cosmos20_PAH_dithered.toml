@@ -22,7 +22,7 @@ cosmology = "Planck18"        # Options: "Planck15", "Planck18"
 
 [output]
 folder = "$PICKLESPATH/simstack/stacked_flux_densities"  # Environment variables supported
-shortname = "cosmos25"      # Name for output folder
+shortname = "cosmos20"      # Name for output folder
 
 [catalog]
 path = "$CATSPATH/cosmos"     # Path to catalog directory
@@ -42,6 +42,7 @@ bin_property_columns = ["lp_mass_med", "lp_SFR_med", "lp_sSFR_med"]
 
 [catalog.classification.binning.redshift]
 id = "lp_zBEST"                 # Column name for redshift
+label = "Redshift"
 # Run 0: 26 bins
 #bins = [0.5, 0.65, 0.723, 0.835, 0.872, 0.959, 1.022, 1.111,
 #        1.2, 1.263, 1.364, 1.458, 1.562, 1.675, 1.774, 1.883,
@@ -112,12 +113,32 @@ id = "lp_zBEST"                 # Column name for redshift
 #bins = [0.5, 0.552, 0.673, 0.736, 0.811, 0.868, 0.923, 0.982, 1.047, 1.134, 1.204, 1.266, 1.341, 1.427, 1.496, 1.581, 1.675, 1.767, 1.85, 1.938, 2.04, 2.169, 2.335, 2.541, 2.789, 3.062, 3.341, 3.5]
 
 # Run 2: 27 bins
-bins = [0.5, 0.604, 0.691, 0.763, 0.831, 0.885, 0.944, 0.999, 1.078, 1.159, 1.224, 1.287, 1.374, 1.448, 1.524, 1.612, 1.707, 1.794, 1.878, 1.97, 2.078, 2.22, 2.398, 2.622, 2.875, 3.162, 3.421, 3.5]
+#bins = [0.5, 0.604, 0.691, 0.763, 0.831, 0.885, 0.944, 0.999, 1.078, 1.159, 1.224, 1.287, 1.374, 1.448, 1.524, 1.612, 1.707, 1.794, 1.878, 1.97, 2.078, 2.22, 2.398, 2.622, 2.875, 3.162, 3.421, 3.5]
+
+# Run 0 — offset 0.000 — 20 bins, Δz=0.15
+#bins = [0.50, 0.65, 0.80, 0.95, 1.10, 1.25, 1.40, 1.55, 1.70, 1.85,
+#        2.00, 2.15, 2.30, 2.45, 2.60, 2.75, 2.90, 3.05, 3.20, 3.35, 3.50]
+
+# Run 1 — offset 0.0375 — 21 bins (first bin width=0.0375)
+#bins = [0.50, 0.5375, 0.6875, 0.8375, 0.9875, 1.1375, 1.2875, 1.4375, 1.5875, 1.7375,
+#        1.8875, 2.0375, 2.1875, 2.3375, 2.4875, 2.6375, 2.7875, 2.9375, 3.0875, 3.2375,
+#        3.3875, 3.50]
+
+# Run 2 — offset 0.0750 — 21 bins (first bin width=0.075)
+#bins = [0.50, 0.5750, 0.7250, 0.8750, 1.0250, 1.1750, 1.3250, 1.4750, 1.6250, 1.7750,
+#        1.9250, 2.0750, 2.2250, 2.3750, 2.5250, 2.6750, 2.8250, 2.9750, 3.1250, 3.2750,
+#        3.4250, 3.50]
+
+# Run 3 — offset 0.1125 — 21 bins (first bin width=0.1125)
+bins = [0.50, 0.6125, 0.7625, 0.9125, 1.0625, 1.2125, 1.3625, 1.5125, 1.6625, 1.8125,
+        1.9625, 2.1125, 2.2625, 2.4125, 2.5625, 2.7125, 2.8625, 3.0125, 3.1625, 3.3125,
+        3.4625, 3.50]
 
 [catalog.classification.binning.stellar_mass]
 id = "lp_mass_med"                  # Column name for stellar mass
 #bins = [8.5, 10.4, 10.7, 12]
-bins = [8.7, 10.6, 10.9, 11.7]
+#bins = [8.7, 10.6, 10.9, 11.7]
+bins = [8.5, 10.2, 10.6, 11, 12.0]
 
 # Map configurations - each section defines a new map
 [maps.mips_24]

@@ -267,17 +267,21 @@ _a1_mod  = np.concatenate([fit_sim['model_per_bin'][l]['model'] for l in sim_lab
 _a1_lo   = min(np.nanpercentile(_a1_flux, 2), np.nanmin(_a1_mod))
 _a1_hi   = max(np.nanpercentile(_a1_flux, 98), np.nanmax(_a1_mod))
 _a1_mg   = 0.12 * (_a1_hi - _a1_lo)
-ax_A1.set_ylim(_a1_lo - _a1_mg, _a1_hi + _a1_mg)
+ax_A1.set_ylim(0.0, 0.045)
 setup_spec_ax(ax_A1)
 
+a1_scats = []
+a1_lines = []
 for i, (label, mcolor) in enumerate(zip(sim_labels, MASS_COLORS_SIM)):
     d = fit_sim['model_per_bin'][label]
     lam = 24.0 / (1 + d['z'])
-    ax_A1.scatter(lam, d['flux'],
-                  c=np.array([mcolor]), s=12, alpha=0.55, edgecolors='none', zorder=4)
+    sc = ax_A1.scatter(lam, d['flux'],
+                  c=np.array([mcolor]), s=12, alpha=0.0, edgecolors='none', zorder=4)
     sort_idx = np.argsort(lam)
-    ax_A1.plot(lam[sort_idx], d['model'][sort_idx],
-               '-', color=mcolor, lw=2, alpha=0.7, zorder=5)
+    ln, = ax_A1.plot(lam[sort_idx], d['model'][sort_idx],
+               '-', color=mcolor, lw=2, alpha=0.0, zorder=5)
+    a1_scats.append(sc)
+    a1_lines.append(ln)
 
 legend_els_sim = [Line2D([0], [0], marker='o', color='w', markerfacecolor=MASS_COLORS_SIM[i],
                           markersize=7, label=f'log M*  {sim_labels[i]}') for i in range(N_MASS_SIM)]
@@ -287,12 +291,13 @@ ax_A1.legend(handles=legend_els_sim, fontsize=7, loc='upper right', framealpha=0
 ax_A2 = axes[0, 1]
 setup_resid_ax(ax_A2)
 
-# These will be revealed in the animation; pre-plot final state for static PNG
+sim_sort_idx   = []   # per-bin sort order, reused in animation
 resid_scats_A2 = []
 resid_lines_A2 = []
 for i, (label, mcolor) in enumerate(zip(sim_labels, MASS_COLORS_SIM)):
     rd = residuals_sim[label]
     sort_idx = np.argsort(rd['lam_rest'])
+    sim_sort_idx.append(sort_idx)
     sc = ax_A2.scatter(rd['lam_rest'], rd['resid'],
                        c=np.array([mcolor]), s=12, alpha=0.55, edgecolors='none', zorder=4)
     ln, = ax_A2.plot(rd['lam_rest'][sort_idx], rd['model'][sort_idx],
@@ -305,26 +310,33 @@ _a2_r = np.concatenate([residuals_sim[l]['resid'] for l in sim_labels])
 _a2_m = np.concatenate([residuals_sim[l]['model'] for l in sim_labels])
 _a2_lo, _a2_hi = min(_a2_r.min(), _a2_m.min()), max(_a2_r.max(), _a2_m.max())
 _a2_margin = 0.15 * (_a2_hi - _a2_lo)
-ax_A2.set_ylim(_a2_lo - _a2_margin, _a2_hi + _a2_margin)
+ax_A2.set_ylim(-0.4, 1.1)
+a2_ylim = (-0.4, 1.1)
 
-# ── Panel A3: injected vs recovered α ────────────────────────────────────────
+# ── Panel A3: injected vs recovered α bar chart ──────────────────────────────
+# Bars start at height=0; the animation grows them in two stages.
 ax_A3 = axes[0, 2]
-setup_alpha_ax(ax_A3, injected=ALPHA_INJECTED)
-ax_A3.set_title('(a3)  Simulation', fontsize=LABEL_FS, fontweight='bold',
-                 loc='left', pad=4)
-
-# Final state (also used for static PNG)
-for i, (alpha_inj, alpha_r, alpha_e, mcolor) in enumerate(
-        zip(ALPHA_INJECTED, alpha_rec, alpha_err_rec, MASS_COLORS_SIM)):
-    ax_A3.errorbar(alpha_inj, alpha_r, yerr=alpha_e,
-                   fmt='o', color=mcolor, ms=9, elinewidth=0.8,
-                   capsize=3, zorder=5)
-    ax_A3.text(alpha_inj + 0.01, alpha_r + 0.02, f'log M* {sim_labels[i]}',
-               fontsize=6.5, color=mcolor, va='bottom')
-
-chi2_text = ax_A3.text(0.05, 0.95, f'χ²_red = {fit_sim["chi2_red"]:.2f}',
-                        transform=ax_A3.transAxes, fontsize=9, va='top',
-                        bbox=dict(fc='white', ec='gray', alpha=0.85))
+ax_A3.set_facecolor(FIG_BG)
+ax_A3.tick_params(labelsize=TICK_FS)
+ax_A3.set_xlabel('Stellar mass bin', fontsize=LABEL_FS)
+ax_A3.set_ylabel('PAH amplitude  α', fontsize=LABEL_FS)
+ax_A3.set_title('(a3)  Injected vs recovered α', fontsize=LABEL_FS,
+                 fontweight='bold', loc='left', pad=4)
+bin_x_sim = np.arange(N_MASS_SIM)
+bars_inj = ax_A3.bar(bin_x_sim - 0.2, np.zeros(N_MASS_SIM), width=0.35,
+                      color=MASS_COLORS_SIM, edgecolor='white', linewidth=0.5,
+                      alpha=0.6, label='Injected', zorder=3)
+bars_rec = ax_A3.bar(bin_x_sim + 0.2, np.zeros(N_MASS_SIM), width=0.35,
+                      color=MASS_COLORS_SIM, edgecolor='white', linewidth=0.5,
+                      label='Recovered', zorder=3)
+ax_A3.set_xticks(bin_x_sim)
+ax_A3.set_xticklabels([str(lb) for lb in sim_labels], fontsize=7, rotation=15)
+ax_A3.axhline(0, color='gray', lw=0.5, alpha=0.4)
+ax_A3.set_ylim(0, 1.7)
+ax_A3.legend(fontsize=8, loc='upper right')
+ax_A3.text(0.05, 0.95, f'χ²_red = {fit_sim["chi2_red"]:.2f}',
+           transform=ax_A3.transAxes, fontsize=9, va='top',
+           bbox=dict(fc='white', ec='gray', alpha=0.85))
 
 # ── Row B: real data ──────────────────────────────────────────────────────────
 ax_B1, ax_B2, ax_B3 = axes[1, 0], axes[1, 1], axes[1, 2]
@@ -337,7 +349,7 @@ if real_df is not None and fit_real is not None:
     _b1_lo = min(np.nanpercentile(_b1_flux, 2), np.nanmin(_b1_mod))
     _b1_hi = max(np.nanpercentile(_b1_flux, 98), np.nanmax(_b1_mod))
     _b1_margin = 0.18 * (_b1_hi - _b1_lo)
-    ax_B1.set_ylim(_b1_lo - _b1_margin, _b1_hi + _b1_margin)
+    ax_B1.set_ylim(0.0, 0.045)
     setup_spec_ax(ax_B1)
     ax_B1.set_ylabel('$f_{24} / f_\\mathrm{peak}$', fontsize=LABEL_FS)
     for i, (label, mcolor) in enumerate(zip(real_labels, MASS_COLORS_REAL)):
@@ -366,11 +378,8 @@ if real_df is not None and fit_real is not None:
         ax_B2.plot(rd['lam_rest'][sort_idx], rd['model'][sort_idx],
                    '-', color=mcolor, lw=2.5, alpha=0.8, zorder=5)
 
-    # Set symmetric y-limits from data (clip extreme noise outliers at 2%)
-    _b2_r = np.concatenate([residuals_real[l]['resid'] for l in real_labels])
-    _b2_m = np.concatenate([residuals_real[l]['model'] for l in real_labels])
-    _b2_abs = max(np.nanpercentile(np.abs(_b2_r), 98), np.nanmax(np.abs(_b2_m)))
-    ax_B2.set_ylim(-_b2_abs * 1.25, _b2_abs * 1.25)
+    # Match A2 y-limits for direct row-to-row comparison
+    ax_B2.set_ylim(*a2_ylim)
 
     # B3: real measured α
     ax_B3.set_xlim(0.4, 1.4); ax_B3.set_ylim(0.4, 1.4)
@@ -401,28 +410,7 @@ if real_df is not None and fit_real is not None:
     ax_B3.set_xticklabels([str(lb) for lb in real_labels],
                            fontsize=7, rotation=15)
     ax_B3.axhline(0, color='gray', lw=0.5, alpha=0.4)
-    ax_B3.set_ylim(0, max(alpha_real) * 1.35)
-
-    # Also add A3 bar chart for visual parallel
-    ax_A3.cla()
-    ax_A3.set_facecolor(FIG_BG)
-    ax_A3.tick_params(labelsize=TICK_FS)
-    ax_A3.set_xlabel('Stellar mass bin', fontsize=LABEL_FS)
-    ax_A3.set_ylabel('PAH amplitude  α', fontsize=LABEL_FS)
-    ax_A3.set_title('(a3)  Injected vs recovered α', fontsize=LABEL_FS,
-                     fontweight='bold', loc='left', pad=4)
-    bin_x_sim = np.arange(N_MASS_SIM)
-    ax_A3.bar(bin_x_sim - 0.2, ALPHA_INJECTED, width=0.35, color=MASS_COLORS_SIM,
-              edgecolor='white', linewidth=0.5, label='Injected', alpha=0.6)
-    ax_A3.bar(bin_x_sim + 0.2, alpha_rec, yerr=alpha_err_rec, width=0.35,
-              color=MASS_COLORS_SIM, edgecolor='white', linewidth=0.5,
-              capsize=4, error_kw=dict(elinewidth=0.8, ecolor='gray'), label='Recovered')
-    ax_A3.set_xticks(bin_x_sim)
-    ax_A3.set_xticklabels([str(lb) for lb in sim_labels],
-                           fontsize=7, rotation=15)
-    ax_A3.axhline(0, color='gray', lw=0.5, alpha=0.4)
-    ax_A3.set_ylim(0, max(ALPHA_INJECTED) * 1.40)
-    ax_A3.legend(fontsize=8, loc='upper right')
+    ax_B3.set_ylim(0, 1.7)
 
 else:
     for ax in [ax_B1, ax_B2, ax_B3]:
@@ -439,39 +427,51 @@ fig.text(0.01, 0.27, 'Real data', va='center', ha='left',
 fig.subplots_adjust(left=0.07, right=0.97, top=0.93, bottom=0.07,
                     hspace=0.55, wspace=0.38)
 
-# ── Static paper PNG ──────────────────────────────────────────────────────────
+# ── Set A-row to final state → save paper PNG ────────────────────────────────
+for sc in a1_scats:  sc.set_alpha(0.55)
+for ln in a1_lines:  ln.set_alpha(0.70)
+for sc in resid_scats_A2: sc.set_alpha(0.55)
+for i, (label, ln) in enumerate(zip(sim_labels, resid_lines_A2)):
+    ln.set_alpha(0.80)
+    rd = residuals_sim[label]
+    ln.set_ydata(rd['model'][sim_sort_idx[i]])
+for bar, h in zip(bars_inj, ALPHA_INJECTED):          bar.set_height(h)
+for bar, h in zip(bars_rec, alpha_rec):                bar.set_height(max(float(h), 0.0))
+
 png_path = os.path.join(FIGURES_DIR, 'pah_fig3_paper.png')
 fig.savefig(png_path, dpi=150, bbox_inches='tight', facecolor=FIG_BG)
 print(f'Paper PNG saved → {png_path}')
 
-# ── Animation: Row A reveal (A2 and A3 convergence) ─────────────────────────
-# We animate a fake convergence in A2 and A3 only.
-# The convergence path: from zero to the final fit values.
-t_path   = np.linspace(0, 1, N_ANIM)
-progress = 1.0 / (1 + np.exp(-9 * (t_path - 0.45)))   # S-curve
-
-# Hide A2 and A3 scatters/lines initially (re-draw each frame)
-for sc in resid_scats_A2:
-    sc.set_alpha(0)
-for ln in resid_lines_A2:
+# ── Reset only A2 for animation; A1 and A3 stay at final state ───────────────
+for sc in resid_scats_A2: sc.set_alpha(0)
+for i, (label, ln) in enumerate(zip(sim_labels, resid_lines_A2)):
     ln.set_alpha(0)
+    ln.set_ydata(np.zeros(len(sim_sort_idx[i])))
+
+# ── 2-phase animation (A2 only) ───────────────────────────────────────────────
+# Phase 1 (0.00–0.50): detrended scatter fades in
+# Phase 2 (0.45–1.00): PAH model grows from zero
+N_ANIM = 80
+
+def _phase(t, t0, t1):
+    x = np.clip((t - t0) / (t1 - t0), 0.0, 1.0)
+    return float(1.0 / (1.0 + np.exp(-10.0 * (x - 0.5))))
 
 def update_anim(frame):
-    p = float(progress[min(frame, N_ANIM - 1)])
+    t = frame / N_ANIM
 
-    for sc in resid_scats_A2:
-        sc.set_alpha(p * 0.55)
-    for ln in resid_lines_A2:
-        ln.set_alpha(p * 0.8)
-        # Scale the model line amplitude by p (converges from 0)
-    for i, (b, mcolor) in enumerate(zip(sim_labels, MASS_COLORS_SIM)):
-        rd = residuals_sim[b]
-        sort_idx = np.argsort(rd['lam_rest'])
-        resid_lines_A2[i].set_ydata(rd['model'][sort_idx] * p)
+    p1 = _phase(t, 0.00, 0.50)
+    for sc in resid_scats_A2: sc.set_alpha(p1 * 0.55)
 
-    return resid_lines_A2 + resid_scats_A2
+    p2 = _phase(t, 0.45, 1.00)
+    for i, (label, ln) in enumerate(zip(sim_labels, resid_lines_A2)):
+        rd = residuals_sim[label]
+        ln.set_ydata(rd['model'][sim_sort_idx[i]] * p2)
+        ln.set_alpha(p2 * 0.80)
 
-anim = FuncAnimation(fig, update_anim, frames=N_ANIM + 20,
+    return []
+
+anim = FuncAnimation(fig, update_anim, frames=N_ANIM + 10,
                      interval=1000 // FPS, blit=False)
 
 mp4_path = os.path.join(FIGURES_DIR, 'pah_fig3.mp4')
