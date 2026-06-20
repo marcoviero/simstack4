@@ -174,3 +174,6 @@ config/local_*.ini
 
 # Notebooks (kept local, not published to GitHub)
 notebooks/
+
+# Generated figures
+figures/

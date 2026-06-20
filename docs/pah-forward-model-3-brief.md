@@ -1,145 +1,158 @@
 # PAH Forward Model — Branch 3 Brief
 
-**Goal**: Bring the PAH tomographic stacking result to talk-quality and referee-quality.  
-The primary deliverable is a measurement of α(M*) — the PAH/FIR amplitude as a function of stellar mass — that an audience can trust and a referee can challenge and fail to break.
+**Goal**: Build three publication- and talk-quality figures that make the PAH tomographic
+stacking method self-explanatory to an audience — from mechanism through measurement through
+credibility. Statistics come after the pictures land.
 
 ---
 
-## What pah-forward-model-2 established
+## Scope: three figures, nothing else first
 
-- **Method validated**: MIPS 24 μm dithered stacking produces a coherent pseudo-spectrum of f₂₄/f_peak vs λ_rest. The 70 μm null test passes; the forward model self-consistency test passes.
-- **Marginal detection**: SNR ~1.3 per mass bin (after formal bootstrap errors). Collective evidence is stronger: all three α values are positive, follow the expected direction, and the bump SNR is 2–2.6×.
-- **Trend direction confirmed**: α decreases with M* at −0.10 dex/dex. This is the PAH deficit direction (consistent with GOALS / Spitzer IRS literature) and opposite to what a simple luminosity bias would produce.
-- **No silicate absorption**: τ_sil = 0.000 ± 0.081 in normal MS galaxies at z~0.5–3.5.
-- **χ²_red = 3.365**: scatter is 1.83× formal errors. The elevated χ²_red is understood (baseline polynomial does not capture real continuum evolution; each point is a different galaxy population at different z).
-- **Pending**: 4-bin mass run (20260612_190116…), σ_SFR cross-cut (3/4 runs), accordion vs uniform comparison. All notebooks are set up and waiting for execution.
+### Figure 1 — The measurement mechanism: PAH features transiting the MIPS bandpass
 
----
+**One-sentence story**: as redshift increases, the MIPS 24 µm bandpass slides blueward in
+rest-frame wavelength, and each PAH feature in turn modulates the stacked flux.
 
-## What pah-forward-model-3 must do
+**Convention** (hold this across all three figures): the *rest-frame* PAH spectrum is fixed;
+the MIPS bandpass window moves left as z increases. This matches how an astronomer thinks
+("the spectrum is the object; the instrument is the instrument").
 
-### 1. Complete and consolidate measurements
+**Panels**:
+- Left: intrinsic PAH template spectrum (5–16 µm). One fixed color per feature; use the
+  exact `PAH_FEATURES` list from `pah_model.py` — not a cartoon — so the figure is honest.
+- Centre: the bandpass window at three representative redshifts (z=0.7 illuminates 12.7 µm;
+  z=1.7 illuminates 7.7+8.6 µm; z=2.9 illuminates 6.2 µm), drawn as a shaded rectangle
+  sliding left over the spectrum.
+- Right: the resulting T(z) kernel — bandpass-integrated PAH flux vs z — showing the
+  multi-bump structure that dithered stacking is designed to recover.
 
-- Execute pending notebooks (`2026-06-12-…PAH-dithered-dz015.ipynb`, `2026-06-14-…sigma_sfr…`, `2026-06-15-…accordion…`).
-- Complete σ_SFR stacking run 4 (offset 0.1125); fill in `RUN_DATES[3]` in notebook cell `16153c5d`.
-- Accept or reject accordion binning based on σ_α ratio. If accordion ≲5% better → discard (simpler wins); if >10% better → re-run 4-bin mass scheme with accordion.
+**Animation**: sweep z from 0.5 → 3.8 (160 frames). The bandpass window slides; the T(z)
+panel traces out in real time. The "aha" moment is watching bumps build up in T(z) exactly
+as the corresponding features pass through the window.
 
-### 2. Honest error budget
-
-Formal bootstrap errors underestimate true scatter by 1.83×. For publication:
-
-- **Rescaled errors**: multiply all σ_α by √(χ²_red). Report both in the table.
-- **Baseline robustness test**: refit with 1st, 2nd (current), and 3rd-order polynomial baseline per bin. Show α values are stable across baseline order.
-- **Bin edge robustness test**: shift all mass bin edges by ±0.1 dex; refit; show slope is unchanged.
-- **Jackknife over runs**: drop one of the 4 dither runs at a time; show α values are stable.
-- **Summary**: if α(M*) trend survives all of the above, report as significant at the rescaled-error SNR.
-
-### 3. Combined slope significance
-
-Fit a power law α(M*) = α₀ × (M*/10^{10.5})^β simultaneously across all mass bins:
-- Report β with 1σ uncertainty (rescaled errors).
-- If the 4-bin run is better than 3-bin (more bins, similar per-bin SNR), use 4-bin for the slope.
-- Physical claim: "PAH/FIR amplitude decreases with stellar mass at −0.10 ± 0.XX dex/dex."
-
-### 4. σ_SFR cross-cut
-
-Once run 4 is complete, fit the joint forward model:
-- `alpha(M*, sigma_sfr)` — does α decrease with σ_SFR at fixed M*?
-- Physical interpretation: UV radiation field ∝ σ_SFR → PAH grain destruction. If confirmed, the mechanism is not halo mass but radiation field intensity.
-- Cross-check: partial correlations — hold M* fixed, vary σ_SFR and vice versa. Report which drives the trend.
-
-### 5. PAH correction to T_dust
-
-- Two-pass SED fitting: exclude 24 μm (inflation=10000) → get f_peak → compute f₂₄_PAH = α(M*,z) × f_peak → reduce inflation to 3–5× (residual uncertainty ≈ few percent) → refit.
-- Compare T_dust posteriors before and after correction at z = 1.5–2.5 (where MIPS probes 7.7+8.6 μm).
-- Report: ΔT_dust bias in K, fraction of bins promoted Tier C → Tier B.
-- This result speaks directly to the dust temperature evolution claim (Viero+22) which is one of the branch's primary science goals.
+**Source**: use `pah_bandpass.get_bandpass(24.0)` for the real response curve and
+`PAHModel().feature_spectrum(lam)` for the template. No synthetic noise — this is a mechanism
+figure, not a data figure.
 
 ---
 
-## Talk figure set (5 slides / figures)
+### Figure 2 — Dithered stacking: from a coarse measurement to a per-population pseudo-spectrum
 
-### Figure 1: The method — why dithering works
-- Left: MIPS 24 μm bandpass overlaid with PAH template spectrum at z=0, 1, 2.
-- Right: z-bin layout showing how 4 dither runs tile λ_rest space (use the z-bin width diagram from `2026-06-15` notebook).
-- Message: we are not detecting individual PAH lines — we are measuring the bandpass-modulated envelope as a function of redshift.
+**One-sentence story**: four offset redshift-bin combs interleave to tile the T(z) curve at
+4× sampling, and splitting sources by stellar mass reveals that α decreases with M*.
 
-### Figure 2: Raw pseudo-spectra
-- 4 panels (one per mass bin), f₂₄/f_peak vs λ_rest, all 4 runs combined.
-- Overplot: best-fit baseline (polynomial) as a smooth curve.
-- Message: the modulation is real and coherent across runs; the 70 μm null test shows it is not a baseline artifact.
+**Panels** (static layout; animate the accumulation):
+- Left: z-bin layout — four staggered combs (Δz=0.15, offsets 0, Δz/4, Δz/2, 3Δz/4) shown
+  as horizontal bars at the correct z positions. Colour each run differently.
+- Centre: f₂₄/f_peak vs z (or λ_rest) for a single mass bin, built up run by run in the
+  animation — each comb adds its points in its run colour until the combined pseudo-spectrum
+  is visible.
+- Right: final combined pseudo-spectra for all four mass bins stacked vertically (or
+  colour-coded), showing the amplitude decreasing from low M* to high M*.
 
-### Figure 3: Detrended residuals — the detection
-- Same 4 panels, (f₂₄/f_peak)/baseline − 1 vs λ_rest.
-- Overplot: model PAH template with fitted α_m.
-- Shade the 7.7+8.6 μm zone (z ≈ 1.6–2.0) — the main feature.
-- Annotate each panel: α ± σ_α (rescaled), bump SNR.
-- Message: the PAH complex is detected at 2–3× above the noise floor. The amplitude decreases with mass.
+**Real data overlay**: after the animation completes the synthetic build-up, reveal the actual
+`combine_pah_spectra` points from the stacking runs (grey markers with error bars) behind the
+model traces. This is the transition from "here's how the method works" to "here's what we
+measured."
 
-### Figure 4: α(M*) — the science result
-- α vs log M* with 1σ error bars (rescaled).
-- Overplot: literature points where available (Smith+2007 SINGS IRS at z~0, Shi+2011 GOALS LIRGs, Galliano+2021 review trend).
-- Inset or lower panel: α vs σ_SFR for the two mass bins, if the σ_SFR run is complete.
-- Overplot: the PAH deficit trend (Smith+2007: PAH EW decreases with sSFR/L_IR).
-- Message: stacked z~0.5–3.5 galaxies follow the same PAH deficit direction as local resolved samples.
+**Populations**: primary axis is stellar mass (4 bins, runs complete). Include σ_SFR as a
+simulated panel or annotation — once run 4 of the σ_SFR stacking lands it can be swapped for
+real data without changing the figure structure.
 
-### Figure 5: Impact on T_dust
-- Left: SED fits for the highest-z bins (z~1.5–2.5) before and after PAH correction.
-- Right: ΔT_dust vs z, showing the bias introduced by un-corrected 24 μm contamination.
-- Message: ignoring PAH contamination biases T_dust upward by X K at z~1.5–2.0; the PAH correction is necessary for accurate T_dust evolution measurements.
+**Source**: `DitherScheme.uniform(dz=0.15, n_stagger=4)` from `pah_dither.py` for the
+synthetic layout; `combine_pah_spectra(wrappers, split_filter=[0])` for real points.
 
 ---
 
-## Referee defense strategy
+### Figure 3 — Forward model: injection → recovery proves the method; real data applies it
 
-**Q: "The χ²_red = 3.36 means your formal errors are too small. The result is not significant."**  
-A: We report rescaled errors explicitly (×1.83). With rescaled errors, α is positive in all bins and the slope is non-zero at Xσ. The elevated χ²_red is expected (see §5 of the paper): each data point is a different galaxy population at different redshift, so astrophysical scatter (in PAH/FIR ratio within each mass–z bin) is real and irreducible with more runs. We show the result is stable to baseline order variation, bin edge shifts, and jackknife over runs.
+**One-sentence story**: we can inject known PAH amplitudes into a simulation, recover them
+blind, and then apply the same fitter to real data — the agreement between injected and
+recovered α is what justifies the measurement.
 
-**Q: "The 12.7 μm ratio r₂ hits the prior boundary. How do you know your α values are unbiased?"**  
-A: r₂ only affects points near z~0.9 (a narrow slice). We show α is stable when r₂ is fixed to any value in [2, 5]. The 7.7+8.6 μm zone (z~1.6–2.0) — which provides most of the constraining power — is insensitive to r₂.
+**This figure must be injection → recovery, not "watch the fit converge through the data."**
+Converging through the data is circular — the model is forced to fit by construction.
+Injection → recovery is the credibility argument.
 
-**Q: "How do you know the f₂₄/f_peak modulation is not continuum evolution?"**  
-A: Three lines of evidence: (1) the 70 μm null test — the same forward model applied to f₇₀/f_peak gives α consistent with zero; (2) the modulation pattern matches the MIPS 24 μm PAH template T(z) in shape, not a smooth z-trend; (3) varying the baseline polynomial order does not change the residual modulation amplitude.
+**Layout** (two rows):
+- Top row (simulation): inject α = [1.07, 0.87, 0.69] (the measured values) into
+  `simulate_dithered_fluxes`; run `fit_forward_model_multibin` blind; show recovered α vs
+  injected α with 1σ bars. Panels: (a) injected f₂₄/f_peak pseudo-spectra per mass bin,
+  (b) recovered detrended residuals with model overlay, (c) injected vs recovered α scatter.
+- Bottom row (real data): the same three panels applied to the actual stacked fluxes.
+  The visual parallel says: "the method works on simulations at the top; here it is on data
+  at the bottom."
 
-**Q: "Your mass bins are broad. This is really an L_IR trend."**  
-A: We show the σ_SFR cross-cut (Figure 4 inset): at fixed M*, α decreases with σ_SFR. This is opposite to what a simple L_IR trend (more IR-luminous = more PAH) would predict. The trend is driven by radiation field intensity, not total luminosity.
+**Animation (optional)**: if helpful, animate the fitter converging in the simulation row only
+(not the data row), so the convergence is clearly framed as "this is how we know the model
+identifies the right amplitudes."
 
-**Q: "24 μm at z>2 is sampling rest-frame <8 μm — you're in the PAH forest, not a single feature."**  
-A: Correct — at z>2 the bandpass integrates over the 6.2+7.7+8.6 μm complex simultaneously. The forward model accounts for this via the template kernel T(z), which includes all three features weighted by the bandpass response. The measured α is the amplitude of the full PAH complex relative to the FIR peak; it is not a single-line measurement.
-
----
-
-## New code needed in pah-forward-model-3
-
-1. **Error rescaling utility**: `rescale_alpha_errors(result, chi2_red)` — multiply σ_α and ratio_errors by √(chi2_red); add to `PAHModel` or `analyze_pah.py`.
-
-2. **Robustness suite**: `run_robustness_tests(df, group_col, bin_edges, feature_groups)` — sweeps baseline degree (1–3), ±0.1 dex bin edge shifts, and jackknife-over-runs. Returns a DataFrame of (α, σ_α) per perturbation for each bin. Add to `pah_model.py` or `analyze_pah.py`.
-
-3. **Talk figure builder**: `create_pah_talk_figures(result, df_combined, mass_bins, out_dir)` in `plots.py` — generates Figures 1–4 above in a single call; designed for direct use in keynote/beamer.
-
-4. **T_dust bias figure**: `create_pah_correction_tdust_plot(wrapper_corrected, wrapper_uncorrected, z_range)` in `plots.py` — already has the SED grid plotter; add a ΔT_dust panel.
-
-5. **Joint (M*, σ_SFR) fitter**: extend `PAHModel.fit_forward_model_multibin` to accept a 2D bin structure (M* × σ_SFR), fit all 6 cells jointly with shared group ratios and τ_sil. Report partial correlation coefficients.
+**Source**: `simulate_dithered_fluxes(scheme, TruthSpectrum(...))` from `pah_dither.py`;
+`PAHModel(include_silicate=True).fit_forward_model_multibin(...)` for both sim and data.
 
 ---
 
-## Config and data notes
+## Shared visual language (enforce across all three figures)
 
-- `config/cosmos25_PAH_dithered.toml` now contains all four dither schemes as commented reference blocks. The active `bins =` line (last uncommented) should be set to the scheme you want to run.
-- `config/cosmos25_PAH_dithered_3d.toml` is the σ_SFR config (2 mass × 3 σ_SFR bins). Run 4 needs `bins` updated to the offset 0.1125 block.
-- COSMOS catalog must have `log_sigma_sfr` and `sersic_reliable` columns (produced by `prepare-cosmos-catalog --paper p26`).
+| Element | Convention |
+|---------|-----------|
+| PAH features | One fixed color per feature: 6.2 µm `C0`, 7.7 µm `C1`, 8.6 µm `C2`, 11.3 µm `C3`, 12.7 µm `C4` |
+| MIPS 24 µm bandpass | Steel blue (#3b6ea5), alpha=0.25 fill |
+| Mass bins | Sequential colormap (Blues), light→dark = low→high M* |
+| σ_SFR bins | Sequential colormap (Oranges), light→dark = low→high σ_SFR |
+| Error bars | Thin, same color as marker, elinewidth=0.8 |
+| Background | White (`figure.facecolor="white"`) |
+| Font | Same family throughout; axis labels 11pt, tick labels 9pt |
 
 ---
 
-## SKILL.md to update at branch start
+## Deliverables per figure
 
-Add to `open questions`:
-- [ ] Rescaled-error significance: what is the joint α(M*) slope SNR after ×1.83 rescaling?
-- [ ] Accordion verdict: is σ_α(accordion)/σ_α(uniform) < 0.95 in any mass bin?
-- [ ] σ_SFR direction: does α decrease with σ_SFR at fixed M*?
-- [ ] T_dust bias: what is the mean ΔT_dust at z=1.5–2.5 from un-corrected 24 μm PAH?
+Each figure produces three files:
 
-Remove from `open questions` once resolved:
-- σ_z0 and f_cat trade study (answered: dz=0.15 × 4 outperforms dz=0.10 × 2 for this depth)
-- τ_sil detection (answered: not detected)
-- NoiseModel sigma_ref (validated at ~9 SNR/point median Tier B)
+1. **`notebooks/build_pah_fig{N}.py`** — committed builder script (generates the notebook
+   from code; matches repo convention; notebooks themselves are gitignored).
+2. **`notebooks/2026-06-18-pah-fig{N}-*.ipynb`** — the generated notebook with outputs
+   (static + animation in jshtml for local inspection).
+3. **`figures/pah_fig{N}.mp4`** (H.264, 1920×1080 or 1280×720) — for Keynote drop-in.
+   GIF fallback at 720p for contexts where MP4 doesn't autoplay.
+   Static PNG key-frame at 150 dpi — for paper draft.
+
+Builder scripts use `FuncAnimation.save(..., writer="ffmpeg", dpi=120)` for MP4.
+In-notebook preview uses `HTML(anim.to_jshtml())`.
+
+---
+
+## Prior art to audit, not copy-paste
+
+Read these notebooks before starting — understand what they got right and what needs updating:
+
+- `notebooks/2026-04-28-pah-resolution-animation.ipynb` — Animations 1–4 including the
+  bandpass sweep, dithered build-up, and forward model convergence. Self-contained synthetic.
+  Issues: 3-run scheme, no real data, single-bin fitter.
+- `notebooks/2026-04-29-animated-figures-for-lim-talk.ipynb` — Talk-focused version;
+  imports real `PAHModel`, `PAH_FEATURES`, `_pah_template_in_band`. Closer to what we need.
+  Issues: uses frozen `fit_forward_model` (single bin); `pah_optimized_zbins` rather than
+  `DitherScheme`; no per-mass-bin split; HTML export only.
+
+Upgrade plan:
+- 4 runs, Δz=0.15, real bin edges (use `DitherScheme.uniform(dz=0.15, n_stagger=4)`)
+- `fit_forward_model_multibin` instead of `fit_forward_model` (multiple mass bins)
+- MP4 export via ffmpeg
+- Real data overlay from `combine_pah_spectra` in Figures 2 and 3
+
+---
+
+## What is NOT in this branch
+
+The following are real and important but deferred until the three figures are done:
+
+- Error rescaling by √(χ²_red) = 1.83
+- Robustness suite (baseline degree, bin edge shifts, jackknife)
+- Combined slope significance reporting
+- Two-pass PAH correction to T_dust
+- σ_SFR analysis (pending stacking run 4)
+- Accordion vs uniform z-bin verdict
+
+These belong in pah-forward-model-4 or a dedicated analysis pass once the figures are
+accepted as the narrative vehicle.

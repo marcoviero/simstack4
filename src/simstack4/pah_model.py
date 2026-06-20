@@ -1230,6 +1230,7 @@ class PAHModel:
         fix_widths=True,
         bin_edges=None,
         verbose=True,
+        linear_evolution=False,
     ):
         """
         Jointly fit all stellar-mass (or other property) bins simultaneously.
@@ -1567,22 +1568,33 @@ class PAHModel:
                 return np.zeros(len(z_m))
 
         # ── Parameter layout ───────────────────────────────────────
-        # [α_0..α_{M-1}, r_1..r_{G-1}, (τ_sil,) a_0,b_0,c_0, ...]
-        n_alpha = M
+        # free:       [α_0..α_{M-1}, r_1..r_{G-1}, (τ_sil,) n_0,logA_0, ...]
+        # linear_evo: [α₀, β,        r_1..r_{G-1}, (τ_sil,) n_0,logA_0, ...]
+        x_centers = np.array([ctr for _, _, _, _, ctr in bins_data])
+        x_mean    = float(np.mean(x_centers))
+        dx        = x_centers - x_mean          # (M,) deviations from mean
+
+        n_alpha  = 2 if linear_evolution else M
         n_ratios = n_groups - 1  # r_0 fixed to 1
-        n_sil = 1 if include_silicate else 0
-        n_base = M * 3
+        n_sil    = 1 if include_silicate else 0
+        n_base   = M * 2          # power-law baseline: [n, log10(A)] per bin
         n_params = n_alpha + n_ratios + n_sil + n_base
 
         def _unpack(p):
-            alpha = p[:M]
-            ratios = np.concatenate([[1.0], p[M : M + n_ratios]])
-            tau_sil = float(p[M + n_ratios]) if include_silicate else 0.0
-            baseline = p[M + n_ratios + n_sil :].reshape(M, 3)
+            if linear_evolution:
+                alpha0, beta = float(p[0]), float(p[1])
+                alpha = alpha0 + beta * dx
+            else:
+                alpha = p[:M]
+            ratios  = np.concatenate([[1.0], p[n_alpha : n_alpha + n_ratios]])
+            tau_sil = float(p[n_alpha + n_ratios]) if include_silicate else 0.0
+            baseline = p[n_alpha + n_ratios + n_sil :].reshape(M, 2)
             return alpha, ratios, tau_sil, baseline
 
         def _pred(alpha_m, ratios, bcoeffs, z_m, T_m, tau_sil):
-            bl = 10 ** (bcoeffs[0] * z_m + bcoeffs[1] * z_m**2 + bcoeffs[2])
+            # baseline = A · λ_rest^n  where λ_rest = 24/(1+z)
+            # log10(baseline) = bcoeffs[1] + bcoeffs[0] * log10(24/(1+z))
+            bl = 10 ** (bcoeffs[1] + bcoeffs[0] * np.log10(24.0 / (1.0 + z_m)))
             pah = np.ones(len(z_m))
             for gi in range(n_groups):
                 pah += alpha_m * ratios[gi] * T_m[gi]
@@ -1600,47 +1612,54 @@ class PAHModel:
             return np.concatenate(parts)
 
         # ── Initialization ─────────────────────────────────────────
-        # Per-bin baseline from log-linear fit (α = 0)
+        # Per-bin baseline: power-law fit log10(flux) = n*log10(24/(1+z)) + log10(A)
         p0_base = []
         for _, z_m, flux_m, _, _ in bins_data:
-            X = np.column_stack([z_m, z_m**2, np.ones_like(z_m)])
+            lam_log = np.log10(24.0 / (1.0 + z_m))
+            X = np.column_stack([lam_log, np.ones_like(z_m)])
             try:
                 c0, _, _, _ = np.linalg.lstsq(X, np.log10(flux_m), rcond=None)
             except Exception:
-                c0 = np.array([0.0, 0.0, np.log10(max(np.median(flux_m), 1e-10))])
+                c0 = np.array([2.0, np.log10(max(np.median(flux_m), 1e-10))])
             p0_base.extend(c0.tolist())
 
         # Per-bin α from projection of residuals onto composite template
-        p0_alpha = []
+        p0_alpha_free = []
         for m, (_, z_m, flux_m, _, _) in enumerate(bins_data):
-            bc = np.array(p0_base[m * 3 : (m + 1) * 3])
-            bl_est = 10 ** (bc[0] * z_m + bc[1] * z_m**2 + bc[2])
+            bc = np.array(p0_base[m * 2 : (m + 1) * 2])
+            bl_est = 10 ** (bc[1] + bc[0] * np.log10(24.0 / (1.0 + z_m)))
             excess = flux_m / bl_est - 1.0
             T_m = _T_for(z_m)
-            T_comp = np.sum(T_m, axis=0)  # sum all groups equally for init
+            T_comp = np.sum(T_m, axis=0)
             denom = float(np.dot(T_comp, T_comp))
             alpha_est = float(np.dot(excess, T_comp)) / denom if denom > 0 else 0.1
-            p0_alpha.append(max(alpha_est, 0.01))
+            p0_alpha_free.append(max(alpha_est, 0.01))
+
+        if linear_evolution:
+            alpha0_init = float(np.mean(p0_alpha_free))
+            if M > 1 and np.std(dx) > 0:
+                beta_init = float(np.polyfit(dx, p0_alpha_free, 1)[0])
+            else:
+                beta_init = 0.0
+            p0_alpha = [alpha0_init, beta_init]
+            bounds_lo_alpha = [0.0, -3.0]
+            bounds_hi_alpha = [5.0,  3.0]
+        else:
+            p0_alpha = p0_alpha_free
+            bounds_lo_alpha = list(np.zeros(M))
+            bounds_hi_alpha = list(np.full(M, 5.0))
 
         p0_ratios = np.ones(n_ratios) * 0.5
         p0_sil = [0.0] if include_silicate else []
         p0 = np.array(p0_alpha + list(p0_ratios) + p0_sil + p0_base)
 
-        bounds_lo = np.concatenate(
-            [
-                np.zeros(M),
-                np.zeros(n_ratios),
-                np.zeros(n_sil),
-                np.full(n_base, -10.0),
-            ]
+        bounds_lo = np.array(
+            bounds_lo_alpha + list(np.zeros(n_ratios)) +
+            list(np.zeros(n_sil)) + list(np.full(n_base, -10.0))
         )
-        bounds_hi = np.concatenate(
-            [
-                np.full(M, 5.0),
-                np.full(n_ratios, 5.0),
-                np.full(n_sil, 2.0),
-                np.full(n_base, 10.0),
-            ]
+        bounds_hi = np.array(
+            bounds_hi_alpha + list(np.full(n_ratios, 5.0)) +
+            list(np.full(n_sil, 2.0)) + list(np.full(n_base, 10.0))
         )
 
         # ── Optimize ───────────────────────────────────────────────
@@ -1662,9 +1681,16 @@ class PAHModel:
             perr = np.full(n_params, np.nan)
 
         alpha_opt, ratios_opt, tau_sil_opt, baseline_opt = _unpack(opt.x)
-        alpha_err = perr[:M]
-        ratio_err = perr[M : M + n_ratios]
-        tau_sil_err = float(perr[M + n_ratios]) if include_silicate else 0.0
+        if linear_evolution:
+            alpha0_opt, beta_opt = float(opt.x[0]), float(opt.x[1])
+            alpha0_err = float(perr[0])
+            beta_err   = float(perr[1])
+            alpha_err  = np.abs(beta_opt) * np.abs(dx) + alpha0_err  # propagated per-bin
+        else:
+            alpha0_opt = beta_opt = alpha0_err = beta_err = None
+            alpha_err = perr[:M]
+        ratio_err   = perr[n_alpha : n_alpha + n_ratios]
+        tau_sil_err = float(perr[n_alpha + n_ratios]) if include_silicate else 0.0
 
         n_data = sum(len(b[1]) for b in bins_data)
         chi2_red = float(np.sum(opt.fun**2) / max(n_data - n_params, 1))
@@ -1674,9 +1700,8 @@ class PAHModel:
         for m, (label, z_m, flux_m, w_m, ctr) in enumerate(bins_data):
             T_m = _T_for(z_m)
             bl_m = 10 ** (
-                baseline_opt[m, 0] * z_m
-                + baseline_opt[m, 1] * z_m**2
-                + baseline_opt[m, 2]
+                baseline_opt[m, 1]
+                + baseline_opt[m, 0] * np.log10(24.0 / (1.0 + z_m))
             )
             mdl_m = _pred(alpha_opt[m], ratios_opt, baseline_opt[m], z_m, T_m, tau_sil_opt)
             ferr_m = np.where(w_m > 0, 1.0 / w_m, np.median(flux_m) * 0.03)
@@ -1702,6 +1727,8 @@ class PAHModel:
                 print(f"    Group {gi} {names}: r = {ri:.3f} ± {ei:.3f}")
             if include_silicate:
                 print(f"  Silicate absorption: τ_sil = {tau_sil_opt:.4f} ± {tau_sil_err:.4f}")
+            if linear_evolution:
+                print(f"  Evolution slope: α₀ = {alpha0_opt:.4f} ± {alpha0_err:.4f},  β = {beta_opt:.4f} ± {beta_err:.4f}")
             print(f"  Per-bin PAH amplitudes:")
             for m, (label, _, _, _, ctr) in enumerate(bins_data):
                 print(f"    {label}: α = {alpha_opt[m]:.4f} ± {alpha_err[m]:.4f}")
@@ -1715,8 +1742,13 @@ class PAHModel:
             "ratio_errors": np.concatenate([[0.0], ratio_err]),
             "tau_sil": tau_sil_opt,
             "tau_sil_err": tau_sil_err,
+            "alpha0": alpha0_opt,
+            "beta": beta_opt,
+            "alpha0_err": alpha0_err,
+            "beta_err": beta_err,
+            "x_mean": x_mean,
             "baseline_coeffs": baseline_opt,
-            "baseline_err": perr[M + n_ratios + n_sil :].reshape(M, 3),
+            "baseline_err": perr[n_alpha + n_ratios + n_sil :].reshape(M, 2),
             "model_per_bin": model_per_bin,
             "chi2_red": chi2_red,
             "success": opt.success,
@@ -1768,9 +1800,9 @@ class PAHModel:
             Same as in fit_bayesian_forward_model.
         r_true : array-like, shape (G,), optional
             True group amplitude ratios (mode 1 only). Default: all 1.0.
-        baseline_coeffs : array-like, shape (M, 3), optional
-            Per-bin polynomial baseline in log10 space:
-            log10(flux) = a·z + b·z² + c. Default: mild declining SED.
+        baseline_coeffs : array-like, shape (M, 2), optional
+            Per-bin power-law baseline: [n, log10(A)] where
+            baseline = A · (24/(1+z))^n. Default: mild declining SED (n≈2).
         property_col_values : dict, optional
             {col_name: list of M values} — per-bin mean values for extra
             property columns (e.g. log_l_ir). Added to every row of the bin.
@@ -1831,8 +1863,9 @@ class PAHModel:
             r_arr = np.ones(n_groups) if r_true is None else np.asarray(r_true, dtype=float)
 
         if baseline_coeffs is None:
-            # Mild declining SED typical of far-IR photometry: flux decreases ~50% over Δz=1
-            baseline_coeffs = np.tile([-0.3, 0.05, 0.0], (M, 1))
+            # Power law λ^2 with amplitude matched to typical f24/fpeak ~ 0.02 at z=1
+            # baseline = A · (24/(1+z))^2; log10(A) = log10(0.02) - 2*log10(12) ≈ -4.28
+            baseline_coeffs = np.tile([2.0, np.log10(0.02) - 2.0 * np.log10(12.0)], (M, 1))
         baseline_coeffs = np.asarray(baseline_coeffs, dtype=float)
 
         if bin_centers is None:
@@ -1868,8 +1901,9 @@ class PAHModel:
             else:
                 pah_factor = 1.0 + alpha_arr[m] * (T_obs @ r_arr)
 
-            X_m      = np.column_stack([z_m, z_m ** 2, np.ones_like(z_m)])
-            baseline = 10.0 ** (X_m @ baseline_coeffs[m])
+            baseline = 10.0 ** (
+                baseline_coeffs[m, 1] + baseline_coeffs[m, 0] * np.log10(24.0 / (1.0 + z_m))
+            )
             f_true   = baseline * pah_factor
 
             # Noise floor prevents sigma=0 from causing WLS degeneracy
