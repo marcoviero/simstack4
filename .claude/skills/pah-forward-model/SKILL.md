@@ -128,7 +128,10 @@ Publication strategy and talk figure set: `docs/pah-forward-model-3-brief.md`.
 | `config/cosmos25_PAH_dithered.toml` | All dither schemes as commented reference blocks; set active `bins =` to desired run |
 | `config/cosmos25_PAH_dithered_3d.toml` | σ_SFR config (2 mass × 3 σ_SFR bins) |
 | `docs/pah-forward-model-2-summary.md` | Full measurement summary including all runs, coefficient derivation, forward path |
-| `docs/pah-forward-model-3-brief.md` | Branch 3 goals: publication figures, honest error budget, σ_SFR analysis, T_dust correction |
+| `docs/pah-forward-model-3-brief.md` | Branch 3 goals: publication figures |
+| `docs/pah-forward-model-4-brief.md` | Branch 4 goals: shared-slope baseline + K-fold catalog splitting |
+| `docs/pah-forward-model-5-brief.md` | Branch 5 goals: error rescaling, robustness, talk figures, T_dust correction |
+| `src/simstack4/scripts/prepare_cosmos2020_catalog.py` | K-fold COSMOS2020 parquet generator; `uv run prepare-cosmos2020-catalog` |
 
 ## How to run
 
@@ -169,6 +172,26 @@ For real stacking output: build a DataFrame with columns
 - `analyze_pah.py` and `pah_model.py` stay frozen;
   `DitherScheme.adaptive` imports `staggered_pah_zbins` read-only.
 
+## Key references
+
+Full citations with one-line roles: `docs/pah-refs.md`
+
+Quick lookup:
+
+| When you need... | Paper |
+|---|---|
+| PAH physics from first principles (single-photon heating, band ratios, U) | Tielens (2008) ARA&A 46, 289 |
+| Local PAH deficit slope vs sSFR/L_IR to compare α(M*) against | Smith et al. (2007) ApJ 656, 770 |
+| Multi-variate local anchor (M*, metallicity, sSFR) | Galliano et al. (2021) A&A 649, A18 |
+| Radiation field → PAH destruction mechanism (U anti-correlation, PHANGS-JWST) | Egorov et al. (2025) A&A 703, A103 |
+| Resolved PAH destruction in HII regions (PHANGS framework) | Leroy et al. (2023) ApJS 264, 10 |
+| Theoretical α(M*, z) prediction to compare our slope against | arXiv:2606.20809 (PAH lifecycle sims, 2026) |
+| Direct JWST MIRI PAH spectroscopy at z~1–3 (potential tension/comparison) | arXiv:2606.18244 (PAHSPECS, 2026) |
+| T_dust(z) prior and motivation for PAH correction | Schreiber et al. (2018) A&A 609, A30 |
+| Our own T_dust(z) stacking result (predecessor) | Viero et al. (2022) MNRAS 516, L30 |
+
+---
+
 ## Open questions
 
 **Answered in pah-forward-model-2:**
@@ -176,15 +199,21 @@ For real stacking output: build a DataFrame with columns
 - ✓ Stagger resolution: confirmed dz=0.15 × 4 runs outperforms dz=0.10 × 2 runs for this catalog depth.
 - ✓ τ_sil: no silicate absorption detected (τ_sil = 0.000 ± 0.081) in MS galaxies at z~0.5–3.5.
 - ✓ Mass trend direction: α decreases with M* (PAH deficit; consistent with GOALS/Spitzer IRS literature).
-- ✓ 4-bin mass scheme: runs set up (20260612_190116…); awaiting notebook execution.
-- ✓ σ_SFR cross-cut: 3/4 runs complete (20260614_…); run 4 pending; notebook ready.
-- ✓ Accordion vs uniform: both sets complete; comparison notebook ready (2026-06-15-…).
 
-**For pah-forward-model-3:**
-- [ ] **Rescaled-error significance**: joint α(M*) slope SNR after ×1.83 rescaling; does the trend survive?
-- [ ] **Accordion verdict**: σ_α(accordion)/σ_α(uniform) per bin — is any bin >10% better?
+**For pah-forward-model-4 (current branch):**
+- [ ] **Shared-slope baseline**: does fixing γ from off-feature windows stabilise the mass ordering of α?
+  Compare α(M*) from `baseline_method="independent"` vs `"shared_slope"` on the same data.
+- [ ] **χ²_red diagnosis**: does the shared-slope baseline reduce χ²_red, or does it stay ~8–9?
+  If it drops, the elevation was partly baseline misfit. If not, it's pure astrophysical scatter.
+- [ ] **K-fold independence**: do 3 independent pseudo-spectra (K=3 COSMOS2020 splits) give
+  consistent α values? std(α_A, α_B, α_C) / √(K−1) should agree with rescaled bootstrap σ_α.
+- [ ] **γ value**: what power-law slope does the off-feature continuum give? Expected 1.5–2.5.
+  Lower-mass galaxies should have higher A_m (more stochastic VSG heating at high sSFR).
+
+**For pah-forward-model-5:**
+- [ ] **Rescaled-error significance**: joint α(M*) slope SNR after ×√χ²_red rescaling.
 - [ ] **σ_SFR direction**: does α decrease with σ_SFR at fixed M*? Confirms radiation-field mechanism.
 - [ ] **T_dust bias**: mean ΔT_dust at z=1.5–2.5 from un-corrected 24 μm; fraction of bins promoted Tier C→B.
-- [ ] **Robustness suite**: baseline degree 1–3, ±0.1 dex bin edge shifts, jackknife over runs.
+- [ ] **Robustness suite**: baseline method variation, ±0.1 dex bin edge shifts, jackknife over runs.
 - [ ] **12.7 μm r₂ constraint**: more runs at z~0.7–1.1 would pin 12.7/6.2 ratio.
 - [ ] **AGN contamination**: is (T_w, β_w) single continuum sufficient at high σ_SFR?
