@@ -406,7 +406,17 @@ class PAHSpectrumModel:
                 warm_continuum_kernel(pz, z_grid, self.bands, T_w=t, beta_w=self.beta_w)
                 for t in self.T_GRID
             ]
-        )  # (n_T, n_bins, n_bands)
+        )  # (n_T, n_scheme_bins, n_bands)
+
+        # Lookup: (run_id, z_lo) → row index in the scheme's pz matrix.
+        # Different property bins may cover different subsets of z-bins (due to
+        # quality filtering), so we must slice K/W_grid per bin rather than using
+        # the global arrays directly.
+        bt = scheme.bin_table()
+        scheme_lookup = {
+            (int(row.run_id), round(float(row.z_lo), 8)): i
+            for i, row in bt.iterrows()
+        }
 
         prop_ids = sorted(df["prop_bin_id"].unique()) if "prop_bin_id" in df else [0]
         bins = []
@@ -414,6 +424,21 @@ class PAHSpectrumModel:
             sub = (
                 df[df["prop_bin_id"] == m] if "prop_bin_id" in df else df
             ).sort_values(["run_id", "z_lo"])
+
+            # Map each sub row to its scheme row index; drop any that don't match.
+            sidx = np.array([
+                scheme_lookup.get((int(r["run_id"]), round(float(r["z_lo"]), 8)), -1)
+                for _, r in sub.iterrows()
+            ])
+            valid = sidx >= 0
+            if not valid.all():
+                sub = sub.iloc[valid].reset_index(drop=True)
+                sidx = sidx[valid]
+
+            # Per-bin kernel slices: (n_rows_m, n_bands, G) and (n_T, n_rows_m, n_bands)
+            K_m = K[sidx]
+            W_grid_m = W_grid[:, sidx, :]
+
             F = sub[list(self.bands)].to_numpy()
             mask = np.isfinite(F.ravel())
             if cov is not None:
@@ -426,10 +451,10 @@ class PAHSpectrumModel:
                 L = np.diag(sig)
             G = self.n_groups
             Fw = np.linalg.solve(L, F.ravel()[mask])
-            Kw = np.linalg.solve(L, K.reshape(-1, G)[mask])
+            Kw = np.linalg.solve(L, K_m.reshape(-1, G)[mask])
             Ww_grid = np.stack(
                 [
-                    np.linalg.solve(L, W_grid[t].reshape(-1)[mask])
+                    np.linalg.solve(L, W_grid_m[t].reshape(-1)[mask])
                     for t in range(len(self.T_GRID))
                 ]
             )
@@ -453,7 +478,8 @@ class PAHSpectrumModel:
                     "Fw": Fw,
                     "Kw": Kw,
                     "Ww_grid": Ww_grid,
-                    "K": K,
+                    "K": K_m,
+                    "sidx": sidx,
                     "props": props,
                     "n_valid": int(mask.sum()),
                 }
@@ -512,7 +538,14 @@ class PAHSpectrumModel:
                     pen = np.zeros(G + 1)
                     pen[1:] = self.ridge * np.diag(H)[1:]
                     H = H + np.diag(pen)
-                theta_cov = np.linalg.inv(H)
+                try:
+                    theta_cov = np.linalg.inv(H)
+                except np.linalg.LinAlgError:
+                    # Feature kernels are identically zero for this band/z range
+                    # (e.g. MIPS 70 null test at z<0.8 probes rest >38 µm, no PAH).
+                    # Pseudoinverse: unconstrained amplitudes map to zero with zero
+                    # formal error — caller should treat SNR=nan as "not constrained".
+                    theta_cov = np.linalg.pinv(H, rcond=1e-8 * max(np.max(np.abs(H)), 1.0))
                 theta = theta_cov @ (Xw.T @ b["Fw"])
                 resid = b["Fw"] - Xw @ theta
                 chi2 = float(resid @ resid)
@@ -552,14 +585,22 @@ class PAHSpectrumModel:
             zip(bins, results, strict=True)
         ):
             C[i] = theta[0]
-            C_err[i] = np.sqrt(theta_cov[0, 0])
+            C_err[i] = np.sqrt(max(float(theta_cov[0, 0]), 0.0))
             A_tilde = theta[1:]
-            A[i] = A_tilde / C[i]
-            J = np.zeros((G, G + 1))
-            J[:, 0] = -A_tilde / C[i] ** 2
-            J[:, 1:] = np.eye(G) / C[i]
-            A_cov = J @ theta_cov @ J.T
-            A_err[i] = np.sqrt(np.diag(A_cov))
+            A_cov = np.zeros((G, G))
+            if C[i] != 0:
+                A[i] = A_tilde / C[i]
+                J = np.zeros((G, G + 1))
+                J[:, 0] = -A_tilde / C[i] ** 2
+                J[:, 1:] = np.eye(G) / C[i]
+                A_cov = J @ theta_cov @ J.T
+                A_err[i] = np.sqrt(np.maximum(np.diag(A_cov), 0.0))
+            else:
+                # C=0: design matrix was rank-1 (no PAH features present in
+                # this band/z-range, e.g. MIPS 70 null test at z<0.8).
+                # Feature amplitudes are unconstrained; report 0 ± NaN.
+                A[i] = np.zeros(G)
+                A_err[i] = np.full(G, np.nan)
             chi2 += chi2_m
             dof += b["n_valid"] - (G + 1)
             per_bin.append(
@@ -776,10 +817,25 @@ class PAHSpectrumModel:
             sub = (
                 df[df["prop_bin_id"] == b["m"]] if "prop_bin_id" in df else df
             ).sort_values(["run_id", "z_lo"])
+            # Apply the same scheme-row filter that _prepare used for this bin.
+            sidx = b.get("sidx")
+            if sidx is not None and len(sub) != len(sidx):
+                bt = prep["scheme"].bin_table()
+                slookup = {
+                    (int(r.run_id), round(float(r.z_lo), 8)): True
+                    for r in bt.itertuples()
+                }
+                vmask = np.array([
+                    slookup.get((int(r["run_id"]), round(float(r["z_lo"]), 8)), False)
+                    for _, r in sub.iterrows()
+                ])
+                sub = sub.iloc[vmask].reset_index(drop=True)
             C_m = result.C_per_bin[i]
             for bi, band in enumerate(self.bands):
                 bp = get_bandpass(band)
-                cont = C_m * W[:, bi]
+                # Index the global W by the per-bin scheme rows.
+                W_m = W[sidx, bi] if sidx is not None else W[:, bi]
+                cont = C_m * W_m
                 F = sub[band].to_numpy()
                 Ferr = sub[f"{band}_err"].to_numpy()
                 with np.errstate(divide="ignore", invalid="ignore"):

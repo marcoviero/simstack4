@@ -1220,6 +1220,72 @@ class PAHModel:
         """Plot recovered PAH spectra per bin. Delegates to plots.plot_pah_vs_property."""
         return plot_pah_vs_property(per_bin_results, self.features, save_path=save_path)
 
+    def _estimate_shared_slope_baseline(
+        self, bins_data, z_union, T_grid, feature_threshold=0.05, verbose=True
+    ):
+        """Pre-fit a shared power-law slope γ from off-feature spectral windows.
+
+        Off-feature points: T_total(z) < feature_threshold × max(T_total).
+        Between PAH features the MIPS bandpass samples warm/VSG dust directly,
+        and the continuum follows a smooth power law in λ_rest.
+
+        Model: log10(f) = γ × log10(24/(1+z)) + log10(A_m)
+        γ is shared across all mass bins; log10(A_m) is per bin.
+        Solved via WLS (inverse-variance weights from the flux error column).
+
+        Returns (gamma, log_A, n_off, masks_per_bin), or
+                (None, None, n_off, masks_per_bin) if too few off-feature points.
+        """
+        M = len(bins_data)
+        T_total_grid = T_grid.sum(axis=0)  # sum over feature groups → shape (n_z,)
+        T_max = float(T_total_grid.max()) if T_total_grid.max() > 0 else 1.0
+
+        log_lam_all, log_f_all, w_all, bin_idx_all = [], [], [], []
+        masks_per_bin = []
+        for m, (label, z_m, flux_m, w_m, _) in enumerate(bins_data):
+            T_total_m = np.interp(z_m, z_union, T_total_grid)
+            off = T_total_m < feature_threshold * T_max
+            masks_per_bin.append(off)
+            if off.any():
+                log_lam_all.append(np.log10(24.0 / (1.0 + z_m[off])))
+                log_f_all.append(np.log10(np.maximum(flux_m[off], 1e-10)))
+                w_all.append(w_m[off])
+                bin_idx_all.append(np.full(off.sum(), m, dtype=int))
+
+        n_off = sum(a.sum() for a in masks_per_bin)
+        if n_off < M + 2:
+            if verbose:
+                print(
+                    f"  Shared-slope baseline: only {n_off} off-feature pts "
+                    f"(need ≥{M + 2}) — reverting to independent."
+                )
+            return None, None, n_off, masks_per_bin
+
+        log_lam_arr = np.concatenate(log_lam_all)
+        log_f_arr   = np.concatenate(log_f_all)
+        w_arr       = np.concatenate(w_all)
+        bin_arr     = np.concatenate(bin_idx_all)
+
+        # Design matrix: [log(λ_rest), bin_0_indicator, ..., bin_{M-1}_indicator]
+        X = np.zeros((len(log_lam_arr), 1 + M))
+        X[:, 0] = log_lam_arr
+        for i, bi in enumerate(bin_arr):
+            X[i, 1 + bi] = 1.0
+
+        sqrtw = np.sqrt(w_arr)
+        coeffs, _, _, _ = np.linalg.lstsq(
+            X * sqrtw[:, None], log_f_arr * sqrtw, rcond=None
+        )
+        gamma = float(coeffs[0])
+        log_A = coeffs[1:]
+
+        if verbose:
+            print(
+                f"  Shared-slope baseline: {n_off} off-feature pts, "
+                f"γ = {gamma:.3f},  "
+                f"log10(A) = [{', '.join(f'{a:.3f}' for a in log_A)}]"
+            )
+        return gamma, log_A, n_off, masks_per_bin
 
     def fit_forward_model_multibin(
         self,
@@ -1231,6 +1297,8 @@ class PAHModel:
         bin_edges=None,
         verbose=True,
         linear_evolution=False,
+        baseline_method="independent",
+        off_feature_threshold=0.05,
     ):
         """
         Jointly fit all stellar-mass (or other property) bins simultaneously.
@@ -1262,6 +1330,16 @@ class PAHModel:
         fix_widths : bool
             Fix feature widths to literature values (recommended).
         verbose : bool
+        baseline_method : {"independent", "shared_slope"}
+            "independent" (default): each bin fits its own power-law slope n_m
+            and normalisation log10(A_m) freely (2M baseline params).
+            "shared_slope": slope γ is pre-fitted from off-feature spectral
+            windows (where T_PAH < off_feature_threshold × T_max) and fixed;
+            only log10(A_m) is free per bin (M baseline params). Reduces
+            baseline–PAH degeneracy and stabilises the mass ordering of α.
+        off_feature_threshold : float
+            Fraction of max(T_total) below which a point is called off-feature
+            for the shared-slope pre-fit. Default 0.05 (5 %).
 
         Returns
         -------
@@ -1270,6 +1348,8 @@ class PAHModel:
             'alpha_per_bin', 'alpha_err_per_bin',
             'group_ratios', 'ratio_errors',
             'baseline_coeffs', 'baseline_err',
+            'gamma' (shared slope, or None for independent),
+            'baseline_method',
             'model_per_bin', 'chi2_red', 'success',
             'n_data', 'n_params', 'feature_groups', 'feature_names'.
         """
@@ -1567,9 +1647,23 @@ class PAHModel:
             def _S_for(z_m):
                 return np.zeros(len(z_m))
 
+        # ── Baseline pre-fitting (shared-slope method) ─────────────
+        gamma_fixed = None
+        logA_init_shared = None
+        if baseline_method == "shared_slope":
+            gamma_fixed, logA_init_shared, _n_off, _ = self._estimate_shared_slope_baseline(
+                bins_data, z_union, T_grid,
+                feature_threshold=off_feature_threshold, verbose=verbose,
+            )
+            if gamma_fixed is None:
+                if verbose:
+                    print("  Insufficient off-feature points — reverting to independent baseline.")
+                baseline_method = "independent"
+
         # ── Parameter layout ───────────────────────────────────────
-        # free:       [α_0..α_{M-1}, r_1..r_{G-1}, (τ_sil,) n_0,logA_0, ...]
-        # linear_evo: [α₀, β,        r_1..r_{G-1}, (τ_sil,) n_0,logA_0, ...]
+        # free:         [α_0..α_{M-1}, r_1..r_{G-1}, (τ_sil,) n_0,logA_0, ...]
+        # linear_evo:   [α₀, β,        r_1..r_{G-1}, (τ_sil,) n_0,logA_0, ...]
+        # shared_slope: baseline params are [logA_0..logA_{M-1}]; γ fixed from pre-fit
         x_centers = np.array([ctr for _, _, _, _, ctr in bins_data])
         x_mean    = float(np.mean(x_centers))
         dx        = x_centers - x_mean          # (M,) deviations from mean
@@ -1577,7 +1671,7 @@ class PAHModel:
         n_alpha  = 2 if linear_evolution else M
         n_ratios = n_groups - 1  # r_0 fixed to 1
         n_sil    = 1 if include_silicate else 0
-        n_base   = M * 2          # power-law baseline: [n, log10(A)] per bin
+        n_base   = M if baseline_method == "shared_slope" else M * 2
         n_params = n_alpha + n_ratios + n_sil + n_base
 
         def _unpack(p):
@@ -1588,13 +1682,19 @@ class PAHModel:
                 alpha = p[:M]
             ratios  = np.concatenate([[1.0], p[n_alpha : n_alpha + n_ratios]])
             tau_sil = float(p[n_alpha + n_ratios]) if include_silicate else 0.0
-            baseline = p[n_alpha + n_ratios + n_sil :].reshape(M, 2)
+            if baseline_method == "shared_slope":
+                baseline = p[n_alpha + n_ratios + n_sil:]  # logA_m per bin, shape (M,)
+            else:
+                baseline = p[n_alpha + n_ratios + n_sil :].reshape(M, 2)
             return alpha, ratios, tau_sil, baseline
 
         def _pred(alpha_m, ratios, bcoeffs, z_m, T_m, tau_sil):
-            # baseline = A · λ_rest^n  where λ_rest = 24/(1+z)
-            # log10(baseline) = bcoeffs[1] + bcoeffs[0] * log10(24/(1+z))
-            bl = 10 ** (bcoeffs[1] + bcoeffs[0] * np.log10(24.0 / (1.0 + z_m)))
+            if baseline_method == "shared_slope":
+                # bcoeffs is logA_m (scalar); slope γ shared and fixed from pre-fit
+                bl = 10 ** (float(bcoeffs) + gamma_fixed * np.log10(24.0 / (1.0 + z_m)))
+            else:
+                # baseline = A · λ_rest^n;  bcoeffs = [n, logA]
+                bl = 10 ** (bcoeffs[1] + bcoeffs[0] * np.log10(24.0 / (1.0 + z_m)))
             pah = np.ones(len(z_m))
             for gi in range(n_groups):
                 pah += alpha_m * ratios[gi] * T_m[gi]
@@ -1612,22 +1712,34 @@ class PAHModel:
             return np.concatenate(parts)
 
         # ── Initialization ─────────────────────────────────────────
-        # Per-bin baseline: power-law fit log10(flux) = n*log10(24/(1+z)) + log10(A)
-        p0_base = []
-        for _, z_m, flux_m, _, _ in bins_data:
-            lam_log = np.log10(24.0 / (1.0 + z_m))
-            X = np.column_stack([lam_log, np.ones_like(z_m)])
-            try:
-                c0, _, _, _ = np.linalg.lstsq(X, np.log10(flux_m), rcond=None)
-            except Exception:
-                c0 = np.array([2.0, np.log10(max(np.median(flux_m), 1e-10))])
-            p0_base.extend(c0.tolist())
+        if baseline_method == "shared_slope":
+            # γ already fixed; only logA_m per bin is free
+            p0_base = list(logA_init_shared)
+            bounds_lo_base = list(np.full(M, -10.0))
+            bounds_hi_base = list(np.full(M, 10.0))
+        else:
+            # Per-bin baseline: power-law fit log10(flux) = n*log10(24/(1+z)) + log10(A)
+            p0_base = []
+            for _, z_m, flux_m, _, _ in bins_data:
+                lam_log = np.log10(24.0 / (1.0 + z_m))
+                X = np.column_stack([lam_log, np.ones_like(z_m)])
+                try:
+                    c0, _, _, _ = np.linalg.lstsq(X, np.log10(flux_m), rcond=None)
+                except Exception:
+                    c0 = np.array([2.0, np.log10(max(np.median(flux_m), 1e-10))])
+                p0_base.extend(c0.tolist())
+            bounds_lo_base = list(np.full(n_base, -10.0))
+            bounds_hi_base = list(np.full(n_base, 10.0))
 
         # Per-bin α from projection of residuals onto composite template
         p0_alpha_free = []
         for m, (_, z_m, flux_m, _, _) in enumerate(bins_data):
-            bc = np.array(p0_base[m * 2 : (m + 1) * 2])
-            bl_est = 10 ** (bc[1] + bc[0] * np.log10(24.0 / (1.0 + z_m)))
+            if baseline_method == "shared_slope":
+                logA_m = float(logA_init_shared[m])
+                bl_est = 10 ** (logA_m + gamma_fixed * np.log10(24.0 / (1.0 + z_m)))
+            else:
+                bc = np.array(p0_base[m * 2 : (m + 1) * 2])
+                bl_est = 10 ** (bc[1] + bc[0] * np.log10(24.0 / (1.0 + z_m)))
             excess = flux_m / bl_est - 1.0
             T_m = _T_for(z_m)
             T_comp = np.sum(T_m, axis=0)
@@ -1655,11 +1767,11 @@ class PAHModel:
 
         bounds_lo = np.array(
             bounds_lo_alpha + list(np.zeros(n_ratios)) +
-            list(np.zeros(n_sil)) + list(np.full(n_base, -10.0))
+            list(np.zeros(n_sil)) + bounds_lo_base
         )
         bounds_hi = np.array(
             bounds_hi_alpha + list(np.full(n_ratios, 5.0)) +
-            list(np.full(n_sil, 2.0)) + list(np.full(n_base, 10.0))
+            list(np.full(n_sil, 2.0)) + bounds_hi_base
         )
 
         # ── Optimize ───────────────────────────────────────────────
@@ -1699,11 +1811,17 @@ class PAHModel:
         model_per_bin = {}
         for m, (label, z_m, flux_m, w_m, ctr) in enumerate(bins_data):
             T_m = _T_for(z_m)
-            bl_m = 10 ** (
-                baseline_opt[m, 1]
-                + baseline_opt[m, 0] * np.log10(24.0 / (1.0 + z_m))
-            )
-            mdl_m = _pred(alpha_opt[m], ratios_opt, baseline_opt[m], z_m, T_m, tau_sil_opt)
+            if baseline_method == "shared_slope":
+                logA_m_opt = float(baseline_opt[m])
+                bl_m = 10 ** (logA_m_opt + gamma_fixed * np.log10(24.0 / (1.0 + z_m)))
+                bcoeffs_m = logA_m_opt
+            else:
+                bl_m = 10 ** (
+                    baseline_opt[m, 1]
+                    + baseline_opt[m, 0] * np.log10(24.0 / (1.0 + z_m))
+                )
+                bcoeffs_m = baseline_opt[m]
+            mdl_m = _pred(alpha_opt[m], ratios_opt, bcoeffs_m, z_m, T_m, tau_sil_opt)
             ferr_m = np.where(w_m > 0, 1.0 / w_m, np.median(flux_m) * 0.03)
             model_per_bin[label] = {
                 "z": z_m,
@@ -1748,7 +1866,13 @@ class PAHModel:
             "beta_err": beta_err,
             "x_mean": x_mean,
             "baseline_coeffs": baseline_opt,
-            "baseline_err": perr[n_alpha + n_ratios + n_sil :].reshape(M, 2),
+            "baseline_err": (
+                perr[n_alpha + n_ratios + n_sil:]
+                if baseline_method == "shared_slope"
+                else perr[n_alpha + n_ratios + n_sil:].reshape(M, 2)
+            ),
+            "gamma": gamma_fixed,
+            "baseline_method": baseline_method,
             "model_per_bin": model_per_bin,
             "chi2_red": chi2_red,
             "success": opt.success,
