@@ -138,7 +138,10 @@ bins = [0.50, 0.6125, 0.7625, 0.9125, 1.0625, 1.2125, 1.3625, 1.5125, 1.6625, 1.
 id = "lp_mass_med"                  # Column name for stellar mass
 #bins = [8.5, 10.4, 10.7, 12]
 #bins = [8.7, 10.6, 10.9, 11.7]
-bins = [8.5, 10.2, 10.6, 11, 12.0]
+#bins = [8.5, 10.2, 10.6, 11, 12.0]
+bins = [9.0, 10.0, 10.5, 10.8, 11.1, 12.0]   # bin 0 = low-mass nuisance layer
+#bins = [10.0, 10.5, 10.8, 11.1, 12.0]   # bin 0 = low-mass nuisance layer
+#bins = [8.5, 10.2, 10.5, 10.8, 11.1, 12.0]
 
 # Map configurations - each section defines a new map
 [maps.mips_24]
