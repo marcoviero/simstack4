@@ -385,7 +385,7 @@ class PAHSpectrumModel:
 
     # -- kernel/whitening preparation ------------------------------------
 
-    def _prepare(self, df, cov, scheme, dndz, sigma_z0, f_cat):
+    def _prepare(self, df, cov, scheme, dndz, sigma_z0, f_cat, baseline_col=None):
         """Build whitened per-property-bin data and kernel structures."""
         from .pah_dither import compute_pz_matrix, make_dndz
 
@@ -414,8 +414,7 @@ class PAHSpectrumModel:
         # the global arrays directly.
         bt = scheme.bin_table()
         scheme_lookup = {
-            (int(row.run_id), round(float(row.z_lo), 8)): i
-            for i, row in bt.iterrows()
+            (int(row.run_id), round(float(row.z_lo), 8)): i for i, row in bt.iterrows()
         }
 
         prop_ids = sorted(df["prop_bin_id"].unique()) if "prop_bin_id" in df else [0]
@@ -426,10 +425,14 @@ class PAHSpectrumModel:
             ).sort_values(["run_id", "z_lo"])
 
             # Map each sub row to its scheme row index; drop any that don't match.
-            sidx = np.array([
-                scheme_lookup.get((int(r["run_id"]), round(float(r["z_lo"]), 8)), -1)
-                for _, r in sub.iterrows()
-            ])
+            sidx = np.array(
+                [
+                    scheme_lookup.get(
+                        (int(r["run_id"]), round(float(r["z_lo"]), 8)), -1
+                    )
+                    for _, r in sub.iterrows()
+                ]
+            )
             valid = sidx >= 0
             if not valid.all():
                 sub = sub.iloc[valid].reset_index(drop=True)
@@ -470,10 +473,20 @@ class PAHSpectrumModel:
                     else self.pivot_log_sigma_sfr
                 ),
             }
+            # Per-row band errors and (optionally) the cold-baseline column, kept
+            # aligned with K_m for the shared-ratio fit (fit_shared).
+            Ferr = sub[[f"{b}_err" for b in self.bands]].to_numpy()
+            f_cold = (
+                sub[baseline_col].to_numpy()
+                if (baseline_col is not None and baseline_col in sub.columns)
+                else None
+            )
             bins.append(
                 {
                     "m": m,
                     "F": F,
+                    "Ferr": Ferr,
+                    "f_cold": f_cold,
                     "mask": mask,
                     "Fw": Fw,
                     "Kw": Kw,
@@ -545,7 +558,9 @@ class PAHSpectrumModel:
                     # (e.g. MIPS 70 null test at z<0.8 probes rest >38 µm, no PAH).
                     # Pseudoinverse: unconstrained amplitudes map to zero with zero
                     # formal error — caller should treat SNR=nan as "not constrained".
-                    theta_cov = np.linalg.pinv(H, rcond=1e-8 * max(np.max(np.abs(H)), 1.0))
+                    theta_cov = np.linalg.pinv(
+                        H, rcond=1e-8 * max(np.max(np.abs(H)), 1.0)
+                    )
                 theta = theta_cov @ (Xw.T @ b["Fw"])
                 resid = b["Fw"] - Xw @ theta
                 chi2 = float(resid @ resid)
@@ -632,6 +647,174 @@ class PAHSpectrumModel:
             labels=self._labels(),
             per_bin=per_bin,
         )
+
+    # -- shared-ratio fit against a cold-greybody baseline ----------------
+
+    def fit_shared(
+        self,
+        df,
+        *,
+        baseline_col="f24_cold",
+        band=None,
+        cov=None,
+        scheme=None,
+        dndz=None,
+        sigma_z0=None,
+        f_cat=None,
+        smooth_baseline=False,
+        n_iter=200,
+        tol=1e-7,
+    ):
+        """Shared-ratio PAH fit against a cold-greybody baseline.
+
+        Sibling of :meth:`fit_lstsq`. Instead of a warm-MBB continuum with free
+        per-group amplitudes, the continuum is the cold-greybody Wien tail
+        supplied per row in ``baseline_col`` (scaled by a free per-bin ``C_m``),
+        and the feature groups share one global ratio vector ``r`` (``r_0 ≡ 1``)
+        with a single per-bin amplitude ``alpha_m``. Model per property bin m,
+        point i::
+
+            f_obs = C_m · (f_cold / median f_cold) + alpha_m · Σ_g r_g · K_g(z)
+
+        Solved by alternating WLS (per-bin ``[C_m, alpha_m]`` ↔ global ``r``),
+        which breaks the per-group degeneracy of the free-amplitude fit on
+        source-correlated MIPS tomography. Reports ``A = alpha/C_m``, the
+        PAH/continuum amplitude (NOT divided by ``median f_cold``).
+
+        With ``smooth_baseline=True`` the baseline is first stabilized via
+        :func:`smoothed_ms_baseline` (needs ``T_dust``/``log_amp``/``beta``).
+
+        Returns a dict: ``alpha, alpha_err, C_m, C_m_err, r, r_err, A_pah,
+        A_pah_err, A, labels, chi2, dof, chi2_red, n_iter, valid``.
+        """
+        if smooth_baseline:
+            df = smoothed_ms_baseline(df, baseline_col=baseline_col)
+        band = self.bands[0] if band is None else band
+        bidx = list(self.bands).index(band)
+        prep = self._prepare(
+            df, cov, scheme, dndz, sigma_z0, f_cat, baseline_col=baseline_col
+        )
+        bins = prep["bins"]
+        G = self.n_groups
+
+        data = []
+        for b in bins:
+            if b["f_cold"] is None:
+                raise ValueError(f"baseline column {baseline_col!r} not in df")
+            f_obs = b["F"][:, bidx]
+            f_err = b["Ferr"][:, bidx]
+            f_cold = b["f_cold"]
+            K_g = b["K"][:, bidx, :]  # (n_rows, G) photo-z-smeared feature kernel
+            ok = (
+                np.isfinite(f_obs)
+                & np.isfinite(f_err)
+                & np.isfinite(f_cold)
+                & (f_err > 0)
+                & (f_cold > 0)
+                & (f_obs > 0)
+            )
+            if ok.sum() < 3:
+                data.append(None)
+                continue
+            med = float(np.median(f_cold[ok]))
+            data.append(
+                {
+                    "f_obs": f_obs[ok],
+                    "w": 1.0 / f_err[ok] ** 2,
+                    "f_cold_norm": f_cold[ok] / med,
+                    "K": K_g[ok],
+                }
+            )
+        valid = [i for i, d in enumerate(data) if d is not None]
+        n_m = len(bins)
+        if not valid:
+            return None
+
+        def _wls(D, y, w):
+            H = D.T @ (w[:, None] * D)
+            rhs = D.T @ (w * y)
+            try:
+                return np.linalg.solve(H, rhs), np.linalg.pinv(H)
+            except np.linalg.LinAlgError:
+                Hi = np.linalg.pinv(H)
+                return Hi @ rhs, Hi
+
+        r = np.ones(G)
+        C_m = np.full(n_m, np.nan)
+        alpha = np.full(n_m, np.nan)
+        n_done = 0
+        while n_done < n_iter:
+            n_done += 1
+            r_prev = r.copy()
+            for i in valid:
+                d = data[i]
+                D = np.column_stack([d["f_cold_norm"], d["K"] @ r])
+                theta, _ = _wls(D, d["f_obs"], d["w"])
+                C_m[i], alpha[i] = float(theta[0]), float(theta[1])
+            if G > 1:
+                Ms, ys, ws = [], [], []
+                for i in valid:
+                    d = data[i]
+                    y = d["f_obs"] - C_m[i] * d["f_cold_norm"] - alpha[i] * d["K"][:, 0]
+                    Ms.append(alpha[i] * d["K"][:, 1:])
+                    ys.append(y)
+                    ws.append(d["w"])
+                M, y, w = np.vstack(Ms), np.concatenate(ys), np.concatenate(ws)
+                r[1:], _ = _wls(M, y, w)
+                r[0] = 1.0
+            if np.max(np.abs(r - r_prev)) < tol:
+                break
+
+        alpha_err = np.full(n_m, np.nan)
+        C_m_err = np.full(n_m, np.nan)
+        A_pah = np.full(n_m, np.nan)
+        A_pah_err = np.full(n_m, np.nan)
+        chi2 = 0.0
+        ndata = 0
+        for i in valid:
+            d = data[i]
+            D = np.column_stack([d["f_cold_norm"], d["K"] @ r])
+            _, cov_i = _wls(D, d["f_obs"], d["w"])
+            C_m_err[i] = np.sqrt(max(cov_i[0, 0], 0.0))
+            alpha_err[i] = np.sqrt(max(cov_i[1, 1], 0.0))
+            if C_m[i] != 0:
+                A_pah[i] = alpha[i] / C_m[i]
+                g = np.array([-alpha[i] / C_m[i] ** 2, 1.0 / C_m[i]])
+                A_pah_err[i] = np.sqrt(max(g @ cov_i @ g, 0.0))
+            resid = d["f_obs"] - D @ np.array([C_m[i], alpha[i]])
+            chi2 += float(np.sum(resid**2 * d["w"]))
+            ndata += len(d["f_obs"])
+        r_err = np.zeros(G)
+        if G > 1:
+            Ms, ws = [], []
+            for i in valid:
+                d = data[i]
+                Ms.append(alpha[i] * d["K"][:, 1:])
+                ws.append(d["w"])
+            M, w = np.vstack(Ms), np.concatenate(ws)
+            cov_r = np.linalg.pinv(M.T @ (w[:, None] * M))
+            r_err[1:] = np.sqrt(np.maximum(np.diag(cov_r), 0.0))
+
+        dof = max(1, ndata - (2 * len(valid) + (G - 1)))
+        # PAH/continuum ratio per (bin, group): A[m,g] = A_pah[m] * r[g]
+        A = A_pah[:, None] * r[None, :]
+        return {
+            "alpha": alpha,
+            "alpha_err": alpha_err,
+            "C_m": C_m,
+            "C_m_err": C_m_err,
+            "r": r,
+            "r_err": r_err,
+            "A_pah": A_pah,
+            "A_pah_err": A_pah_err,
+            "A": A,
+            "labels": self._labels(),
+            "chi2": chi2,
+            "dof": dof,
+            "chi2_red": chi2 / dof,
+            "n_iter": n_done,
+            "valid": valid,
+        }
 
     # -- pooled hierarchical MCMC -----------------------------------------
 
@@ -825,10 +1008,14 @@ class PAHSpectrumModel:
                     (int(r.run_id), round(float(r.z_lo), 8)): True
                     for r in bt.itertuples()
                 }
-                vmask = np.array([
-                    slookup.get((int(r["run_id"]), round(float(r["z_lo"]), 8)), False)
-                    for _, r in sub.iterrows()
-                ])
+                vmask = np.array(
+                    [
+                        slookup.get(
+                            (int(r["run_id"]), round(float(r["z_lo"]), 8)), False
+                        )
+                        for _, r in sub.iterrows()
+                    ]
+                )
                 sub = sub.iloc[vmask].reset_index(drop=True)
             C_m = result.C_per_bin[i]
             for bi, band in enumerate(self.bands):
@@ -861,3 +1048,117 @@ class PAHSpectrumModel:
                     )
                 )
         return pd.concat(rows, ignore_index=True).sort_values("lam_rest")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Smoothed main-sequence baseline helper (used by PAHSpectrumModel.fit_shared).
+#
+# On the Wien side f24_cold ∝ A·T^(3+β+α) ≈ A·T^6.8, so per-bin scatter in the
+# FIR-only greybody (T, logA) is hugely amplified into the baseline. Replacing
+# the per-bin params with smooth relations T(z,M*), logA(z,M*) fit to the
+# well-constrained (Tier A/B) bins removes that. PAH-free by construction (the
+# SEDs that produced T/logA exclude 24 µm).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _baseline_design(z, dM, quad):
+    """Design matrix for the baseline relation: columns [1, z, (z^2), dM]."""
+    cols = [np.ones_like(z), z]
+    if quad:
+        cols.append(z**2)
+    cols.append(dM)
+    return np.column_stack(cols)
+
+
+def _baseline_fit_bic(y, z, dM, allow_quad=True):
+    """OLS fit of y ~ (z[, z^2], dM); pick linear vs quadratic-in-z by BIC.
+
+    Returns (label, coef, predict_fn, bic).
+    """
+    n = len(y)
+    cands = [False, True] if (allow_quad and n >= 6) else [False]
+    best = None
+    for quad in cands:
+        X = _baseline_design(z, dM, quad)
+        if X.shape[1] >= n:
+            continue
+        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+        rss = float(np.sum((y - X @ coef) ** 2))
+        k = X.shape[1]
+        bic = n * np.log(max(rss, 1e-300) / n) + k * np.log(n)
+        if best is None or bic < best[0]:
+            best = (bic, "quadratic" if quad else "linear", coef, quad)
+    if best is None:
+        coef = np.array([float(np.mean(y)), 0.0, 0.0])
+        return "constant", coef, (lambda zz, dd: np.full_like(zz, coef[0])), np.inf
+    _, lbl, coef, quad = best
+    return lbl, coef, (lambda zz, dd: _baseline_design(zz, dd, quad) @ coef), best[0]
+
+
+def smoothed_ms_baseline(
+    df,
+    *,
+    mass_pivot=10.0,
+    t_clip=(15.0, 60.0),
+    tier_col="tier",
+    train_tiers=("A", "B"),
+    baseline_col="f24_cold",
+    band_um=24.0,
+    verbose=False,
+):
+    """Replace per-bin (T_dust, log_amp) with a smooth main-sequence baseline.
+
+    Fits ``T_dust(z, M*)`` and ``log_amp(z, M*)`` (BIC picks linear vs
+    quadratic in z) on the well-constrained (Tier A/B) bins, then recomputes
+    ``baseline_col`` for every row from the smoothed params via the greybody
+    Wien tail. Predictors are held flat outside the training box and T is
+    clipped to ``t_clip`` so the T^6.8 tail cannot run away. The original column
+    is preserved as ``{baseline_col}_raw``.
+
+    Required columns: ``z_mid``, ``log_M_star``, ``T_dust``, ``log_amp``,
+    ``beta`` (and optionally ``tier_col``).
+    """
+    from .greybody import Greybody  # lazy: greybody imports pah_model
+
+    out = df.copy()
+    if tier_col in out.columns:
+        tmask = out[tier_col].isin(train_tiers).to_numpy()
+    else:
+        tmask = np.ones(len(out), bool)
+    train = out[tmask & np.isfinite(out["T_dust"]) & np.isfinite(out["log_amp"])]
+    if len(train) < 4:
+        out[f"{baseline_col}_raw"] = out[baseline_col]
+        if verbose:
+            print("smoothed_ms_baseline: <4 training bins; baseline unchanged")
+        return out
+
+    zt = train["z_mid"].to_numpy()
+    dMt = train["log_M_star"].to_numpy() - mass_pivot
+    beta0 = float(np.nanmedian(train["beta"].to_numpy()))
+    lblT, _, predT, _ = _baseline_fit_bic(train["T_dust"].to_numpy(), zt, dMt)
+    lblA, _, predA, _ = _baseline_fit_bic(train["log_amp"].to_numpy(), zt, dMt)
+
+    zc = out["z_mid"].to_numpy()
+    dMc = out["log_M_star"].to_numpy() - mass_pivot
+    zcp = np.clip(zc, float(zt.min()), float(zt.max()))
+    dcp = np.clip(dMc, float(dMt.min()), float(dMt.max()))
+    T_sm = np.clip(predT(zcp, dcp), t_clip[0], t_clip[1])
+    A_sm = predA(zcp, dcp)
+
+    gb = Greybody()
+    f_sm = np.array(
+        [
+            float(gb.greybody_model(np.array([band_um / (1.0 + z)]), a, t, beta0)[0])
+            for z, a, t in zip(zc, A_sm, T_sm, strict=False)
+        ]
+    )
+    out["T_dust_smooth"] = T_sm
+    out["log_amp_smooth"] = A_sm
+    out[f"{baseline_col}_raw"] = out[baseline_col]
+    out[baseline_col] = f_sm
+    if verbose:
+        print(
+            f"smoothed_ms_baseline: T_dust({lblT}), log_amp({lblA}), beta={beta0:.2f}; "
+            f"{len(train)}/{len(out)} training bins"
+        )
+    return out

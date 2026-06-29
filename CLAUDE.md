@@ -81,7 +81,7 @@ Both record `std((x_A − x_B) / 2)` across iterations — the **half-difference
 | `analyze_pah.py` | `combine_pah_spectra`: assembles f₂₄/f_peak tomographic spectrum from multiple stacking wrappers; `fit_pah_model` (empirical, diagnostic only); `staggered_pah_zbins`, `adaptive_pah_zbins` |
 | `pah_bandpass.py` | MIPS 24 + MIPS 70 bandpass response curves (`get_bandpass`); 24 μm arrays stay in sync with `pah_model` frozen arrays (guarded by test) |
 | `pah_dither.py` | `DitherScheme` (uniform/adaptive, `to_toml_bins()`), `TruthSpectrum`, `compute_pz_matrix`, `NoiseModel` + shared-source covariance, `simulate_dithered_fluxes`, `fisher_for_scheme`, `sweep_strategies` |
-| `pah_spectrum.py` | `PAHSpectrumModel`: theoretical GLS deconvolution via design matrix + shared-source covariance; `fit_lstsq`, `fit_mcmc`, `pseudo_spectrum`. Distinct from `PAHModel` — see PAH Tomographic Stacking section below. |
+| `pah_spectrum.py` | `PAHSpectrumModel`: theoretical GLS deconvolution via design matrix + shared-source covariance; `fit_lstsq` (warm-MBB continuum + free per-group amplitudes), `fit_shared` (cold-greybody baseline + shared feature ratios `r_g` + per-bin `alpha_m`, alternating WLS), `fit_mcmc`, `pseudo_spectrum`; `smoothed_ms_baseline` helper (Wien-tail baseline stabilization). Distinct from `PAHModel` — see PAH Tomographic Stacking section below. |
 | `populations.py` | `PopulationManager`: arbitrary-dimension binning |
 | `config.py` | TOML → dataclasses: `SplitType`, `BootstrapConfig`, `BinConfig`, `BeamConfig` |
 | `sky_maps.py` | FITS loading, WCS, PSF convolution, `MapData` |
@@ -164,9 +164,12 @@ flux_m(z) = baseline_m(z) × [1 + α_m · Σ_g r_g · T_g(z)] × exp(−τ_sil �
 
 PAH/FIR amplitude decreases with M* at −0.10 dex/dex (PAH deficit). No silicate absorption detected (τ_sil consistent with zero). 70 μm null test passes. See `docs/pah-forward-model-2-summary.md`.
 
-**Two distinct PAH fitting methods** (don't confuse them):
-- `PAHModel.fit_forward_model_multibin` (`pah_model.py`) — practical joint fitter applied to real data; operates directly on f₂₄/f_peak vs z DataFrame
-- `PAHSpectrumModel` (`pah_spectrum.py`) — theoretical GLS deconvolution with full photo-z kernel, Fisher/CRLB strategy evaluation; used for simulation and scheme design
+**Three PAH fitting paths** (don't confuse them):
+- `PAHModel.fit_forward_model_multibin` (`pah_model.py`) — practical joint fitter on **f₂₄/f_peak** vs z; shared group ratios `r_g`, `independent`/`shared_slope` (empirical λ-power-law) baseline. f_peak-normalized.
+- `PAHSpectrumModel.fit_lstsq` (`pah_spectrum.py`) — GLS deconvolution on **absolute flux** with a warm-MBB continuum and **free** per-group amplitudes; full photo-z kernel, Fisher/CRLB strategy evaluation.
+- `PAHSpectrumModel.fit_shared` (`pah_spectrum.py`) — **physical-baseline** path: absolute flux, **cold-greybody** continuum (`C_m·f_cold`, optionally `smoothed_ms_baseline`-stabilized) + **shared** ratios `r_g` + per-bin `alpha_m`; reports `A = alpha/C_m` (PAH/continuum, no stray `median(f_cold)` factor). This is the 2026-06 physical-baseline notebook method ported into the library.
+
+**Physical-baseline error budget**: the formal instrumental+confusion covariance omits cosmic/sample variance and a diagonal χ² over source-correlated tomographic points over-counts DOF (χ²_red≈5–9). Use the **disjoint-fold ensemble** (`split{N}of3`): refit each fold with `fit_shared` and take the scatter as the error (jackknife) — it both captures cosmic variance and sidesteps the correlated χ². The `√χ²` rescale is over-conservative; do not use it.
 
 **Inflation factors**: 24 μm is always inflated to 10000 (excluded from SED fit) during PAH runs so f_peak is determined by FIR bands only. 70 μm uses redshift-dependent inflation `{(0.0, 0.8): 1.0, (0.8, 99.0): 10000}` — included as FIR anchor at z < 0.8, excluded above.
 
@@ -195,5 +198,6 @@ Tests use synthetic data with known injected fluxes — no real FITS or catalogs
 | `test_dust_evolution_recovery.py` | 14 | DustEvolutionModel: parameter recovery, MIPS dropout, warm-fraction ordering |
 | `test_pah_dither_strategy.py` | 28 | `DitherScheme`, `NoiseModel`, Fisher/CRLB bounds, shared-source covariance, photo-z kernel |
 | `test_pah_spectrum_recovery.py` | 25 | `PAHSpectrumModel` math, GLS conditioning, band leverage, MCMC recovery |
+| `test_pah_shared_baseline.py` | 4 | `fit_shared` injection-recovery (shared ratios + per-bin α), `smoothed_ms_baseline` scatter reduction |
 | `test_pah_bayesian_recovery.py` | 11 | Bayesian forward model parameter recovery |
 | `test_pah_endtoend.py` | 1 | `@pytest.mark.slow` smoke: map-level spot check through real stacking pipeline |
