@@ -45,16 +45,18 @@ import pandas as pd
 from numpy.typing import NDArray
 from scipy.special import ndtr
 
-from .dust_evolution import _greybody_nu
+from .dust_evolution import _greybody_nu, main_sequence_ssfr
 from .pah_spectrum import (
     DEFAULT_BANDS,
     DEFAULT_FEATURES,
     DEFAULT_GROUPS,
     PAHFeature,
     build_design_matrix,
+    feature_band_curves,
     get_bandpass,
     group_weights,
     solve_linear_amplitudes,
+    warm_band_curve,
     warm_continuum_kernel,
 )
 
@@ -191,6 +193,18 @@ class TruthSpectrum:
 
         log10 A_g,m = log10(amp0_g) + beta_mass·(log M* − pivot_M)
                                     + beta_sigma·(log σ_SFR − pivot_σ)
+
+    Within-bin redshift evolution (branch 5) is injected through specific SFR.
+    As the MIPS bandpass sweeps rest wavelength with z, the sources contributing
+    at high z (short λ_rest) sit at higher sSFR than those at low z, so both the
+    overall amplitude and the inter-group ratios drift.  With sSFR proxy
+    ŝ(z, M*) = main_sequence_ssfr(z, M*) − s_pivot:
+
+        log10 A_g(z) = log10 A_g,m + (eta_ssfr_amp + eta_ssfr_ratio_g) · ŝ(z, M*)
+
+    eta_ssfr_amp scales every group (the amplitude evolution η_A); the per-group
+    eta_ssfr_ratio adds ratio evolution η_g with the reference group g=0 held at
+    0.  All-zero η reproduces the static, z-independent spectrum exactly.
     """
 
     features: list[PAHFeature] = field(default_factory=lambda: list(DEFAULT_FEATURES))
@@ -207,10 +221,49 @@ class TruthSpectrum:
     T_warm: float = 60.0
     beta_warm: float = 1.5
     continuum_amp: float = 1.0  # C: overall normalization (mJy at MBB peak)
+    # sSFR-driven within-bin evolution (branch 5)
+    eta_ssfr_amp: float = 0.0  # η_A: amplitude slope vs centered log sSFR
+    eta_ssfr_ratio: NDArray[np.float64] | None = None  # η_g per group (g=0 → 0)
+    s_pivot: float = -9.0  # reference centered log10(sSFR/yr^-1)
+    ssfr_relation: str = "speagle2014"
 
-    def amplitudes(self, prop_bin: dict[str, float] | None = None) -> NDArray:
-        """Feature-group amplitudes A_g for one property bin."""
-        log_a = np.log10(np.asarray(self.amp0, dtype=float))
+    @property
+    def _evolves(self) -> bool:
+        return self.eta_ssfr_amp != 0.0 or (
+            self.eta_ssfr_ratio is not None and np.any(self.eta_ssfr_ratio)
+        )
+
+    def _eta_ratio_full(self) -> NDArray[np.float64]:
+        """Per-group ratio slope η_g, length = n_groups, reference g=0 forced 0."""
+        n_groups = len(self.feature_groups)
+        if self.eta_ssfr_ratio is None:
+            return np.zeros(n_groups)
+        er = np.asarray(self.eta_ssfr_ratio, dtype=float)
+        if len(er) == n_groups:
+            out = er.copy()
+        elif len(er) == n_groups - 1:
+            out = np.concatenate([[0.0], er])
+        else:
+            raise ValueError(
+                f"eta_ssfr_ratio must have length {n_groups} or {n_groups - 1}, "
+                f"got {len(er)}"
+            )
+        out[0] = 0.0  # reference group ratio does not evolve
+        return out
+
+    def amplitudes(
+        self,
+        prop_bin: dict[str, float] | None = None,
+        z: NDArray[np.float64] | float | None = None,
+    ) -> NDArray:
+        """Feature-group amplitudes A_g for one property bin.
+
+        With ``z=None`` returns the static (G,) amplitudes.  With ``z`` given and
+        nonzero evolution, returns (n_z, G) amplitudes modulated by the sSFR(z,
+        M*) proxy — the within-bin redshift evolution.
+        """
+        with np.errstate(divide="ignore"):  # amp0 may contain 0 (continuum-only)
+            log_a = np.log10(np.asarray(self.amp0, dtype=float))
         if prop_bin is not None:
             log_a = log_a + self.beta_mass * (
                 prop_bin.get("log_M_star", self.pivot_log_mass) - self.pivot_log_mass
@@ -219,19 +272,39 @@ class TruthSpectrum:
                 prop_bin.get("log_sigma_sfr", self.pivot_log_sigma_sfr)
                 - self.pivot_log_sigma_sfr
             )
-        return 10.0**log_a
+        if z is None:
+            return 10.0**log_a
+        zc = np.atleast_1d(np.asarray(z, dtype=float))
+        if not self._evolves:
+            return np.tile(10.0**log_a, (len(zc), 1))
+        log_mstar = (
+            self.pivot_log_mass
+            if prop_bin is None
+            else prop_bin.get("log_M_star", self.pivot_log_mass)
+        )
+        shat = main_sequence_ssfr(zc, log_mstar, self.ssfr_relation) - self.s_pivot
+        eta_g = self.eta_ssfr_amp + self._eta_ratio_full()  # (G,)
+        log_a_z = log_a[None, :] + np.outer(shat, eta_g)  # (n_z, G)
+        return 10.0**log_a_z
 
     def rest_spectrum(
         self,
         lam_um: NDArray[np.float64],
         prop_bin: dict[str, float] | None = None,
+        z: NDArray[np.float64] | None = None,
     ) -> NDArray[np.float64]:
-        """f_ν at rest wavelengths: continuum_amp · (MBB + Σ_g A_g · features)."""
+        """f_ν at rest wavelengths: continuum_amp · (MBB + Σ_g A_g · features).
+
+        If ``z`` is supplied (one redshift per row of ``lam_um``), the feature
+        amplitudes evolve with sSFR(z, M*); otherwise they are constant.
+        """
         lam = np.asarray(lam_um, dtype=float)
         spec = _greybody_nu(_c_um_hz / lam, self.T_warm, self.beta_warm)
-        amps = self.amplitudes(prop_bin)
+        amps = self.amplitudes(prop_bin, z=z)
         weights = group_weights(self.features, self.feature_groups)
-        for a_g, grp, w in zip(amps, self.feature_groups, weights, strict=True):
+        for g, (grp, w) in enumerate(zip(self.feature_groups, weights, strict=True)):
+            # a_g is a scalar (z=None) or a per-row column (n_z, 1).
+            a_g = amps[g] if z is None else amps[:, g][:, None]
             for j, wj in zip(grp, w, strict=True):
                 center, _, fwhm = self.features[j]
                 sigma = fwhm / 2.355
@@ -247,11 +320,15 @@ class TruthSpectrum:
         """In-band flux vs z by direct integration of the full rest spectrum.
 
         Independent of the pah_spectrum kernel decomposition — Tier-1
-        tests cross-check the two paths against each other.
+        tests cross-check the two paths against each other.  When the truth
+        carries sSFR evolution, each z evaluates its own modulated spectrum.
         """
         bp = get_bandpass(band)
-        lam_rest = bp.lam_fine[None, :] / (1.0 + np.asarray(z_grid)[:, None])
-        spec = self.rest_spectrum(lam_rest, prop_bin)
+        z_arr = np.asarray(z_grid, dtype=float)
+        lam_rest = bp.lam_fine[None, :] / (1.0 + z_arr[:, None])
+        spec = self.rest_spectrum(
+            lam_rest, prop_bin, z=z_arr if self._evolves else None
+        )
         return np.trapezoid(spec * bp.resp_fine, bp.lam_fine, axis=1) / bp.norm
 
     def band_flux(
@@ -705,6 +782,302 @@ def fisher_for_scheme(
         n_eff=n_eff,
         labels=labels,
     )
+
+
+@dataclass
+class FisherEvolutionResult:
+    """Marginal CRLB on the sSFR-evolution slopes for a dither scheme."""
+
+    crlb_eta_amp: float  # 1σ on the amplitude slope η_A
+    crlb_eta_ratio: NDArray[np.float64]  # (G,) 1σ on η_g; index 0 is nan (ref)
+    cond: float  # condition number of the whitened design
+    bands: tuple[str, ...]
+    param_names: list[str]
+    param_cov: NDArray[np.float64]  # full marginal parameter covariance
+
+
+def fisher_evolution(
+    scheme: DitherScheme,
+    truth: TruthSpectrum | None = None,
+    noise: NoiseModel | None = None,
+    *,
+    bands: tuple[str, ...] | None = None,
+    dndz: Callable | None = None,
+    sigma_z0: float = 0.01,
+    f_cat: float = 0.0,
+    n_total: int = 200_000,
+    ssfr_relation: str = "speagle2014",
+) -> FisherEvolutionResult:
+    """CRLB on the within-bin sSFR-evolution slopes (η_A, η_g) for a scheme.
+
+    Linearizes the *evolving* stacked model about ``truth`` and inverts the
+    Fisher matrix, treating the per-bin continuum/amplitude ``[C_m, alpha_m]``
+    and the shared baseline ratios ``r_g0`` as profiled nuisance parameters.
+    The marginal bound on the ratio slopes ``η_g`` is the principled measure of
+    whether a band set can separate amplitude evolution from ratio evolution:
+    compare ``bands=("MIPS_24",)`` against ``("MIPS_24", "MIPS_70")`` to see the
+    70 µm anchor break the degeneracy (its CRLB on η_g collapses).
+
+    Mirrors :func:`fisher_for_scheme` (shared-source covariance, eigen-
+    regularized inverse) but the model is nonlinear in the slopes, so the
+    design is built by finite differences of the kernel-level model.
+    """
+    truth = truth or TruthSpectrum()
+    noise = noise or NoiseModel()
+    if dndz is None:
+        dndz = make_dndz("cosmos_like")
+    bands = tuple(scheme.bands if bands is None else bands)
+    groups = truth.feature_groups
+    G = len(groups)
+    M = len(scheme.property_bins)
+    n_per_prop = n_total // M
+
+    pz, z_grid = compute_pz_matrix(scheme, dndz, sigma_z0=sigma_z0, f_cat=f_cat)
+    n_i = pz.shape[0]
+    # z-grid kernels per band and the per-bin centered sSFR proxy.
+    Tg = {b: feature_band_curves(z_grid, b, truth.features, groups) for b in bands}
+    Wb = {b: warm_band_curve(z_grid, b, truth.T_warm, truth.beta_warm) for b in bands}
+    shat = {
+        m: main_sequence_ssfr(
+            z_grid, p.get("log_M_star", truth.pivot_log_mass), ssfr_relation
+        )
+        - truth.s_pivot
+        for m, p in enumerate(scheme.property_bins)
+    }
+
+    # Truth parameters in the evolving model's variables.
+    A_m = [truth.amplitudes(p) for p in scheme.property_bins]  # (G,) per bin
+    C0 = np.full(M, truth.continuum_amp)
+    alpha0 = np.array([a[0] for a in A_m])  # alpha_m = group-0 amplitude
+    r0 = np.asarray(truth.amp0, dtype=float)
+    r0 = r0 / r0[0]  # r_g0 = amp0_g / amp0_0 (shared across bins)
+    eta_amp0 = float(truth.eta_ssfr_amp)
+    eta_ratio0 = truth._eta_ratio_full()  # (G,), [0]=0
+
+    # Parameter packing: [C_m, alpha_m, r_1..r_{G-1}, eta_amp, eta_1..eta_{G-1}].
+    def pack(C, alpha, r, eta_amp, eta_ratio):
+        return np.concatenate([C, alpha, r[1:], [eta_amp], eta_ratio[1:]])
+
+    def unpack(p):
+        C = p[:M]
+        alpha = p[M : 2 * M]
+        k = 2 * M
+        r = np.ones(G)
+        r[1:] = p[k : k + (G - 1)]
+        k += G - 1
+        eta_amp = p[k]
+        k += 1
+        eta_ratio = np.zeros(G)
+        eta_ratio[1:] = p[k : k + (G - 1)]
+        return C, alpha, r, eta_amp, eta_ratio
+
+    def model_bin(m, C, alpha, r, eta_amp, eta_ratio):
+        e = eta_amp + eta_ratio  # (G,) per-group exponent
+        out = np.zeros((n_i, len(bands)))
+        for bi, b in enumerate(bands):
+            feat = np.zeros(n_i)
+            for g in range(G):
+                mod = 10.0 ** (e[g] * shat[m])
+                feat += r[g] * (pz @ (mod * Tg[b][:, g]))
+            out[:, bi] = C[m] * (pz @ Wb[b]) + alpha[m] * feat
+        return out.ravel()  # (n_i*n_bands,) ordered (i, band)
+
+    p0 = pack(C0, alpha0, r0, eta_amp0, eta_ratio0)
+    n_par = len(p0)
+
+    # Shared-source covariance (same occupancy for every property bin).
+    frac = shared_fraction_matrix(scheme, dndz)
+    n_eff = np.diag(frac) * n_per_prop
+    shared = frac * n_per_prop
+    cov_bin = noise.covariance(n_eff, shared, bands)
+    jitter = 1e-10 * np.mean(np.diag(cov_bin)) * np.eye(len(cov_bin))
+    L = np.linalg.cholesky(cov_bin + jitter)
+
+    # Finite-difference Jacobian per bin and accumulate Fisher = Σ_m JᵀΣ⁻¹J.
+    fisher = np.zeros((n_par, n_par))
+    cond_max = 0.0
+    for m in range(M):
+        J = np.zeros((n_i * len(bands), n_par))
+        for j in range(n_par):
+            h = 1e-4 * max(abs(p0[j]), 1.0)
+            pp = p0.copy()
+            pp[j] += h
+            pm = p0.copy()
+            pm[j] -= h
+            J[:, j] = (model_bin(m, *unpack(pp)) - model_bin(m, *unpack(pm))) / (
+                2.0 * h
+            )
+        Jw = np.linalg.solve(L, J)
+        fisher += Jw.T @ Jw
+        cond_max = max(cond_max, float(np.linalg.cond(Jw)))
+
+    f_eval, f_evec = np.linalg.eigh(fisher)
+    floor = 1e-12 * f_eval.max()
+    param_cov = f_evec @ np.diag(1.0 / np.clip(f_eval, floor, None)) @ f_evec.T
+    sig = np.sqrt(np.diag(param_cov))
+
+    names = (
+        [f"C_{m}" for m in range(M)]
+        + [f"alpha_{m}" for m in range(M)]
+        + [f"r_{g}" for g in range(1, G)]
+        + ["eta_amp"]
+        + [f"eta_{g}" for g in range(1, G)]
+    )
+    idx_eta_amp = 2 * M + (G - 1)
+    crlb_eta_ratio = np.full(G, np.nan)
+    crlb_eta_ratio[1:] = sig[idx_eta_amp + 1 : idx_eta_amp + G]
+    return FisherEvolutionResult(
+        crlb_eta_amp=float(sig[idx_eta_amp]),
+        crlb_eta_ratio=crlb_eta_ratio,
+        cond=cond_max,
+        bands=bands,
+        param_names=names,
+        param_cov=param_cov,
+    )
+
+
+def evolution_recovery_sweep(
+    scheme: DitherScheme,
+    *,
+    eta_amp_grid: Sequence[float] = (0.0, -0.7),
+    noise_rel_grid: Sequence[float] = (0.1, 0.2, 0.35),
+    bands_list: Sequence[tuple[str, ...]] = (
+        ("MIPS_24",),
+        ("MIPS_24", "MIPS_70"),
+    ),
+    feature_groups: list[list[int]] | None = None,
+    eta_prior_sigma: float | None = None,
+    alpha: float | NDArray[np.float64] = 0.025,
+    continuum: float | NDArray[np.float64] = 0.04,
+    ratios: Sequence[float] | None = None,
+    ssfr_relation: str = "speagle2014",
+    n_seed: int = 20,
+    seed0: int = 1000,
+    rail_thresh: float = 2.5,
+) -> pd.DataFrame:
+    """Monte-Carlo recovery of the amplitude slope η_A for a dither scheme.
+
+    Answers "at this depth, can :meth:`PAHSpectrumModel.fit_evolving` actually
+    measure the within-bin sSFR evolution, and how big must η_A be to detect?".
+    For each (band set, injected η_A, per-point relative noise, prior) it injects
+    fluxes through the *model's own* kernel (self-consistent, so this isolates
+    identifiability from baseline misspecification), refits, and tabulates the
+    recovered-slope bias, scatter, the fraction of fits that rail to the bounds
+    (``|η_A| > rail_thresh``), and the median peak PAH/continuum amplitude (a
+    physicality check — a clean fit keeps it of order the injected value, a
+    runaway inflates it). 70 µm enters whenever a band set includes it.
+
+    Returns a tidy DataFrame, one row per (bands, eta_amp, noise_rel) — the
+    minimum detectable η_A is ≈ ``2 × eta_scatter`` at ``eta_true = 0``.
+    """
+    from .pah_spectrum import PAHSpectrumModel
+
+    feature_groups = (
+        [list(g) for g in DEFAULT_GROUPS] if feature_groups is None else feature_groups
+    )
+    G = len(feature_groups)
+    r_true = np.ones(G) if ratios is None else np.asarray(ratios, dtype=float)
+    M = len(scheme.property_bins)
+    alpha = np.broadcast_to(np.asarray(alpha, dtype=float), (M,))
+    continuum = np.broadcast_to(np.asarray(continuum, dtype=float), (M,))
+    base_names = {"MIPS_24": "f24_cold", "MIPS_70": "f70_cold"}
+    bt = scheme.bin_table()
+
+    def skeleton(bands):
+        rows = []
+        for m, p in enumerate(scheme.property_bins):
+            logM = p.get("log_M_star", 10.5)
+            for row in bt.itertuples():
+                rec = {
+                    "run_id": int(row.run_id),
+                    "z_lo": float(row.z_lo),
+                    "z_hi": float(row.z_hi),
+                    "z_mid": float(row.z_mid),
+                    "prop_bin_id": m,
+                    "log_M_star": float(logM),
+                    "log_sigma_sfr": 0.0,
+                }
+                for b in bands:
+                    rec[b] = 1.0
+                    rec[f"{b}_err"] = 1.0
+                rows.append(rec)
+        df = (
+            pd.DataFrame(rows)
+            .sort_values(["prop_bin_id", "run_id", "z_lo"])
+            .reset_index(drop=True)
+        )
+        for b in bands:
+            df[base_names[b]] = 0.04 / (1.0 + df["z_mid"]) ** 2
+        return df
+
+    out = []
+    for bands in bands_list:
+        model = PAHSpectrumModel(feature_groups=feature_groups, bands=tuple(bands))
+        bl = {b: base_names[b] for b in bands}
+        df0 = skeleton(bands)
+        for eta_true in eta_amp_grid:
+            for noise_rel in noise_rel_grid:
+                etas, max_a, chi2r = [], [], []
+                for s in range(n_seed):
+                    rng = np.random.default_rng(seed0 + s)
+                    df = df0.copy()
+                    prep = model._prepare(
+                        df, None, None, None, None, None, baseline_cols=bl
+                    )
+                    ls = [
+                        main_sequence_ssfr(
+                            np.asarray(b["z_mid"]),
+                            b["props"]["log_M_star"],
+                            ssfr_relation,
+                        )
+                        for b in prep["bins"]
+                    ]
+                    s_pivot = float(np.median(np.concatenate(ls)))
+                    for i, b in enumerate(prep["bins"]):
+                        sidx = df.index[df["prop_bin_id"] == b["m"]]
+                        shat = ls[i] - s_pivot
+                        for band in bands:
+                            bi = list(bands).index(band)
+                            kmod = (10.0 ** np.outer(shat, np.full(G, eta_true))) * b[
+                                "K"
+                            ][:, bi, :]
+                            fc = b["f_cold_by_band"][band]
+                            flux = continuum[i] * fc / float(np.median(fc)) + alpha[
+                                i
+                            ] * (kmod @ r_true)
+                            err = noise_rel * np.abs(flux) + 1e-6
+                            df.loc[sidx, band] = flux + rng.normal(0, err)
+                            df.loc[sidx, f"{band}_err"] = err
+                    res = model.fit_evolving(
+                        df,
+                        baseline_cols=bl,
+                        evolve_ratios=False,
+                        eta_prior_sigma=eta_prior_sigma,
+                    )
+                    if res is None:
+                        continue
+                    etas.append(res["eta_amp"])
+                    max_a.append(np.nanmax(res["A_pah"]))
+                    chi2r.append(res["chi2_red"])
+                etas = np.asarray(etas)
+                out.append(
+                    {
+                        "bands": "+".join(b.split("_")[-1] for b in bands),
+                        "eta_true": eta_true,
+                        "noise_rel": noise_rel,
+                        "prior": (
+                            "none" if not eta_prior_sigma else f"{eta_prior_sigma:g}"
+                        ),
+                        "eta_med": float(np.median(etas)),
+                        "eta_bias": float(np.median(etas) - eta_true),
+                        "eta_scatter": float(np.std(etas)),
+                        "rail_frac": float(np.mean(np.abs(etas) > rail_thresh)),
+                        "max_Apah": float(np.median(max_a)),
+                        "chi2_red": float(np.median(chi2r)),
+                        "n_fit": int(len(etas)),
+                    }
+                )
+    return pd.DataFrame(out)
 
 
 def sweep_strategies(

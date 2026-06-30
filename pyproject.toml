@@ -59,6 +59,7 @@ large-data = [
 [project.scripts]
 simstack4 = "simstack4.cli:main"
 prepare-cosmos-catalog = "simstack4.scripts.prepare_cosmos_catalog:main"
+prepare-cosmos2020-catalog = "simstack4.scripts.prepare_cosmos2020_catalog:main"
 
 [build-system]
 requires = ["hatchling"]

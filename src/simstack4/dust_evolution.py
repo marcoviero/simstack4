@@ -215,6 +215,53 @@ def cold_temperature(z: float, T_c0: float, b_z: float = 0.0) -> float:
     return T_c0 + b_z * z
 
 
+def main_sequence_ssfr(redshift, log_mstar, relation: str = "speagle2014"):
+    """Star-forming main-sequence specific SFR, log10(sSFR / yr^-1).
+
+    Maps a galaxy's ``(z, M*)`` onto an expected specific star-formation rate,
+    the ISRF proxy that sets the PAH amplitude and ionized/neutral band ratios.
+    Within a fixed stellar-mass bin sSFR climbs steeply with z, so this is the
+    physical "evolution axis" used by
+    :class:`~simstack4.pah_dither.TruthSpectrum` injection and as the per-point
+    fallback in :meth:`PAHSpectrumModel.fit_evolving`.  Companion to
+    :func:`warm_temperature` / :func:`cold_temperature`: those give dust
+    properties vs an ISRF proxy, this supplies the proxy from ``(z, M*)``.
+
+    Args:
+        redshift: Redshift(s).
+        log_mstar: log10(M* / M_sun), broadcast against ``redshift``.
+        relation: ``"speagle2014"`` (Speagle+2014, ApJ 214, 15; default) or
+            ``"schreiber2015"`` (Schreiber+2015, A&A 575, A74).
+
+    Returns:
+        log10(sSFR / yr^-1) = log10(SFR / M_sun yr^-1) - log10(M* / M_sun).
+    """
+    z = np.asarray(redshift, dtype=float)
+    logM = np.asarray(log_mstar, dtype=float)
+
+    if relation == "speagle2014":
+        # log SFR = (0.84 - 0.026 t) logM - (6.51 - 0.11 t), t = age(z) in Gyr.
+        from astropy import units as u
+        from astropy.cosmology import Planck18
+
+        t_gyr = Planck18.age(z).to(u.Gyr).value
+        log_sfr = (0.84 - 0.026 * t_gyr) * logM - (6.51 - 0.11 * t_gyr)
+    elif relation == "schreiber2015":
+        # m = log10(M*/1e9), r = log10(1+z); bent main sequence (their eq. 9).
+        m = logM - 9.0
+        r = np.log10(1.0 + z)
+        m0, a0, a1, m1, a2 = 0.5, 1.5, 0.3, 0.36, 2.5
+        bend = np.maximum(0.0, m - m1 - a2 * r)
+        log_sfr = m - m0 + a0 * r - a1 * bend**2
+    else:
+        raise ValueError(
+            f"unknown main-sequence relation {relation!r}; "
+            "use 'speagle2014' or 'schreiber2015'"
+        )
+
+    return log_sfr - logM
+
+
 # ---------------------------------------------------------------------------
 # Dataclasses for results
 # ---------------------------------------------------------------------------

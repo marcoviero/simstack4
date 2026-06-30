@@ -1,0 +1,157 @@
+# Simstack4 Configuration File
+# This replaces the INI format from simstack3 with more user-friendly TOML
+
+[binning]
+stack_all_z_at_once = true    # Stack all redshifts together (optimal but memory intensive)
+add_foreground = true         # Add foreground layer of all 1's
+crop_circles = true           # Draw circles around sources and flatten
+
+[error_estimator]
+write_simmaps = false         # Write simulated images at each wavelength
+randomize = false             # For null-testing: shuffle (x,y) when building layers
+
+[error_estimator.bootstrap]
+enabled = true                # Use bootstrap method for error estimation
+method="per_bin"             # "per_bin"
+iterations = 5            # Number of bootstrap iterations
+initial_seed = 1              # Seed for random shuffling (ensures consistency across bands)
+split_fraction = 0.5
+
+# Top-level simple settings
+cosmology = "Planck18"        # Options: "Planck15", "Planck18"
+
+[output]
+folder = "$PICKLESPATH/simstack/stacked_flux_densities"  # Environment variables supported
+shortname = "cosmos20"      # Name for output folder
+
+[catalog]
+path = "$CATSPATH/cosmos"     # Path to catalog directory
+file = "cosmos2020_PAH_split0of3.parquet"  # Catalog filename
+
+[catalog.astrometry]
+ra = "ALPHA_J2000"                     # Column name for right ascension
+dec = "DELTA_J2000"                   # Column name for declination
+
+[catalog.classification]
+split_type = "labels"
+bin_property_columns = ["lp_mass_med", "lp_SFR_med", "lp_sSFR_med"]
+
+[catalog.classification.split_params]
+id = "population_class"
+# 0 = sfg,2 = qt
+
+[catalog.classification.binning.redshift]
+id = "lp_zBEST"                 # Column name for redshift
+label = "Redshift"
+# Run 0 — offset 0.000 — 20 bins, Δz=0.15  (unchanged from 4-run scheme)
+#bins = [0.50, 0.65, 0.80, 0.95, 1.10, 1.25, 1.40, 1.55, 1.70, 1.85,
+#        2.00, 2.15, 2.30, 2.45, 2.60, 2.75, 2.90, 3.05, 3.20, 3.35, 3.50]
+
+# Run 1 — offset 0.0500 — 21 bins (first bin width=0.05)
+#bins = [0.50, 0.55, 0.70, 0.85, 1.00, 1.15, 1.30, 1.45, 1.60, 1.75,
+#        1.90, 2.05, 2.20, 2.35, 2.50, 2.65, 2.80, 2.95, 3.10, 3.25,
+#        3.40, 3.50]
+
+# Run 2 — offset 0.1000 — 21 bins (first bin width=0.10)
+#bins = [0.50, 0.60, 0.75, 0.90, 1.05, 1.20, 1.35, 1.50, 1.65, 1.80,
+#        1.95, 2.10, 2.25, 2.40, 2.55, 2.70, 2.85, 3.00, 3.15, 3.30,
+#        3.45, 3.50]
+
+# Run 0 — offset 0.0000 — 22 bins
+bins = [0.50, 0.65, 0.80, 0.95, 1.10, 1.25, 1.40, 1.55, 1.70, 1.85,
+        2.00, 2.15, 2.30, 2.45, 2.60, 2.75, 2.90, 3.20, 3.50, 3.80,
+        4.10, 4.55, 5.00]
+
+# Run 1 — offset 0.0500 — 23 bins (first bin width=0.05)
+#bins = [0.50, 0.55, 0.70, 0.85, 1.00, 1.15, 1.30, 1.45, 1.60, 1.75,
+#        1.90, 2.05, 2.20, 2.35, 2.50, 2.65, 2.80, 2.95, 3.25, 3.55,
+#        3.85, 4.15, 4.60, 5.00]
+
+# Run 2 — offset 0.1000 — 23 bins (first bin width=0.10)
+#bins = [0.50, 0.60, 0.75, 0.90, 1.05, 1.20, 1.35, 1.50, 1.65, 1.80,
+#        1.95, 2.10, 2.25, 2.40, 2.55, 2.70, 2.85, 3.00, 3.30, 3.60,
+#        3.90, 4.20, 4.65, 5.00]
+
+[catalog.classification.binning.stellar_mass]
+id = "lp_mass_med"                  # Column name for stellar mass
+#bins = [8.5, 10.5, 10.8, 12]
+bins = [10, 10.5, 10.8, 11.1, 12.0]
+#bins = [8.7, 10.6, 10.9, 11.7]
+#bins = [8.5, 10.2, 10.6, 11, 12.0]
+
+# Map configurations - each section defines a new map
+[maps.mips_24]
+wavelength = 24.0             # Wavelength in microns
+color_correction = 1.24       # Color correction factor
+path_map = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_sci_10.cutout.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_unc_10.cutout.fits"
+
+[maps.mips_24.beam]
+fwhm = 5.51                   # FWHM in arcsec
+area_sr = 1.328e-09          # Solid angle (1.0 if already in Jy/beam)
+
+[maps.mips_70]
+wavelength = 70.0             # Wavelength in microns
+color_correction = 1.33       # Color correction factor
+path_map = "$MAPSPATH/cosmos/mips/scosmos_mips_70_sci_v3.fits"
+path_noise = "$MAPSPATH/cosmos/mips/scosmos_mips_70_unc_v3.fits"
+
+[maps.mips_70.beam]
+fwhm = 18.0                   # FWHM in arcsec
+area_sr = 1.296e-08          # Solid angle (1.0 if already in Jy/beam)
+
+[maps.pacs_green]
+wavelength = 100.0
+color_correction = 1.0
+path_map = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS100_20160805_img_avg.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS100_20160805_img_avg_noise.fits"
+
+[maps.pacs_green.beam]
+fwhm = 7.49
+area_sr = 2.033e-09
+
+[maps.pacs_red]
+wavelength = 160.0
+color_correction = 1.0
+path_map = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS160_20160728_img_avg.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS160_20160728_img_avg_noise.fits"
+
+[maps.pacs_red.beam]
+fwhm = 11.33
+area_sr = 4.658e-09
+
+[maps.spire_psw]
+wavelength = 250.0
+color_correction = 1.018
+path_map = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PSW.signal.cutout.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PSW.noise.cutout.fits"
+
+[maps.spire_psw.beam]
+fwhm = 17.62
+
+[maps.spire_pmw]
+wavelength = 350.0
+color_correction = 0.9914
+path_map = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PMW.signal.cutout.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PMW.noise.cutout.fits"
+
+[maps.spire_pmw.beam]
+fwhm = 24.42
+
+[maps.spire_plw]
+wavelength = 500.0
+color_correction = 0.9565
+path_map = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PLW.signal.cutout.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PLW.noise.cutout.fits"
+
+[maps.spire_plw.beam]
+fwhm = 35.69
+
+[maps.scuba]
+wavelength = 850.0
+color_correction = 1e-3
+path_map = "$MAPSPATH/cosmos/cutouts/S2CLS_COSMOS_NMF_DR1_new_header.cutout.signal.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/S2CLS_COSMOS_NMF_DR1_new_header.cutout.noise.fits"
+
+[maps.scuba.beam]
+fwhm = 12.1

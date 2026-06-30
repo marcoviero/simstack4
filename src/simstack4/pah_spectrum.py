@@ -385,8 +385,25 @@ class PAHSpectrumModel:
 
     # -- kernel/whitening preparation ------------------------------------
 
-    def _prepare(self, df, cov, scheme, dndz, sigma_z0, f_cat, baseline_col=None):
-        """Build whitened per-property-bin data and kernel structures."""
+    def _prepare(
+        self,
+        df,
+        cov,
+        scheme,
+        dndz,
+        sigma_z0,
+        f_cat,
+        baseline_col=None,
+        baseline_cols=None,
+        ssfr_col=None,
+    ):
+        """Build whitened per-property-bin data and kernel structures.
+
+        ``baseline_col`` stashes one cold-baseline column per bin (fit_shared).
+        ``baseline_cols`` (dict band→column) and ``ssfr_col`` additionally stash
+        a per-band baseline map, the per-row ``z_mid`` and the per-row log sSFR
+        used by the multi-band, sSFR-anchored :meth:`fit_evolving`.
+        """
         from .pah_dither import compute_pz_matrix, make_dndz
 
         if scheme is None:
@@ -481,12 +498,32 @@ class PAHSpectrumModel:
                 if (baseline_col is not None and baseline_col in sub.columns)
                 else None
             )
+            # Multi-band / sSFR extras for fit_evolving (aligned with K_m rows).
+            z_mid = (
+                sub["z_mid"].to_numpy()
+                if "z_mid" in sub
+                else 0.5 * (sub["z_lo"].to_numpy() + sub["z_hi"].to_numpy())
+            )
+            log_ssfr = (
+                sub[ssfr_col].to_numpy()
+                if (ssfr_col is not None and ssfr_col in sub.columns)
+                else None
+            )
+            f_cold_by_band = None
+            if baseline_cols is not None:
+                f_cold_by_band = {
+                    band: (sub[col].to_numpy() if col in sub.columns else None)
+                    for band, col in baseline_cols.items()
+                }
             bins.append(
                 {
                     "m": m,
                     "F": F,
                     "Ferr": Ferr,
                     "f_cold": f_cold,
+                    "f_cold_by_band": f_cold_by_band,
+                    "z_mid": z_mid,
+                    "log_ssfr": log_ssfr,
                     "mask": mask,
                     "Fw": Fw,
                     "Kw": Kw,
@@ -815,6 +852,433 @@ class PAHSpectrumModel:
             "n_iter": n_done,
             "valid": valid,
         }
+
+    # -- evolving shared-ratio fit (sSFR-anchored amplitude + ratio drift) --
+
+    def fit_evolving(
+        self,
+        df,
+        *,
+        baseline_cols=None,
+        baseline_col=None,
+        ssfr_col="log_ssfr",
+        ssfr_relation="speagle2014",
+        evolve_amp=True,
+        evolve_ratios=True,
+        eta_bounds=(-3.0, 3.0),
+        eta_prior_sigma=None,
+        cov=None,
+        scheme=None,
+        dndz=None,
+        sigma_z0=None,
+        f_cat=None,
+        smooth_baseline=False,
+        n_iter=200,
+        tol=1e-7,
+    ):
+        """sSFR-anchored, multi-band PAH fit with within-bin redshift evolution.
+
+        Extends :meth:`fit_shared` so the PAH/continuum amplitude and the shared
+        feature-group ratios drift along each mass bin as the bandpass sweeps
+        rest wavelength and the contributing galaxies' specific SFR changes. For
+        point i (mass bin m, band b) with centered log sSFR
+        ``ŝ_i = log_ssfr(z_i, M_m) − s_pivot``::
+
+            alpha_i  = alpha_m · 10^(η_A · ŝ_i)
+            r_g(ŝ_i) = r_g0 · 10^(η_g · ŝ_i)      (g ≥ 1; r_0 ≡ 1, η_0 ≡ 0)
+            f_obs_ib = C_m · f_cold_norm_ib
+                     + alpha_m · 10^(η_A ŝ_i) · Σ_g r_g0 · 10^(η_g ŝ_i) · K_gib
+
+        The slopes ``η_A`` (amplitude) and ``η_g`` (per non-reference group) are
+        SHARED across mass bins. Given the slopes, the per-bin ``[C_m, alpha_m]``
+        and baseline ratios ``r_g0`` stay linear and solve by the same
+        alternating WLS as :meth:`fit_shared`; the few slopes are fit by an outer
+        optimizer. MIPS 70 — a different rest wavelength at the same z — gives the
+        leverage that separates amplitude from ratio evolution, so include both
+        bands (``baseline_cols`` controls which bands enter: a band needs a cold
+        baseline column to participate, so passing only 24 µm gives the
+        degeneracy-prone 24-only fit).
+
+        Per-point ``log_ssfr`` is read from ``ssfr_col`` when present, else filled
+        from :func:`~simstack4.dust_evolution.main_sequence_ssfr`. ``s_pivot`` is
+        the median resolved log sSFR over all fitted points. ``eta_prior_sigma``
+        adds a Gaussian prior (width in dex of sSFR) on every slope; when the
+        sSFR lever arm is short the slopes are degenerate with the per-bin
+        amplitude and run to the bounds with unphysical pivot amplitudes, so a
+        prior of order unity is recommended on real data. Slope/amplitude
+        uncertainties are best taken from the disjoint-fold ensemble; formal
+        curvature errors are also returned.
+
+        Returns ``fit_shared``'s keys plus ``eta_amp``, ``eta_amp_err``,
+        ``eta_ratio`` (length G, ``η_0 ≡ 0``), ``eta_ratio_err``, ``s_pivot`` and
+        ``bands``.
+        """
+        from scipy.optimize import minimize
+
+        from .dust_evolution import main_sequence_ssfr
+
+        # Resolve which bands participate via their cold-baseline columns.
+        default_names = {"MIPS_24": "f24_cold", "MIPS_70": "f70_cold"}
+        if baseline_cols is None:
+            if baseline_col is not None:
+                baseline_cols = {self.bands[0]: baseline_col}
+            else:
+                baseline_cols = {
+                    b: default_names[b] for b in self.bands if b in default_names
+                }
+        baseline_cols = {
+            b: c
+            for b, c in baseline_cols.items()
+            if b in self.bands and c in df.columns
+        }
+        if not baseline_cols:
+            raise ValueError(
+                "no usable baseline columns; pass baseline_cols={band: column}"
+            )
+        if smooth_baseline and "MIPS_24" in baseline_cols:
+            df = smoothed_ms_baseline(df, baseline_col=baseline_cols["MIPS_24"])
+
+        prep = self._prepare(
+            df,
+            cov,
+            scheme,
+            dndz,
+            sigma_z0,
+            f_cat,
+            baseline_cols=baseline_cols,
+            ssfr_col=ssfr_col,
+        )
+        bins = prep["bins"]
+        G = self.n_groups
+        n_m = len(bins)
+
+        def _resolve_ssfr(b):
+            ls = b["log_ssfr"]
+            z = np.asarray(b["z_mid"], dtype=float)
+            logM = b["props"]["log_M_star"]
+            ms = main_sequence_ssfr(z, logM, ssfr_relation)
+            if ls is None:
+                return ms
+            ls = np.asarray(ls, dtype=float)
+            return np.where(np.isfinite(ls), ls, ms)
+
+        # First pass: gather resolved log sSFR to set the pivot.
+        all_ls = []
+        for b in bins:
+            ls = _resolve_ssfr(b)
+            for band in baseline_cols:
+                fcold = b["f_cold_by_band"][band]
+                if fcold is None:
+                    continue
+                bidx = self.bands.index(band)
+                f_obs = b["F"][:, bidx]
+                f_err = b["Ferr"][:, bidx]
+                ok = (
+                    np.isfinite(f_obs)
+                    & np.isfinite(f_err)
+                    & np.isfinite(fcold)
+                    & np.isfinite(ls)
+                    & (f_err > 0)
+                    & (fcold > 0)
+                    & (f_obs > 0)
+                )
+                all_ls.append(ls[ok])
+        all_ls = np.concatenate(all_ls) if all_ls else np.array([0.0])
+        s_pivot = float(np.median(all_ls))
+
+        # Second pass: build θ-independent band-stacked per-bin data.
+        data = []
+        for b in bins:
+            ls = _resolve_ssfr(b)
+            f_obs_l, w_l, fcn_l, K_l, shat_l = [], [], [], [], []
+            for band in baseline_cols:
+                fcold = b["f_cold_by_band"][band]
+                if fcold is None:
+                    continue
+                bidx = self.bands.index(band)
+                f_obs = b["F"][:, bidx]
+                f_err = b["Ferr"][:, bidx]
+                K_g = b["K"][:, bidx, :]
+                ok = (
+                    np.isfinite(f_obs)
+                    & np.isfinite(f_err)
+                    & np.isfinite(fcold)
+                    & np.isfinite(ls)
+                    & (f_err > 0)
+                    & (fcold > 0)
+                    & (f_obs > 0)
+                )
+                if ok.sum() == 0:
+                    continue
+                med = float(np.median(fcold[ok]))
+                f_obs_l.append(f_obs[ok])
+                w_l.append(1.0 / f_err[ok] ** 2)
+                fcn_l.append(fcold[ok] / med)
+                K_l.append(K_g[ok])
+                shat_l.append(ls[ok] - s_pivot)
+            if not f_obs_l or sum(len(x) for x in f_obs_l) < 3:
+                data.append(None)
+                continue
+            data.append(
+                {
+                    "f_obs": np.concatenate(f_obs_l),
+                    "w": np.concatenate(w_l),
+                    "f_cold_norm": np.concatenate(fcn_l),
+                    "K": np.vstack(K_l),
+                    "shat": np.concatenate(shat_l),
+                }
+            )
+        valid = [i for i, d in enumerate(data) if d is not None]
+        if not valid:
+            return None
+
+        def _wls(D, y, w):
+            H = D.T @ (w[:, None] * D)
+            rhs = D.T @ (w * y)
+            try:
+                return np.linalg.solve(H, rhs), np.linalg.pinv(H)
+            except np.linalg.LinAlgError:
+                Hi = np.linalg.pinv(H)
+                return Hi @ rhs, Hi
+
+        # θ → per-group exponent e_g = η_A + η_g (η_0 ≡ 0).
+        n_amp = 1 if evolve_amp else 0
+        n_rat = (G - 1) if (evolve_ratios and G > 1) else 0
+
+        def unpack(theta):
+            k = 0
+            eta_amp = float(theta[k]) if evolve_amp else 0.0
+            k += n_amp
+            eta_ratio = np.zeros(G)
+            if n_rat:
+                eta_ratio[1:] = theta[k : k + n_rat]
+            return eta_amp, eta_ratio
+
+        def modulated(d, e):
+            # e: (G,) per-group exponent; returns (n_pts, G) modulated kernel.
+            return (10.0 ** np.outer(d["shat"], e)) * d["K"]
+
+        def solve_inner(e, iters):
+            r = np.ones(G)
+            C_m = np.full(n_m, np.nan)
+            alpha = np.full(n_m, np.nan)
+            Kmod = {i: modulated(data[i], e) for i in valid}
+            for _ in range(iters):
+                r_prev = r.copy()
+                for i in valid:
+                    d = data[i]
+                    D = np.column_stack([d["f_cold_norm"], Kmod[i] @ r])
+                    theta, _ = _wls(D, d["f_obs"], d["w"])
+                    C_m[i], alpha[i] = float(theta[0]), float(theta[1])
+                if G > 1:
+                    Ms, ys, ws = [], [], []
+                    for i in valid:
+                        d = data[i]
+                        y = (
+                            d["f_obs"]
+                            - C_m[i] * d["f_cold_norm"]
+                            - alpha[i] * Kmod[i][:, 0]
+                        )
+                        Ms.append(alpha[i] * Kmod[i][:, 1:])
+                        ys.append(y)
+                        ws.append(d["w"])
+                    M, y, w = np.vstack(Ms), np.concatenate(ys), np.concatenate(ws)
+                    r[1:], _ = _wls(M, y, w)
+                    r[0] = 1.0
+                if np.max(np.abs(r - r_prev)) < tol:
+                    break
+            chi2 = 0.0
+            for i in valid:
+                d = data[i]
+                model = C_m[i] * d["f_cold_norm"] + alpha[i] * (Kmod[i] @ r)
+                chi2 += float(np.sum((d["f_obs"] - model) ** 2 * d["w"]))
+            return C_m, alpha, r, Kmod, chi2
+
+        def chi2_of(theta):
+            eta_amp, eta_ratio = unpack(theta)
+            e = eta_amp + eta_ratio
+            chi2 = solve_inner(e, min(n_iter, 60))[4]
+            if eta_prior_sigma:
+                # Gaussian prior on every free slope — tames the η_A↔alpha_m
+                # runaway when the sSFR lever arm is short (real data).
+                chi2 += float(np.sum((np.asarray(theta) / eta_prior_sigma) ** 2))
+            return chi2
+
+        n_theta = n_amp + n_rat
+        if n_theta > 0:
+            theta0 = np.zeros(n_theta)
+            opt = minimize(
+                chi2_of,
+                theta0,
+                method="L-BFGS-B",
+                bounds=[eta_bounds] * n_theta,
+            )
+            theta_best = opt.x
+        else:
+            theta_best = np.zeros(0)
+
+        eta_amp, eta_ratio = unpack(theta_best)
+        e_best = eta_amp + eta_ratio
+        C_m, alpha, r, Kmod, chi2 = solve_inner(e_best, n_iter)
+
+        # Per-bin formal errors (delta method on alpha/C_m), as in fit_shared.
+        alpha_err = np.full(n_m, np.nan)
+        C_m_err = np.full(n_m, np.nan)
+        A_pah = np.full(n_m, np.nan)
+        A_pah_err = np.full(n_m, np.nan)
+        ndata = 0
+        for i in valid:
+            d = data[i]
+            D = np.column_stack([d["f_cold_norm"], Kmod[i] @ r])
+            _, cov_i = _wls(D, d["f_obs"], d["w"])
+            C_m_err[i] = np.sqrt(max(cov_i[0, 0], 0.0))
+            alpha_err[i] = np.sqrt(max(cov_i[1, 1], 0.0))
+            if C_m[i] != 0:
+                A_pah[i] = alpha[i] / C_m[i]
+                g = np.array([-alpha[i] / C_m[i] ** 2, 1.0 / C_m[i]])
+                A_pah_err[i] = np.sqrt(max(g @ cov_i @ g, 0.0))
+            ndata += len(d["f_obs"])
+        r_err = np.zeros(G)
+        if G > 1:
+            Ms, ws = [], []
+            for i in valid:
+                Ms.append(alpha[i] * Kmod[i][:, 1:])
+                ws.append(data[i]["w"])
+            M, w = np.vstack(Ms), np.concatenate(ws)
+            cov_r = np.linalg.pinv(M.T @ (w[:, None] * M))
+            r_err[1:] = np.sqrt(np.maximum(np.diag(cov_r), 0.0))
+
+        # Formal slope errors from the diagonal curvature of profiled chi².
+        eta_amp_err = np.nan
+        eta_ratio_err = np.zeros(G)
+        if n_theta > 0:
+            h = 0.05
+            for j in range(n_theta):
+                tp = theta_best.copy()
+                tp[j] += h
+                tm = theta_best.copy()
+                tm[j] -= h
+                curv = max((chi2_of(tp) + chi2_of(tm) - 2 * chi2) / h**2, 1e-9)
+                sig = float(np.sqrt(2.0 / curv))
+                if evolve_amp and j == 0:
+                    eta_amp_err = sig
+                else:
+                    g_idx = 1 + (j - n_amp)
+                    eta_ratio_err[g_idx] = sig
+
+        dof = max(1, ndata - (2 * len(valid) + (G - 1) + n_theta))
+        A = A_pah[:, None] * r[None, :]
+        return {
+            "alpha": alpha,
+            "alpha_err": alpha_err,
+            "C_m": C_m,
+            "C_m_err": C_m_err,
+            "r": r,
+            "r_err": r_err,
+            "A_pah": A_pah,
+            "A_pah_err": A_pah_err,
+            "A": A,
+            "eta_amp": eta_amp,
+            "eta_amp_err": eta_amp_err,
+            "eta_ratio": eta_ratio,
+            "eta_ratio_err": eta_ratio_err,
+            "s_pivot": s_pivot,
+            "bands": tuple(baseline_cols.keys()),
+            "labels": self._labels(),
+            "chi2": chi2,
+            "dof": dof,
+            "chi2_red": chi2 / dof,
+            "valid": valid,
+        }
+
+    # -- fit the Wien-slope alpha jointly, with a Gaussian prior ----------
+
+    def fit_with_alpha(
+        self,
+        df,
+        *,
+        evolving: bool = False,
+        baseline_col: str = "f24_cold",
+        baseline_cols: dict | None = None,
+        alpha_prior: tuple[float, float] = (2.0, 0.3),
+        alpha_bounds: tuple[float, float] = (1.0, 3.0),
+        alpha_ref: float = 2.0,
+        baseline_recompute=None,
+        **fit_kw,
+    ):
+        """Fit the cold-baseline Wien slope ``alpha`` jointly with the PAH model.
+
+        The cold baseline ``f_cold`` is a greybody spliced to a power law
+        ``f_ν ∝ ν^(−alpha) ∝ (1+z)^(−alpha)`` short-ward of rest ~71 µm, and the
+        PAH amplitude is acutely sensitive to that slope (Δalpha≈0.5 → A_pah ×3–4).
+        Rather than fix ``alpha=2``, this profiles it out: an outer
+        ``minimize_scalar`` over ``alpha`` wraps the inner fit
+        (:meth:`fit_shared`, or :meth:`fit_evolving` when ``evolving=True``),
+        minimising ``chi² + ((alpha − mu)/sigma)²`` with a **Gaussian prior**
+        ``alpha_prior = (mu, sigma)`` that keeps the slope physical (default a
+        strong prior at 2). On a single band ``alpha`` is degenerate with the PAH
+        amplitude and the prior dominates by design; with ≥2 bands (24+70/100) the
+        longer band constrains the continuum slope and ``alpha`` becomes
+        data-driven.
+
+        By default the baseline is re-tilted in place as
+        ``f_cold(alpha) = f_cold · (1+z)^(alpha_ref − alpha)`` (the exact ν^(−α)
+        shape change; a sub-dominant T(z)^(α−2) term is neglected). Pass
+        ``baseline_recompute(df, alpha) -> df`` to rebuild the baseline columns
+        faithfully from ``greybody_model`` instead.
+
+        Returns the inner fit's dict plus ``alpha_wien``, ``alpha_wien_err`` and
+        ``alpha_prior``. (Note: the per-bin PAH amplitude is the separate
+        ``alpha``/``A_pah`` key — ``alpha_wien`` is the continuum slope.)
+        """
+        from scipy.optimize import minimize_scalar
+
+        mu, sigma = alpha_prior
+        if evolving:
+            cols = baseline_cols or {"MIPS_24": "f24_cold", "MIPS_70": "f70_cold"}
+            tilt_cols = [c for c in cols.values() if c in df.columns]
+        else:
+            tilt_cols = [baseline_col]
+
+        def _baseline_at(alpha):
+            if baseline_recompute is not None:
+                return baseline_recompute(df, alpha)
+            out = df.copy()
+            fac = (1.0 + out["z_mid"].to_numpy()) ** (alpha_ref - alpha)
+            for c in tilt_cols:
+                if c in out.columns:
+                    out[c] = out[c].to_numpy() * fac
+            return out
+
+        def _run(alpha):
+            d = _baseline_at(alpha)
+            if evolving:
+                res = self.fit_evolving(d, baseline_cols=baseline_cols, **fit_kw)
+            else:
+                res = self.fit_shared(d, baseline_col=baseline_col, **fit_kw)
+            return res
+
+        def _obj(alpha):
+            res = _run(alpha)
+            chi2 = res["chi2"] if res is not None else 1e12
+            return chi2 + ((alpha - mu) / sigma) ** 2
+
+        opt = minimize_scalar(_obj, bounds=alpha_bounds, method="bounded")
+        a_best = float(opt.x)
+        # 1σ from the local curvature of the penalised objective
+        h = 0.05
+        c0 = _obj(a_best)
+        cp = _obj(min(a_best + h, alpha_bounds[1]))
+        cm = _obj(max(a_best - h, alpha_bounds[0]))
+        curv = max((cp + cm - 2 * c0) / h**2, 1e-9)
+        a_err = float(np.sqrt(2.0 / curv))
+
+        res = _run(a_best)
+        if res is not None:
+            res["alpha_wien"] = a_best
+            res["alpha_wien_err"] = a_err
+            res["alpha_prior"] = alpha_prior
+        return res
 
     # -- pooled hierarchical MCMC -----------------------------------------
 
