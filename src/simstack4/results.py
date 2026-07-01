@@ -103,6 +103,11 @@ class SimstackResults:
         snr_low: float = 2.0,
         use_pah: bool = False,
         wien_mode: str = "powerlaw",
+        alpha_wien: float | None = None,
+        pah_lir_coeffs: tuple[float, float] | None = None,
+        pah_feature_groups: list[list[int]] | None = None,
+        pah_r_ratios: list[float] | None = None,
+        pah_bands: tuple[str, ...] = ("MIPS_24", "MIPS_70"),
     ):
         """
         Initialize results processor
@@ -192,6 +197,11 @@ class SimstackResults:
 
         self.use_pah = use_pah
         self.wien_mode = wien_mode
+        self.alpha_wien = alpha_wien
+        self.pah_lir_coeffs = pah_lir_coeffs
+        self.pah_feature_groups = pah_feature_groups
+        self.pah_r_ratios = pah_r_ratios
+        self.pah_bands = pah_bands
 
         # Process results
         self._process_results()
@@ -303,6 +313,12 @@ class SimstackResults:
         self.greybody_fitter._pah_log_stellar_mass = pop_bin.median_stellar_mass
         self.greybody_fitter.use_pah = self.use_pah  # ← uncomment when ready
         self.greybody_fitter.wien_mode = self.wien_mode
+        if self.alpha_wien is not None:
+            self.greybody_fitter.alpha_wien = self.alpha_wien
+        self.greybody_fitter.pah_lir_coeffs = self.pah_lir_coeffs
+        self.greybody_fitter.pah_feature_groups = self.pah_feature_groups
+        self.greybody_fitter.pah_r_ratios = self.pah_r_ratios
+        self.greybody_fitter.pah_bands = self.pah_bands
 
         # Fit greybody model
         if isinstance(self.greybody_fitter, CovarianceGreybodyFitter):

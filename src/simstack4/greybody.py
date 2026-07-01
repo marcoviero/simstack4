@@ -171,6 +171,17 @@ class Greybody:
         self._pah_z = None
         self._pah_log_stellar_mass = None
 
+        # Wien-side power-law slope. Historically hardcoded at 2.0 inside
+        # greybody_model's default argument; every existing call site omits
+        # `alpha`, so leaving this at 2.0 reproduces prior behavior exactly.
+        # Set via SimstackResults(alpha_wien=...) to use a measured value
+        # (e.g. the pah-forward-model-6 fit: alpha_wien≈2.86).
+        self.alpha_wien = 2.0
+
+        # Coefficients (a, d) for log10(L_PAH/L_IR) = a*log_M* + d, used by
+        # wien_mode="lir_pah" (_pah_flux_lir). None disables that path.
+        self.pah_lir_coeffs = None
+
         # Configurable bounds
         self.T_rest_min = T_rest_min
         self.T_rest_max = T_rest_max
@@ -1310,13 +1321,135 @@ class Greybody:
 
         return flux
 
+    def _pah_flux_lir(
+        self, wavelength_um, amplitude, z, log_stellar_mass, temperature, beta=1.8
+    ):
+        """
+        PAH flux from a measured log10(L_PAH/L_IR) = a*log_M* + d relation,
+        converted to an in-band flux via the real bandpass-integrated PAH
+        kernel (pah_spectrum.feature_band_curves), NOT a point evaluation or
+        the erf-window proxy used by _pah_flux_0/_physical_wien_flux.
+
+        Added alongside (not replacing) _pah_flux_0/_physical_wien_flux —
+        those stay the live basis for the T_dust correction; this is a new,
+        independently-selected path (wien_mode="lir_pah").
+
+        Requires ``self.pah_lir_coeffs = (a, d)``, ``self.pah_feature_groups``
+        (list of feature-index lists, matching whatever ratios were fit) and
+        ``self.pah_r_ratios`` (shared group ratios, r_0 ≡ 1) to be set first —
+        returns all-zero flux if any is missing. Only bands in
+        ``self.pah_bands`` (default MIPS_24, MIPS_70) receive a correction;
+        wavelength_um entries far from those bands' rest-frame pivot get zero,
+        by design (this is specifically the MIPS 24/70 PAH-contamination fix).
+
+        Parameters
+        ----------
+        wavelength_um : array
+            Rest-frame wavelengths (microns) — same convention as
+            greybody_model's own argument.
+        amplitude : float
+            log10 greybody amplitude.
+        z : float
+            Redshift.
+        log_stellar_mass : float
+            log10(M*/M_sun).
+        temperature : float
+            Rest-frame dust temperature (K).
+        beta : float
+            Emissivity index.
+
+        Returns
+        -------
+        flux : array
+            PAH flux density (Jy), same units/convention as _pah_flux_0.
+        """
+        wavelength_um = np.asarray(wavelength_um, dtype=float)
+        flux = np.zeros_like(wavelength_um)
+
+        coeffs = getattr(self, "pah_lir_coeffs", None)
+        feature_groups = getattr(self, "pah_feature_groups", None)
+        r_ratios = getattr(self, "pah_r_ratios", None)
+        if coeffs is None or feature_groups is None or r_ratios is None:
+            return flux
+        if not (np.isfinite(z) and z > 0 and np.isfinite(log_stellar_mass)):
+            return flux
+
+        from .pah_spectrum import DEFAULT_FEATURES, feature_band_curves, group_weights
+
+        # ── PAH-free L_IR: guard against calculate_LIR recursing back into
+        # this same Wien-side correction via its own internal greybody_model
+        # call (_integrate_LIR integrates 8-1000um rest, which spans the
+        # 7.7/8.6/12.7um features) ──────────────────────────────────────
+        _use_pah_save, _wien_mode_save = self.use_pah, getattr(self, "wien_mode", "powerlaw")
+        self.use_pah, self.wien_mode = False, "powerlaw"
+        try:
+            L_IR, _ = self.calculate_LIR(amplitude, temperature, beta, z)
+        finally:
+            self.use_pah, self.wien_mode = _use_pah_save, _wien_mode_save
+        if not (np.isfinite(L_IR) and L_IR > 0):
+            return flux
+
+        a, d = coeffs
+        L_PAH = (10.0 ** (a * log_stellar_mass + d)) * L_IR
+        if not (np.isfinite(L_PAH) and L_PAH > 0):
+            return flux
+
+        # ── Normalize a unit-peak-per-line template to L_PAH bolometrically,
+        # the same 4*pi*D_L^2/(1+z) conversion _integrate_LIR uses, so the
+        # template's rest-frame bolometric integral equals L_PAH exactly ──
+        lam_fine = np.logspace(np.log10(4.0), np.log10(20.0), 400)
+        weights = group_weights(DEFAULT_FEATURES, feature_groups)
+        shape = np.zeros_like(lam_fine)
+        for g, (grp, w) in enumerate(zip(feature_groups, weights, strict=False)):
+            r_g = r_ratios[g] if g < len(r_ratios) else 0.0
+            for j, wj in zip(grp, w, strict=False):
+                center, _, fwhm = DEFAULT_FEATURES[j]
+                sigma = fwhm / 2.355
+                shape += r_g * wj * np.exp(-0.5 * ((lam_fine - center) / sigma) ** 2)
+        if shape.max() <= 0:
+            return flux
+        nu_fine = self.c * 1.0e6 / lam_fine
+        D_L_m = self.luminosity_distance(z) * 3.08568025e22
+        L_shape_watts = (
+            4.0 * np.pi * D_L_m**2 * 1e-26 * (-np.trapezoid(shape, nu_fine)) / (1.0 + z)
+        )
+        L_shape = L_shape_watts / self.L_sun
+        if not (np.isfinite(L_shape) and L_shape > 0):
+            return flux
+        scale = L_PAH / L_shape  # Jy per unit template height
+
+        # ── In-band flux for whichever survey bands this call touches ────
+        bands = getattr(self, "pah_bands", ("MIPS_24", "MIPS_70"))
+        band_centers = {"MIPS_24": 24.0, "MIPS_70": 70.0}
+        wave_obs = wavelength_um * (1.0 + z)
+        for band in bands:
+            center = band_centers.get(band)
+            if center is None:
+                continue
+            match = np.abs(wave_obs - center) / center < 0.15
+            if not match.any():
+                continue
+            K_g = feature_band_curves(
+                np.array([z]), band, DEFAULT_FEATURES, feature_groups
+            )[0]  # (G,)
+            in_band_response = float(np.sum(np.asarray(r_ratios) * K_g))
+            flux[match] = scale * in_band_response
+
+        if hasattr(self, "_pah_debug") and self._pah_debug:
+            print(
+                f"  _pah_flux_lir: z={z:.2f}, logM*={log_stellar_mass:.1f}, "
+                f"L_IR={L_IR:.3e}, L_PAH={L_PAH:.3e}, flux_max={flux.max():.3e}"
+            )
+
+        return flux
+
     def greybody_model(
         self,
         wavelength_um,
         amplitude,
         temperature,
         beta=1.8,
-        alpha=2.0,
+        alpha=None,
     ):
         """
         Modified blackbody (greybody) model with Wien-side extension.
@@ -1335,9 +1468,13 @@ class Greybody:
             Dust temperature (K).
         beta : float
             Emissivity index.
-        alpha : float
-            Wien-side power-law slope.
+        alpha : float, optional
+            Wien-side power-law slope. Defaults to ``self.alpha_wien`` (itself
+            2.0 unless set) when not given explicitly, so every existing call
+            site that omits `alpha` is unaffected by this default's presence.
         """
+        if alpha is None:
+            alpha = getattr(self, "alpha_wien", 2.0)
         nu_in = self.c * 1.0e6 / wavelength_um  # Hz
         A = 10**amplitude
 
@@ -1370,8 +1507,13 @@ class Greybody:
         # ── Wien-side model selection ────────────────────────────────
         #
         # "powerlaw"  — original ν^(-α) (default, no PAH/warm dust)
-        # "additive"  — power-law + PAH features on top (_pah_flux)
+        # "additive"  — power-law + PAH features on top (_pah_flux_0)
         # "physical"  — warm dust + PAH REPLACES power-law (_physical_wien_flux)
+        # "lir_pah"   — power-law (at alpha_wien) + PAH on top, scaled from a
+        #               measured log10(L_PAH/L_IR)=a*logM*+d relation via the
+        #               real bandpass kernel (_pah_flux_lir). Independent of
+        #               "additive"'s _pah_coeffs calibration; added, not a
+        #               replacement.
         #
         _wm = getattr(self, "wien_mode", "powerlaw")
         _has_pop = (
@@ -1404,6 +1546,19 @@ class Greybody:
             # Blend zone: add Wien components to greybody in transition
             blend = ~ind_cut & (wavelength_um < 50)
             flux_density[blend] = flux_density[blend] + wien_flux[blend]
+
+        elif _wm == "lir_pah" and _has_pop:
+            # power-law Wien (at alpha_wien) stays, PAH from the L_PAH/L_IR
+            # relation added on top
+            pah_flux = self._pah_flux_lir(
+                wavelength_um,
+                amplitude,
+                self._pah_z,
+                self._pah_log_stellar_mass,
+                temperature,
+                beta,
+            )
+            flux_density = flux_density + pah_flux
 
         return flux_density
 
