@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PAH Forward Model — Letter Draft Summary</title>
+<style>
+  body { font-family: -apple-system, Georgia, serif; max-width: 820px; margin: 40px auto; padding: 0 20px; line-height: 1.55; color: #1a1a1a; }
+  h1 { font-size: 1.6em; border-bottom: 3px solid #c0392b; padding-bottom: 8px; }
+  h2 { font-size: 1.25em; margin-top: 2.2em; color: #922b21; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+  .section { margin-bottom: 1.2em; }
+  .plain { background: #fdf6ec; border-left: 4px solid #e67e22; padding: 10px 16px; margin: 10px 0; }
+  .lit { background: #eaf2f8; border-left: 4px solid #2980b9; padding: 10px 16px; margin: 10px 0; font-size: 0.95em; }
+  .status { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 0.8em; font-weight: bold; }
+  .status.open { background: #f9e79f; color: #7d6608; }
+  .status.resolved { background: #abebc6; color: #1e8449; }
+  .status.caution { background: #f5b7b1; color: #922b21; }
+  code { background: #f4f4f4; padding: 1px 5px; border-radius: 3px; }
+  table { border-collapse: collapse; margin: 10px 0; }
+  td, th { border: 1px solid #ccc; padding: 4px 10px; text-align: right; }
+  th { background: #f0f0f0; }
+  .updated { color: #888; font-size: 0.85em; }
+</style>
+</head>
+<body>
+
+<h1>PAH Forward Model — Letter Draft (working notes)</h1>
+<p class="updated">Living summary, updated as the analysis notebook progresses. Companion to
+<code>notebooks/2026-07-01-pah-forward-model-letter.ipynb</code>.</p>
+
+<div class="section">
+<p><strong>The question this Letter answers:</strong> when we measure the mid-infrared "PAH bump"
+(a dust-grain emission feature) hiding in broadband Spitzer/Herschel data stacked over thousands of
+galaxies, does the answer change if we stop <em>assuming</em> the shape of the warm-dust continuum
+underneath it, and instead let the data tell us its shape?</p>
+</div>
+
+<h2>1 · Loading the data <span class="status resolved">done</span></h2>
+<div class="plain">
+We loaded three independent stacking runs, each built from a different (non-overlapping)
+third of the COSMOS2020 galaxy catalog, stacked against Spitzer MIPS 24&mu;m/70&mu;m and
+Herschel maps out to 500&mu;m. Comparing the three thirds to each other later gives us an honest
+error bar that accounts for "which galaxies happened to be in the sample," not just measurement
+noise. As a bonus, each third also uses slightly offset redshift bins, so combining all three
+gives finer redshift resolution than any one run alone.
+</div>
+
+<h2>2 · Data consistency checks <span class="status resolved">done</span></h2>
+<div class="plain">
+<ul>
+<li><strong>292 usable data points</strong> across 3 folds &times; 4 stellar-mass bins &times; redshift
+0.5&ndash;5.0.</li>
+<li><strong>The redshift-bin offsets are real</strong>: at z&nbsp;&ge;&nbsp;3.5 (where we most need
+extra resolution to pin down the warm-dust slope) the three runs share <em>zero</em> common bin
+edges — confirmed on the actual executed data, not just the configuration file, which is important
+because an earlier version of the config would have produced identical bins at high z.</li>
+<li><strong>Caution — high-mass, high-z bins are thin.</strong> Of the 49 points at z&nbsp;&ge;&nbsp;3.5,
+37 are built from fewer than 75 galaxies (massive galaxies are intrinsically rare, and rarer still
+at early cosmic times within one field). The most massive bin has stacks with as few as 1&ndash;3
+galaxies at the highest redshifts — those points are essentially placeholders, not measurements,
+and shouldn't carry weight in the final fit.</li>
+<li><strong>The 70&mu;m error inflation used to keep the temperature fit honest does not leak into
+the PAH-fit error budget.</strong> We deliberately tell the fitting code to distrust the 70&mu;m
+point above z=0.8 <em>when fitting the dust temperature</em> (because at those redshifts 70&mu;m
+starts to trace short-wavelength features rather than the smooth cold-dust glow). We verified this
+distrust is not accidentally baked into the error bars we use later for the PAH measurement itself —
+confirmed by checking the raw data, since an accidental leak would silently kill our ability to test
+the warm-dust slope with 70&mu;m at high redshift, which is the whole point of this Letter.</li>
+</ul>
+</div>
+
+<h2>3 · Smoothed baseline <span class="status resolved">done</span></h2>
+<div class="plain">
+Before hunting for the PAH signal we need a clean estimate of the smooth "background" dust glow
+it sits on top of. Fitting that background bin-by-bin is noisy — a small wobble in fitted
+temperature becomes a big wobble in the predicted 24&mu;m flux because the far-infrared-to-24&mu;m
+extrapolation is very steep. Instead we fit one smooth trend (temperature and amplitude vs redshift
+and stellar mass) across only the best-measured bins, and use it to predict the background
+everywhere, including the thin high-redshift bins. This step never looks at the 24/70&mu;m data
+itself, so it cannot manufacture a fake PAH signal — it only cleans up the ruler we measure the
+signal against. Result: 30&ndash;40% less scatter in the predicted background, in every mass bin.
+</div>
+
+<h2>4 · Forward-model fit, warm-dust slope fixed at &alpha;=2 <span class="status resolved">done</span></h2>
+<div class="plain">
+Under the standard assumption, the PAH forward model is a clean, strong detection: &chi;&sup2;/dof
+= 4.5, and every mass bin detects the PAH-relative-to-continuum amplitude at 9&ndash;14&sigma;.
+The amplitude <strong>rises with stellar mass</strong> (slope +0.44 dex/dex) — more massive
+galaxies show a bigger PAH signature relative to their own warm-dust continuum. The three PAH
+feature groups (6.2&mu;m, 7.7+8.6&mu;m, 12.7&mu;m) come out in the ratio 1 : 1.5 : 4.5.
+<br><br>
+<em>Framing note:</em> this amplitude is a PAH-to-continuum ratio, closer to an equivalent width
+than to PAH-luminosity-over-total-infrared-luminosity. It rising with mass does not contradict this
+project's earlier finding that L<sub>PAH</sub>/L<sub>IR</sub> is close to flat with mass — the
+warm continuum itself falls faster with mass than the PAH luminosity does, so the ratio to
+continuum can rise even while the ratio to total IR luminosity stays flat.
+</div>
+
+<h2>5 · Forward-model fit, warm-dust slope free <span class="status resolved">done</span></h2>
+<div class="plain">
+Letting the warm-dust slope float (using MIPS 24 and 70&mu;m jointly, with a weak preference for
+the textbook value of 2 built in) gives <strong>&alpha; = 2.86 &plusmn; 0.06</strong> — steeper
+than assumed (&chi;&sup2;/dof = 5.5, using both bands; not directly comparable to the &alpha;=2 fit's
+4.5, which by design uses 24&mu;m only — see caveat below). Confirmed this is a genuine
+best answer and not the optimizer running into an artificial wall by widening the allowed range
+from [1,3] all the way to [1,5]: the answer didn't move.
+<br><br>
+<em>Caveat, fixed during review:</em> an earlier pass of this analysis called the fitting function
+with an option combination that silently discarded the 70&mu;m data and fit 24&mu;m alone,
+despite intending a joint fit — a real bug, caught by tracing through the library source before
+building the figures below. Refitting correctly (genuinely 24+70&mu;m) moved &alpha; from
+2.93&plusmn;0.07 to 2.86&plusmn;0.06 — a small shift, and every conclusion below already reflects
+the corrected numbers.
+<br><br>
+The catch: the <em>absolute</em> PAH amplitude is very sensitive to this choice — it roughly
+doubles to quintuples across the mass bins (top bin: 7 &rarr; 34) when &alpha; moves from 2 to 2.86.
+<strong>The key result of this section is not the &alpha; value itself</strong> — it's that the
+direction of the mass trend survives it (slope +0.44 &rarr; +0.69 dex/dex, same sign, a bit
+steeper). Any absolute PAH/continuum number this pipeline reports must state which &alpha; was
+used — this is a real systematic, not a hypothetical one.
+</div>
+
+<h2>6 · Robustness: fold-ensemble &amp; redshift-cut checks <span class="status resolved">done</span></h2>
+<div class="plain">
+Two independent stress tests, because a single "letting &alpha; float" result could in principle be
+propped up by exactly the thin, unreliable high-redshift bins flagged in Section 2.
+<ol>
+<li><strong>Redshift cut</strong> (the decisive test): restricting to only the closer, best-measured
+galaxies (z&lt;2.5, which removes essentially every thin high-z bin) still gives
+&alpha; = 2.87 &plusmn; 0.08 — statistically identical to using the full sample out to z=5
+(2.86 &plusmn; 0.06). The steeper slope is <em>not</em> an artifact of the sparse high-redshift
+tail.</li>
+<li><strong>Fold-ensemble</strong>: refitting each of the three independent galaxy samples
+separately (rather than trusting one pooled statistical error) gives &alpha; = 3.17, 3.27, 2.40 —
+averaging 2.95 &plusmn; 0.28. All three independently prefer a steeper slope than 2. (First attempt
+at this check hit an artificial ceiling built into the fitting code's default settings for two of
+the three samples, which looked like disagreement between samples but was really the knob being
+turned too low — corrected by widening it, which is why this took two passes.)</li>
+</ol>
+A third check: the fast baseline-rescaling shortcut used above skips a secondary
+temperature-vs-redshift term for speed. Rebuilding the baseline exactly instead pushes the
+best-fit slope <em>further</em> from 2 (3.26 instead of 2.86), not back toward it — the shortcut
+was, if anything, conservative. But the fast (2.86) and exact (3.26) treatments land at
+essentially identical fit quality (&chi;&sup2;/dof 5.50 vs 5.51) — the data can't distinguish
+between the two baseline shapes, so &alpha; partly slides to absorb which baseline construction
+we impose. <strong>That 0.4 spread between methods is the dominant systematic on &alpha;, larger
+than the &plusmn;0.28 fold-to-fold statistical scatter</strong> — the two should not be read as
+independent small errors.
+<br><br>
+<strong>Bottom line:</strong> the honest claim is "&alpha; is robustly steeper than 2" —
+direction bulletproof, exact value method-limited (2.9&ndash;3.3, with the baseline-construction
+choice as the leading uncertainty). It is not an artifact of sparse data or a tuning knob.
+<strong>The mass trend is the headline result, and this section's job was to show it survives the
+&alpha; question</strong> — checked now at &alpha;=2, 2.86, and 3.26, positive every time.
+</div>
+
+<h2>7 · Literature context</h2>
+<div class="lit">
+<ul>
+<li><strong>Mass trend</strong>: not in tension with the classic "PAH deficit" literature
+(Smith et al. 2007, SINGS IRS; Galliano et al. 2021, DustPedia) — those measure a different ratio
+(PAH luminosity fraction, not PAH-to-warm-continuum), and this project's own prior result found
+L<sub>PAH</sub>/L<sub>IR</sub> flat with mass while this continuum-normalised amplitude rises.</li>
+<li><strong>Physical mechanism</strong> (if the mass trend survives further scrutiny): radiation-field
+intensity, not halo mass — Egorov et al. (2025) and Leroy et al. (2023, PHANGS-JWST) show PAH
+fraction anti-correlated with the UV ionization parameter on resolved HII-region scales.
+Tielens (2008) is the physics reference for why the 6.2/7.7+8.6/12.7 band ratios trace grain
+ionization and size.</li>
+<li><strong>Warm-dust slope &alpha;=2.9</strong>: no direct literature value to compare against —
+this is closer to a pipeline-methodology result than an astrophysical one, but it directly affects
+any absolute PAH/continuum number derived from this code, including the T<sub>dust</sub>(z)
+correction motivated by Viero et al. (2022) and Schreiber et al. (2018).</li>
+<li><strong>Independent cross-checks worth pursuing</strong>: arXiv:2606.20809 (2026 PAH lifecycle
+cosmological simulations) for a theoretical &alpha;(M*, z) prediction; arXiv:2606.18244 (PAHSPECS,
+JWST MIRI MRS at z~1&ndash;3) for direct spectroscopy that needs no continuum assumption at all.</li>
+</ul>
+</div>
+
+<h2>8 · The model against the data <span class="status resolved">done</span></h2>
+<div class="plain">
+Two figures, both at the best-fit &alpha;=2.86, one panel per stellar-mass bin (see the notebook
+for the full-resolution versions):
+<ul>
+<li><strong>Model overlay</strong>: raw stacked 24&mu;m flux vs redshift, with the smooth
+continuum-only curve and the continuum+PAH curve both drawn on top. The full model visibly tracks
+wiggles in the data — most clearly a bump around z&asymp;1.5&ndash;2.2 — that the smooth continuum
+alone misses.</li>
+<li><strong>Deconvolved spectrum, coloured by redshift</strong>: the same fit re-expressed as PAH
+excess over continuum vs rest-frame wavelength (the quantity this whole method exists to recover),
+with points coloured by which of four redshift slices they come from. The classic PAH bump
+(rest-frame &sim;6&ndash;9&mu;m) is traced out consistently where different-coloured (different
+redshift) points overlap in wavelength — the real test that this is a genuine spectral feature
+sweeping through the bandpass with redshift, not a coincidence tied to one epoch. The highest-mass
+panel visibly shows the large scatter/error bars in the green/red (z&gt;2.5) points flagged as
+thin in Section 2 — consistent with, and a direct visual confirmation of, that earlier caveat.</li>
+<li><strong>The underlying PAH lines, pre-convolution, by mass bin and redshift slice</strong>:
+strip away the bandpass and redshift bookkeeping entirely, and plot the intrinsic PAH line
+template itself — narrow peaks at the real rest wavelengths (6.2, 7.7, 8.6, 12.7&mu;m). One panel
+per stellar-mass bin; within each, four curves for four redshift slices, from the sSFR-anchored
+evolving fit. <strong>Top row</strong> (absolute amplitude): the low-redshift curve is dramatically
+taller than the others in every panel — this is a known runaway (amplitude evolution is
+scatter-limited on this dataset, matching a previously-documented artifact almost exactly:
+&eta;<sub>amp</sub>&asymp;&minus;2.39 here vs &minus;2.37 previously), not a physical detection.
+<strong>Bottom row</strong> (each curve peak-normalised, dividing the runaway out): isolates the
+line-<em>ratio</em> evolution, which is comparatively better-behaved and shows a consistent pattern
+across all four mass bins — the 6.2&mu;m feature relatively dominant at low z, the 12.7&mu;m
+feature relatively dominant at high z, with 7.7+8.6&mu;m in between. Interesting and consistent
+across mass bins, but still exploratory (built on the same fit machinery whose amplitude term is
+known to be scatter-limited) — a hint worth following up, not a claimed result.</li>
+</ul>
+</div>
+
+<h2>9 · Putting the correction into the SED fit itself <span class="status resolved">done</span></h2>
+<div class="plain">
+Everything above lives in the notebook's own machinery. This section pushes the measured PAH
+model into the shared <code>simstack4</code> library (<code>greybody.py</code>) so the actual
+SED-fitting code — the same code every other branch of this project calls — includes it, using
+the best-fit Wien slope (&alpha;=2.86) instead of the textbook 2, and a freshly derived
+PAH-amplitude relation. Two additions to <code>greybody.py</code> made this possible, both
+additive (nothing existing changed behavior):
+<ul>
+<li><code>alpha_wien</code> is now an overridable attribute (was hardcoded at 2.0 inside
+<code>greybody_model</code>'s default argument). Every pre-existing call site omits it and is
+byte-for-byte unaffected.</li>
+<li>A new <code>wien_mode="lir_pah"</code> path (<code>_pah_flux_lir</code>) predicts the PAH
+flux from a freshly measured <code>log10(L<sub>PAH</sub>/L<sub>IR</sub>) = a&middot;logM* + d</code>
+relation — using the properly 8&ndash;1000&mu;m-integrated L<sub>IR</sub>
+(<code>calculate_LIR</code>), not the discredited f<sub>24</sub>/f<sub>peak</sub> proxy this
+project deliberately moved away from — converted to an in-band flux via the real MIPS bandpass
+kernel (<code>feature_band_curves</code>).</li>
+</ul>
+<strong>Derived relation</strong> (at &alpha;<sub>wien</sub>=2.86): a fresh fit across the four
+mass bins gives <code>log10(L<sub>PAH</sub>/L<sub>IR</sub>) = a&middot;logM* + d</code>, with
+L<sub>PAH</sub>/L<sub>IR</sub> in the few-percent range and rising with mass — consistent in sign
+and magnitude with the earlier <code>pah-signflip-diagnosis</code> finding that this
+continuum-normalized amplitude behaves oppositely to the classic literature PAH-deficit ratio.
+</div>
+
+<div class="plain">
+<strong>Round-trip validation — two real bugs found and fixed along the way</strong>, both worth
+recording because either would have silently produced a wrong SED plot:
+<ol>
+<li><strong>Amplitude placeholder.</strong> An early version of the check passed a dummy
+<code>amplitude=0.0</code> into <code>_pah_flux_lir</code> instead of each point's real fitted
+greybody amplitude. Since the model uses <code>A=10<sup>amplitude</sup></code>,
+<code>amplitude=0.0</code> silently substitutes <code>A=1</code> for the true
+<code>A&asymp;10<sup>&minus;35</sup></code> — an astronomical (10<sup>37</sup>%) disagreement that was
+impossible to miss.</li>
+<li><strong>alpha_wien mismatch (subtler, harder to catch).</strong> After fixing (1), the check
+still disagreed by a consistent ~18&ndash;21% at every point, independent of redshift or mass bin —
+the flat, uniform size of the residual (not the physically-expected pattern of point-to-point
+scatter) was the tell that something was still structurally wrong, not just noisy.
+Root cause: the notebook's own independent re-derivation of L<sub>IR</sub> (used both to fit the
+<code>(a,d)</code> coefficients and to cross-check the library call) used a freshly constructed
+<code>Greybody()</code> instance that still had the default <code>alpha_wien=2.0</code>, while the
+library call it was being checked against used the fitted 2.86. L<sub>IR</sub> integrates through
+the Wien-side power law, so this mismatch biased the whole derived relation by a near-constant
+factor. Fixed by setting <code>alpha_wien</code> consistently on <em>both</em> instances before
+deriving <code>(a,d)</code> — after which the round-trip check passes at exactly
+<strong>0.0000%</strong> disagreement (16/16 points, machine precision).</li>
+</ol>
+A third, non-bug finding surfaced by the same debugging: the very first version of this check
+compared the library's <em>sharp-redshift</em> evaluation against the dither-tomography measurement's
+<em>bin-integrated</em> kernel (which folds in the stacking bin width, dN/dz, and photo-z smearing)
+and found 48&ndash;100% disagreement, worst at high z. Tracing it down (rather than loosening the
+tolerance) showed the two kernels track at z&lsim;1.5 and diverge sharply above that — not from a
+bug, but because the dither fit used a small (3%) catastrophic-outlier redshift pedestal
+(<code>f_cat=0.03</code>) that leaks low-z-consistent PAH flux into nominally high-z bins where the
+true, sharp-z response is genuinely ~0 (the feature has swept out of the MIPS 24&mu;m band by
+z&sim;3.5&ndash;4). The library's sharp-z evaluation is the physically correct choice for injecting
+into a per-population SED fit (matching how every other quantity in <code>greybody_model</code> is
+evaluated), so the round-trip check was rebuilt to test the library's own documented formula against
+an independent notebook-side computation of that same formula, rather than against the
+definitionally-different dither-tomography estimate.
+</div>
+
+<div class="plain">
+<strong>Two-pass refit result.</strong> Refit with <code>wien_mode="lir_pah"</code>,
+<code>alpha_wien=2.86</code>, the fresh <code>(a,d)</code> coefficients, and 24&mu;m inflation
+made <em>redshift-dependent</em> (4&times;, i.e. included, at z&lt;3 where the PAH correction is
+active and validated; 10000&times;, i.e. excluded, above z=3 where the feature has swept out of the
+band and there is nothing to correct against — mirroring how 70&mu;m is already split at z=0.8).
+<ul>
+<li><strong>Tier counts are unchanged</strong> (Tier A/B/C: 83/95/102 before and after). Tier is set
+by the <em>median</em> signal-to-noise across all 8 bands, and 24&mu;m — even once it is allowed to
+matter — is not usually the band that determines that median, so this correction alone doesn't flip
+Tier C bins to Tier B on this dataset.</li>
+<li><strong>Dust temperature does shift</strong>: +0.81 K on average at z&lt;3 (where the correction
+is active), vs. a smaller +0.43 K at z&ge;3 (where the PAH term is off, and the residual shift comes
+entirely from using the measured &alpha;<sub>wien</sub>=2.86 instead of 2 for the general Wien-side
+continuum slope — a separate, already-validated Section 5&ndash;7 result, not the PAH correction
+itself). The z&lt;3 shift being roughly double the z&ge;3 one is consistent with the PAH correction
+adding a real, modest effect on top of that baseline retilt.</li>
+</ul>
+The resulting SED grid (96 panels, redshift &times; stellar-mass) now shows 24&mu;m as a real,
+model-informed data point at z&lt;3 instead of an excluded placeholder.
+</div>
+
+<h2>10 · Headline pivot: the PAH deficit rises with mass <span class="status resolved">decided 2026-07-01</span></h2>
+<div class="plain">
+Section 9's fresh <code>log10(L<sub>PAH</sub>/L<sub>IR</sub>) = a&middot;logM* + d</code> fit, done
+at the branch's own best-fit &alpha;<sub>wien</sub>=2.86 (not the old assumed 2), gives
+<strong>5.9% / 8.4% / 8.7% / 11.5%</strong> across the four mass bins — a clear <strong>rise</strong>
+(+0.212 dex/dex), not the flat &asymp;2.4% found in the 2026-06-28 analysis. That earlier result
+is this project's previous Letter framing ("PAH tracks L<sub>IR</sub>, invariant of stellar mass") —
+directly contradicted by this number.
+<br><br>
+Before trusting a number this different from the established framing, we ran the obvious
+objection as an explicit check rather than assuming it away: this pipeline's own PAH amplitude is
+already known to be strongly sensitive to &alpha; (a 0.5 change in &alpha; moves the raw amplitude
+3&ndash;4&times;) — is the "rise" just that systematic in disguise? Re-running the identical
+calculation with &alpha; pinned at the old assumed value (2.0) instead of the fitted 2.86, on the
+exact same data and baseline, gives <strong>+0.146 dex/dex</strong> — still clearly rising, same
+sign, only 1.5&times; different in size. That is a much smaller swing than the amplitude's own
+3&ndash;4&times; sensitivity, so the rising trend is <strong>not</strong> an artifact of which
+&alpha; we assume.
+<br><br>
+It is not, however, a clean resolution of the original tension: at that same &alpha;=2, this
+session's result (+0.146, rising) still disagrees with the original 2026-06-28 measurement
+(+0.019, flat) made at the identical assumed slope. That earlier number used a single catalog
+split and a less careful (unsmoothed) baseline construction; this session pools three independent
+catalog splits and smooths the baseline first. Which of those differences is actually
+responsible is not yet isolated — an open item for the next phase of work.
+<br><br>
+<strong>Decision (2026-07-01):</strong> given the rise is robust to the &alpha; question but not
+yet fully reconciled with the older measurement, the Letter's headline claim pivots to
+<strong>"the PAH deficit rises with stellar mass"</strong> — supported by two independent lines of
+evidence (this new luminosity-ratio measurement and the equivalent-width-style ratio from Sections
+5&ndash;7, both rising and both checked against the &alpha; systematic) — retiring the
+"PAH tracks L<sub>IR</sub>, invariant of mass" framing. Full writeup:
+<code>docs/pah-forward-model-6-summary.md</code>; updated candidate-Letter document:
+<code>.claude/skills/pah-forward-model/letters/03-pah-deficit-rises-with-mass.md</code>.
+</div>
+
+</body>
+</html>
