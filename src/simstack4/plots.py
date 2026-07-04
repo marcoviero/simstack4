@@ -3336,6 +3336,7 @@ def create_sfr_comparison_plot(
 
 # ── PAH standalone plot functions ─────────────────────────────────────────────
 
+
 def plot_pah_fit(fit_result, features, ax=None, show_components=True):
     """
     Plot a single PAH fit: raw + model (left), detrended + features (right).
@@ -3349,7 +3350,9 @@ def plot_pah_fit(fit_result, features, ax=None, show_components=True):
     ax : matplotlib.axes.Axes, optional
     show_components : bool
     """
-    has_detrend = "detrended_flux" in fit_result and fit_result["detrended_flux"] is not None
+    has_detrend = (
+        "detrended_flux" in fit_result and fit_result["detrended_flux"] is not None
+    )
 
     if ax is not None:
         fig = ax.figure
@@ -3368,8 +3371,14 @@ def plot_pah_fit(fit_result, features, ax=None, show_components=True):
     ax0.scatter(lam, data, c="k", s=15, zorder=5, alpha=0.5, label="Data")
     ax0.plot(lam, model, "r-", lw=2, label="PAH + trend", zorder=4)
     if has_detrend:
-        ax0.plot(lam, fit_result["smooth_trend"], "b--", lw=1.5, alpha=0.6,
-                label="Smooth z-trend")
+        ax0.plot(
+            lam,
+            fit_result["smooth_trend"],
+            "b--",
+            lw=1.5,
+            alpha=0.6,
+            label="Smooth z-trend",
+        )
     ax0.set_xlabel("Rest-frame wavelength ($\\mu$m)")
     ax0.set_ylabel("L$_{24}$/L$_{IR}$")
     ax0.set_title("Raw data + model")
@@ -3385,18 +3394,31 @@ def plot_pah_fit(fit_result, features, ax=None, show_components=True):
         ax1.plot(lam, model_dt, "r-", lw=2, label="PAH model", zorder=4)
 
         C0 = fit_result["continuum_level"]
-        ax1.axhline(C0, color="gray", ls="--", lw=1, alpha=0.5, label=f"Baseline={C0:.3f}")
+        ax1.axhline(
+            C0, color="gray", ls="--", lw=1, alpha=0.5, label=f"Baseline={C0:.3f}"
+        )
 
         if show_components:
             colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
             for i, (A, fwhm, center) in enumerate(
-                zip(fit_result["amplitudes"], fit_result["widths_fwhm"],
-                    fit_result["centers"])):
+                zip(
+                    fit_result["amplitudes"],
+                    fit_result["widths_fwhm"],
+                    fit_result["centers"],
+                )
+            ):
                 sigma = fwhm / 2.355
                 feat = C0 + A * np.exp(-0.5 * ((lam - center) / sigma) ** 2)
                 bump = A / C0 * 100 if C0 > 0 else 0
-                ax1.plot(lam, feat, "-", color=colors[i % len(colors)],
-                        lw=1.5, alpha=0.7, label=f"{center:.1f}μm ({bump:.0f}%)")
+                ax1.plot(
+                    lam,
+                    feat,
+                    "-",
+                    color=colors[i % len(colors)],
+                    lw=1.5,
+                    alpha=0.7,
+                    label=f"{center:.1f}μm ({bump:.0f}%)",
+                )
 
         for lam_c, _, _ in features:
             ax1.axvline(lam_c, color="gray", ls=":", alpha=0.2)
@@ -3450,8 +3472,16 @@ def plot_pah_forward_fit(fit_result, features, save_path=None):
     for z_f, name in feat_z.items():
         if z.min() < z_f < z.max():
             ax.axvline(z_f, color="gray", ls=":", alpha=0.3)
-            ax.text(z_f, ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else flux.max() * 1.05,
-                    f"{name}μm", fontsize=7, ha="center", va="bottom", color="red", alpha=0.7)
+            ax.text(
+                z_f,
+                ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else flux.max() * 1.05,
+                f"{name}μm",
+                fontsize=7,
+                ha="center",
+                va="bottom",
+                color="red",
+                alpha=0.7,
+            )
 
     ax.set_xlabel("Redshift")
     ax.set_ylabel("L$_{24}$/L$_{IR}$ (or flux ratio)")
@@ -3460,7 +3490,9 @@ def plot_pah_forward_fit(fit_result, features, save_path=None):
     ax.grid(True, alpha=0.2)
 
     ax = axes[1]
-    ax.scatter(rest_lam, flux_dt, c="k", s=15, alpha=0.5, zorder=3, label="Detrended data")
+    ax.scatter(
+        rest_lam, flux_dt, c="k", s=15, alpha=0.5, zorder=3, label="Detrended data"
+    )
     ax.plot(rest_lam, model_dt, "r-", lw=2, label="Forward model (detrended)", zorder=4)
 
     lam_fine = np.linspace(5, 16, 500)
@@ -3470,43 +3502,151 @@ def plot_pah_forward_fit(fit_result, features, save_path=None):
         sigma = fwhm / 2.355
         if j < len(amps) and amps[j] > 0.001:
             feat = amps[j] * np.exp(-0.5 * ((lam_fine - lc) / sigma) ** 2)
-            ax.plot(lam_fine, 1.0 + feat, "-", color=colors[j % len(colors)],
-                    lw=1.5, alpha=0.6, label=f"{lc:.1f}μm A={amps[j]:.3f}")
+            ax.plot(
+                lam_fine,
+                1.0 + feat,
+                "-",
+                color=colors[j % len(colors)],
+                lw=1.5,
+                alpha=0.6,
+                label=f"{lc:.1f}μm A={amps[j]:.3f}",
+            )
             spec_intrinsic += feat
 
-    ax.plot(lam_fine, spec_intrinsic, "k--", lw=1, alpha=0.3, label="Intrinsic PAH (recovered)")
+    ax.plot(
+        lam_fine,
+        spec_intrinsic,
+        "k--",
+        lw=1,
+        alpha=0.3,
+        label="Intrinsic PAH (recovered)",
+    )
     ax.axhline(1, color="gray", ls="--", lw=0.8, alpha=0.3)
     for lc, _, _ in features:
         ax.axvline(lc, color="gray", ls=":", alpha=0.2)
 
     ax.set_xlabel("Rest-frame wavelength (μm)")
     ax.set_ylabel("Flux / smooth trend")
-    ax.set_title(f"Recovered intrinsic PAH spectrum\n($\\chi^2_r$ = {fit_result['chi2_red']:.2f})")
+    ax.set_title(
+        f"Recovered intrinsic PAH spectrum\n($\\chi^2_r$ = {fit_result['chi2_red']:.2f})"
+    )
     ax.legend(fontsize=7, loc="upper right")
     ax.set_xlim(5, 16)
     ax.grid(True, alpha=0.2)
 
     ax = axes[2]
-    bp_lam = np.array([
-        18.005, 19.134, 19.716, 19.944, 20.177, 20.415, 20.577, 20.742,
-        20.909, 20.993, 21.079, 21.252, 21.427, 21.606, 21.787, 21.879,
-        21.972, 22.160, 22.351, 22.545, 22.743, 22.944, 23.149, 23.358,
-        23.570, 23.786, 24.006, 24.231, 24.459, 24.692, 24.930, 25.172,
-        25.419, 25.670, 25.927, 26.189, 26.456, 26.729, 27.007, 27.292,
-        27.582, 27.878, 28.181, 28.491, 28.808, 29.131, 29.462, 29.801,
-        30.148, 30.865, 31.618, 32.207,
-    ])
-    bp_resp = np.array([
-        0.000237, 0.000644, 0.004662, 0.012914, 0.024468, 0.076447,
-        0.177656, 0.377777, 0.735924, 0.813463, 0.857335, 0.907091,
-        0.957009, 0.984957, 0.997749, 1.000000, 0.998522, 0.970058,
-        0.926258, 0.880798, 0.856114, 0.856779, 0.834520, 0.795473,
-        0.752764, 0.777653, 0.839877, 0.911819, 0.924876, 0.897806,
-        0.859096, 0.803216, 0.736609, 0.649479, 0.558191, 0.486209,
-        0.428693, 0.381986, 0.326682, 0.261178, 0.195445, 0.148445,
-        0.117945, 0.097827, 0.080512, 0.060997, 0.042525, 0.029764,
-        0.021807, 0.011002, 0.003471, 0.000727,
-    ])
+    bp_lam = np.array(
+        [
+            18.005,
+            19.134,
+            19.716,
+            19.944,
+            20.177,
+            20.415,
+            20.577,
+            20.742,
+            20.909,
+            20.993,
+            21.079,
+            21.252,
+            21.427,
+            21.606,
+            21.787,
+            21.879,
+            21.972,
+            22.160,
+            22.351,
+            22.545,
+            22.743,
+            22.944,
+            23.149,
+            23.358,
+            23.570,
+            23.786,
+            24.006,
+            24.231,
+            24.459,
+            24.692,
+            24.930,
+            25.172,
+            25.419,
+            25.670,
+            25.927,
+            26.189,
+            26.456,
+            26.729,
+            27.007,
+            27.292,
+            27.582,
+            27.878,
+            28.181,
+            28.491,
+            28.808,
+            29.131,
+            29.462,
+            29.801,
+            30.148,
+            30.865,
+            31.618,
+            32.207,
+        ]
+    )
+    bp_resp = np.array(
+        [
+            0.000237,
+            0.000644,
+            0.004662,
+            0.012914,
+            0.024468,
+            0.076447,
+            0.177656,
+            0.377777,
+            0.735924,
+            0.813463,
+            0.857335,
+            0.907091,
+            0.957009,
+            0.984957,
+            0.997749,
+            1.000000,
+            0.998522,
+            0.970058,
+            0.926258,
+            0.880798,
+            0.856114,
+            0.856779,
+            0.834520,
+            0.795473,
+            0.752764,
+            0.777653,
+            0.839877,
+            0.911819,
+            0.924876,
+            0.897806,
+            0.859096,
+            0.803216,
+            0.736609,
+            0.649479,
+            0.558191,
+            0.486209,
+            0.428693,
+            0.381986,
+            0.326682,
+            0.261178,
+            0.195445,
+            0.148445,
+            0.117945,
+            0.097827,
+            0.080512,
+            0.060997,
+            0.042525,
+            0.029764,
+            0.021807,
+            0.011002,
+            0.003471,
+            0.000727,
+        ]
+    )
 
     ax.fill_between(bp_lam, bp_resp, alpha=0.15, color="k")
     ax.plot(bp_lam, bp_resp, "k-", lw=2, label="MIPS 24μm response")
@@ -3516,8 +3656,15 @@ def plot_pah_forward_fit(fit_result, features, save_path=None):
         pah_scaled = (spec_intrinsic - 1.0) * 0.3
         in_band = (obs_lam > 18) & (obs_lam < 33)
         if in_band.any():
-            ax.plot(obs_lam[in_band], pah_scaled[in_band], "-", color=color,
-                    lw=1.5, alpha=0.7, label=f"PAH at z={z_show}")
+            ax.plot(
+                obs_lam[in_band],
+                pah_scaled[in_band],
+                "-",
+                color=color,
+                lw=1.5,
+                alpha=0.7,
+                label=f"PAH at z={z_show}",
+            )
 
     ax.set_xlabel("Observed wavelength (μm)")
     ax.set_ylabel("Response / PAH signal")
@@ -3529,7 +3676,8 @@ def plot_pah_forward_fit(fit_result, features, save_path=None):
     fig.suptitle(
         f"PAH forward-model fit  |  {len(z)} spectral points  |  "
         f"$\\chi^2_r$ = {fit_result['chi2_red']:.2f}",
-        fontsize=13, y=1.01,
+        fontsize=13,
+        y=1.01,
     )
     plt.tight_layout()
 
@@ -3564,8 +3712,11 @@ def plot_pah_vs_property(per_bin_results, features, save_path=None):
 
     group_by = per_bin_results.get("_group_by", "bin")
     df_evo = per_bin_results.get("_evolution")
-    bin_labels = [k for k in per_bin_results
-                  if not k.startswith("_") and isinstance(per_bin_results[k], dict)]
+    bin_labels = [
+        k
+        for k in per_bin_results
+        if not k.startswith("_") and isinstance(per_bin_results[k], dict)
+    ]
 
     if not bin_labels:
         print("No bins to plot")
@@ -3581,8 +3732,16 @@ def plot_pah_vs_property(per_bin_results, features, save_path=None):
         r = per_bin_results[label]
         z = r["z_values"]
         ax.scatter(z, r["detrended_flux"], c=[colors[i]], s=12, alpha=0.4, zorder=2)
-        ax.plot(z, r["model_detrended"], "-", color=colors[i], lw=2, alpha=0.8,
-                zorder=3, label=f"{group_by}={label}")
+        ax.plot(
+            z,
+            r["model_detrended"],
+            "-",
+            color=colors[i],
+            lw=2,
+            alpha=0.8,
+            zorder=3,
+            label=f"{group_by}={label}",
+        )
     ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
     ax.set_xlabel("Redshift")
     ax.set_ylabel("Flux / smooth trend")
@@ -3599,14 +3758,28 @@ def plot_pah_vs_property(per_bin_results, features, save_path=None):
         for lc, amp, fwhm in zip(r["centers"], amps, r["widths_fwhm"]):
             sigma = fwhm / 2.355
             spec += amp * np.exp(-0.5 * ((lam_fine - lc) / sigma) ** 2)
-        ax.plot(lam_fine, spec, "-", color=colors[i], lw=2.5, alpha=0.8,
-                label=f"{group_by}={label}")
+        ax.plot(
+            lam_fine,
+            spec,
+            "-",
+            color=colors[i],
+            lw=2.5,
+            alpha=0.8,
+            label=f"{group_by}={label}",
+        )
 
     ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
     for lc, _, _ in features:
         ax.axvline(lc, color="gray", ls=":", alpha=0.2)
-        ax.text(lc, ax.get_ylim()[1] if ax.get_ylim()[1] > 1 else 1.6,
-                f"{lc}", fontsize=7, ha="center", va="bottom", color="gray")
+        ax.text(
+            lc,
+            ax.get_ylim()[1] if ax.get_ylim()[1] > 1 else 1.6,
+            f"{lc}",
+            fontsize=7,
+            ha="center",
+            va="bottom",
+            color="gray",
+        )
 
     ax.set_xlabel("Rest-frame wavelength (μm)")
     ax.set_ylabel("1 + PAH emission")
@@ -3625,20 +3798,32 @@ def plot_pah_vs_property(per_bin_results, features, save_path=None):
             y = df_evo[ac].values
             if np.max(y) < 0.001:
                 continue
-            ax.plot(x, y, "o-", color=feat_colors[j % len(feat_colors)],
-                    ms=9, mfc="white", mew=2.5, lw=2.5, label=name)
+            ax.plot(
+                x,
+                y,
+                "o-",
+                color=feat_colors[j % len(feat_colors)],
+                ms=9,
+                mfc="white",
+                mew=2.5,
+                lw=2.5,
+                label=name,
+            )
         ax.set_xlabel(group_by.replace("_", " ").title())
         ax.set_ylabel("Intrinsic PAH amplitude")
         ax.set_title("PAH feature strength\nvs " + group_by.replace("_", " "))
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.2)
     else:
-        ax.text(0.5, 0.5, "Need ≥2 bins", ha="center", va="center", transform=ax.transAxes)
+        ax.text(
+            0.5, 0.5, "Need ≥2 bins", ha="center", va="center", transform=ax.transAxes
+        )
 
     fig.suptitle(
         f"PAH emission vs {group_by}  |  {n_bins} bins  |  "
         f"Forward model with real MIPS bandpass",
-        fontsize=13, y=1.01,
+        fontsize=13,
+        y=1.01,
     )
     plt.tight_layout()
 
@@ -3672,21 +3857,21 @@ def plot_pah_vs_property_bayesian(result, features, save_path=None):
     """
     from pathlib import Path as _Path
 
-    bin_labels       = result["bin_labels"]
-    bin_centers      = result["bin_centers"]
-    alpha_per_bin    = result["alpha_per_bin"]    # (M,) or (G, M)
-    alpha_samples    = result["alpha_samples"]    # (n_flat, M) or (n_flat, G, M)
-    medians          = result["medians"]
-    groups           = result["feature_groups"]
-    group_names      = result.get("group_names", [f"g{g}" for g in range(len(groups))])
-    feat_scale       = result["_feat_scale"]
-    widths_sigma     = result["_widths_sigma"]
-    obs_per_bin      = result["_obs_per_bin"]
-    z_union          = result["_z_union"]
-    T_grid           = result["_T_grid"]
+    bin_labels = result["bin_labels"]
+    bin_centers = result["bin_centers"]
+    alpha_per_bin = result["alpha_per_bin"]  # (M,) or (G, M)
+    alpha_samples = result["alpha_samples"]  # (n_flat, M) or (n_flat, G, M)
+    medians = result["medians"]
+    groups = result["feature_groups"]
+    group_names = result.get("group_names", [f"g{g}" for g in range(len(groups))])
+    feat_scale = result["_feat_scale"]
+    widths_sigma = result["_widths_sigma"]
+    obs_per_bin = result["_obs_per_bin"]
+    z_union = result["_z_union"]
+    T_grid = result["_T_grid"]
     group_amplitudes = result.get("group_amplitudes", False)
 
-    M        = len(bin_labels)
+    M = len(bin_labels)
     n_groups = T_grid.shape[0]
     colors_m = plt.cm.viridis(np.linspace(0.15, 0.85, max(M, 2)))
     colors_g = plt.cm.plasma(np.linspace(0.15, 0.85, max(n_groups, 2)))
@@ -3695,41 +3880,55 @@ def plot_pah_vs_property_bayesian(result, features, save_path=None):
     # Mode 1: 1 + α_m × (r @ T); modes 2/3: 1 + Σ_g α_gm × T_g
     def _pah_factor_plot(m, T_arr):
         if not group_amplitudes:
-            r_med = np.concatenate([[1.0], [
-                medians.get(f"r_group{gi}", 1.0) for gi in range(1, n_groups)
-            ]])
+            r_med = np.concatenate(
+                [[1.0], [medians.get(f"r_group{gi}", 1.0) for gi in range(1, n_groups)]]
+            )
             return 1.0 + alpha_per_bin[m] * (r_med @ T_arr)
         else:
-            return 1.0 + alpha_per_bin[:, m] @ T_arr   # (G,) @ (G, n_obs) = (n_obs,)
+            return 1.0 + alpha_per_bin[:, m] @ T_arr  # (G,) @ (G, n_obs) = (n_obs,)
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
 
     # ── Panel 1: detrended flux vs z ─────────────────────────────────────────
     ax = axes[0]
     for m, label in enumerate(bin_labels):
-        obs    = obs_per_bin[label]
-        z_m    = obs["z"]
+        obs = obs_per_bin[label]
+        z_m = obs["z"]
         flux_m = obs["flux"]
-        sig_m  = obs["sigma"]
+        sig_m = obs["sigma"]
 
-        T_data = np.array([np.interp(z_m, z_union, T_grid[gi]) for gi in range(n_groups)])
-        pah_m  = _pah_factor_plot(m, T_data)
-        w_log  = flux_m / (sig_m * np.log(10))
-        X      = np.column_stack([z_m, z_m**2, np.ones_like(z_m)])
-        y_log  = np.log10(flux_m / pah_m)
+        T_data = np.array(
+            [np.interp(z_m, z_union, T_grid[gi]) for gi in range(n_groups)]
+        )
+        pah_m = _pah_factor_plot(m, T_data)
+        w_log = flux_m / (sig_m * np.log(10))
+        X = np.column_stack([z_m, z_m**2, np.ones_like(z_m)])
+        y_log = np.log10(flux_m / pah_m)
         coeffs, _, _, _ = np.linalg.lstsq(X * w_log[:, None], y_log * w_log, rcond=None)
         baseline = 10.0 ** (X @ coeffs)
 
-        detrended     = flux_m / baseline
-        detrended_err = sig_m  / baseline
+        detrended = flux_m / baseline
+        detrended_err = sig_m / baseline
 
         z_fine = np.linspace(z_m.min(), z_m.max(), 150)
-        T_fine = np.array([np.interp(z_fine, z_union, T_grid[gi]) for gi in range(n_groups)])
+        T_fine = np.array(
+            [np.interp(z_fine, z_union, T_grid[gi]) for gi in range(n_groups)]
+        )
         pah_curve = _pah_factor_plot(m, T_fine)
 
-        ax.errorbar(z_m, detrended, yerr=detrended_err,
-                    fmt="o", ms=5, alpha=0.5, color=colors_m[m], ecolor=colors_m[m])
-        ax.plot(z_fine, pah_curve, "-", color=colors_m[m], lw=2.0, alpha=0.85, label=label)
+        ax.errorbar(
+            z_m,
+            detrended,
+            yerr=detrended_err,
+            fmt="o",
+            ms=5,
+            alpha=0.5,
+            color=colors_m[m],
+            ecolor=colors_m[m],
+        )
+        ax.plot(
+            z_fine, pah_curve, "-", color=colors_m[m], lw=2.0, alpha=0.85, label=label
+        )
 
     ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
     ax.set_xlabel("Redshift")
@@ -3752,16 +3951,25 @@ def plot_pah_vs_property_bayesian(result, features, save_path=None):
                 r_med_gi = medians.get(f"r_group{gi}", 1.0) if gi > 0 else 1.0
                 a_gm = alpha_per_bin[m] * r_med_gi
             for j in g:
-                lc  = features[j][0]
+                lc = features[j][0]
                 sig = widths_sigma[j]
-                spec += a_gm * feat_scale[j] * np.exp(-0.5 * ((lam_fine - lc) / sig) ** 2)
+                spec += (
+                    a_gm * feat_scale[j] * np.exp(-0.5 * ((lam_fine - lc) / sig) ** 2)
+                )
         ax.plot(lam_fine, spec, "-", color=colors_m[m], lw=2.5, alpha=0.8, label=label)
 
     ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
     for lc, _, _ in features:
         ax.axvline(lc, color="gray", ls=":", alpha=0.2)
-        ax.text(lc, max(ax.get_ylim()[1], 1.6),
-                f"{lc}", fontsize=7, ha="center", va="bottom", color="gray")
+        ax.text(
+            lc,
+            max(ax.get_ylim()[1], 1.6),
+            f"{lc}",
+            fontsize=7,
+            ha="center",
+            va="bottom",
+            color="gray",
+        )
     ax.set_xlabel("Rest-frame wavelength (μm)")
     ax.set_ylabel("1 + PAH emission")
     ax.set_title("Recovered intrinsic PAH spectra\n(deconvolved from MIPS bandpass)")
@@ -3777,10 +3985,17 @@ def plot_pah_vs_property_bayesian(result, features, save_path=None):
         q84 = np.percentile(alpha_samples, 84, axis=0)
         for m in range(M):
             ax.errorbar(
-                bin_centers[m], alpha_per_bin[m],
+                bin_centers[m],
+                alpha_per_bin[m],
                 yerr=[[alpha_per_bin[m] - q16[m]], [q84[m] - alpha_per_bin[m]]],
-                fmt="o", ms=9, color=colors_m[m], ecolor=colors_m[m],
-                elinewidth=2, capsize=5, label=bin_labels[m], zorder=5,
+                fmt="o",
+                ms=9,
+                color=colors_m[m],
+                ecolor=colors_m[m],
+                elinewidth=2,
+                capsize=5,
+                label=bin_labels[m],
+                zorder=5,
             )
         ax.set_ylabel("PAH amplitude alpha")
         ax.set_title("PAH amplitude per bin\n(posterior median + 16–84 CI)")
@@ -3790,10 +4005,18 @@ def plot_pah_vs_property_bayesian(result, features, save_path=None):
         q84 = np.percentile(alpha_samples, 84, axis=0)
         for g in range(n_groups):
             ax.errorbar(
-                bin_centers, alpha_per_bin[g],
+                bin_centers,
+                alpha_per_bin[g],
                 yerr=[alpha_per_bin[g] - q16[g], q84[g] - alpha_per_bin[g]],
-                fmt="o-", ms=7, lw=1.5, color=colors_g[g], ecolor=colors_g[g],
-                elinewidth=1.5, capsize=4, label=group_names[g], zorder=5,
+                fmt="o-",
+                ms=7,
+                lw=1.5,
+                color=colors_g[g],
+                ecolor=colors_g[g],
+                elinewidth=1.5,
+                capsize=4,
+                label=group_names[g],
+                zorder=5,
             )
         ax.set_ylabel("PAH amplitude alpha_gm")
         ax.set_title("Per-group PAH amplitude vs bin\n(posterior median + 16–84 CI)")
@@ -3802,13 +4025,20 @@ def plot_pah_vs_property_bayesian(result, features, save_path=None):
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.2)
 
-    mode_label = "single-alpha" if not group_amplitudes else (
-        "shared-beta" if not result.get("independent_betas", False) else "independent-beta"
+    mode_label = (
+        "single-alpha"
+        if not group_amplitudes
+        else (
+            "shared-beta"
+            if not result.get("independent_betas", False)
+            else "independent-beta"
+        )
     )
     group_col = result.get("_group_col", "bin property")
     fig.suptitle(
         f"PAH emission vs {group_col}  |  {M} bins  |  Bayesian [{mode_label}]",
-        fontsize=13, y=1.01,
+        fontsize=13,
+        y=1.01,
     )
     plt.tight_layout()
 
@@ -3861,8 +4091,18 @@ def plot_pah_multibin_forward_fit(result, features, save_path=None):
         d = model_per_bin[label]
         idx = np.argsort(d["z"])
         ax.scatter(d["z"], d["flux"], c=[colors[m]], s=12, alpha=0.4, zorder=3)
-        ax.plot(d["z"][idx], d["model"][idx], "-", color=colors[m], lw=2, label=label, zorder=4)
-        ax.plot(d["z"][idx], d["baseline"][idx], "--", color=colors[m], lw=1, alpha=0.35)
+        ax.plot(
+            d["z"][idx],
+            d["model"][idx],
+            "-",
+            color=colors[m],
+            lw=2,
+            label=label,
+            zorder=4,
+        )
+        ax.plot(
+            d["z"][idx], d["baseline"][idx], "--", color=colors[m], lw=1, alpha=0.35
+        )
     ax.set_xlabel("Redshift")
     ax.set_ylabel(r"$f_{24}/f_{\rm peak}$")
     ax.set_title("Flux vs z\n(model — baseline)")
@@ -3873,9 +4113,18 @@ def plot_pah_multibin_forward_fit(result, features, save_path=None):
     for m, label in enumerate(bin_labels):
         d = model_per_bin[label]
         idx = np.argsort(d["z"])
-        ax.scatter(d["z"], d["detrended_data"], c=[colors[m]], s=12, alpha=0.4, zorder=3)
-        ax.plot(d["z"][idx], d["detrended_model"][idx], "-", color=colors[m], lw=2,
-                label=label, zorder=4)
+        ax.scatter(
+            d["z"], d["detrended_data"], c=[colors[m]], s=12, alpha=0.4, zorder=3
+        )
+        ax.plot(
+            d["z"][idx],
+            d["detrended_model"][idx],
+            "-",
+            color=colors[m],
+            lw=2,
+            label=label,
+            zorder=4,
+        )
     ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
     ax.set_xlabel("Redshift")
     ax.set_ylabel("Flux / baseline")
@@ -3892,14 +4141,25 @@ def plot_pah_multibin_forward_fit(result, features, save_path=None):
             for j in g:
                 lc, _, fwhm = features[j]
                 sigma = fwhm / 2.355
-                spec += alpha[m] * r_gi * feat_scale[j] * np.exp(
-                    -0.5 * ((lam_fine - lc) / sigma) ** 2)
+                spec += (
+                    alpha[m]
+                    * r_gi
+                    * feat_scale[j]
+                    * np.exp(-0.5 * ((lam_fine - lc) / sigma) ** 2)
+                )
         ax.plot(lam_fine, spec, "-", color=colors[m], lw=2.5, alpha=0.9, label=label)
     ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.3)
     for lc, _, _ in features:
         ax.axvline(lc, color="gray", ls=":", alpha=0.2)
-        ax.text(lc, ax.get_ylim()[1] if ax.get_ylim()[1] > 1 else 1.2,
-                f"{lc}", fontsize=6, ha="center", va="bottom", color="gray")
+        ax.text(
+            lc,
+            ax.get_ylim()[1] if ax.get_ylim()[1] > 1 else 1.2,
+            f"{lc}",
+            fontsize=6,
+            ha="center",
+            va="bottom",
+            color="gray",
+        )
     ax.set_xlabel("Rest-frame wavelength (μm)")
     ax.set_ylabel("1 + PAH emission")
     ax.set_title("Recovered intrinsic PAH spectra\n(jointly constrained)")
@@ -3908,8 +4168,19 @@ def plot_pah_multibin_forward_fit(result, features, save_path=None):
     ax.grid(True, alpha=0.2)
 
     ax = axes[3]
-    ax.errorbar(bin_centers, alpha, yerr=alpha_err, fmt="o-", color="navy",
-                ms=9, mfc="white", mew=2.5, lw=2, capsize=4, elinewidth=1.5)
+    ax.errorbar(
+        bin_centers,
+        alpha,
+        yerr=alpha_err,
+        fmt="o-",
+        color="navy",
+        ms=9,
+        mfc="white",
+        mew=2.5,
+        lw=2,
+        capsize=4,
+        elinewidth=1.5,
+    )
     ax.axhline(0, color="k", ls="--", lw=0.8, alpha=0.3)
     ax.set_xlabel(group_col.replace("_", " ").title())
     ax.set_ylabel("PAH amplitude α")
@@ -3918,7 +4189,8 @@ def plot_pah_multibin_forward_fit(result, features, save_path=None):
 
     fig.suptitle(
         f"Multi-bin PAH forward model  |  {M} bins  |  χ²_r = {chi2_red:.2f}",
-        fontsize=13, y=1.01,
+        fontsize=13,
+        y=1.01,
     )
     plt.tight_layout()
 
@@ -4169,6 +4441,121 @@ def plot_pah_spectrum_corner(result, params=None, save_path=None):
         title_fmt=".3f",
         quantiles=[0.16, 0.5, 0.84],
     )
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+# CVD-validated categorical slots for the feature groups (fixed order per
+# group index — identity, never cycled); gray is reserved for the baseline.
+_PAH_GROUP_COLORS = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7"]
+
+
+def plot_pah_flux_decomposition(
+    decomp_df,
+    band="MIPS_24",
+    mass_labels=None,
+    truth_curves=None,
+    logy=True,
+    save_path=None,
+):
+    """Stacked posterior decomposition of dithered stacked fluxes vs redshift.
+
+    One panel per property bin: the stacked-flux data points for ``band``,
+    the posterior-median cold baseline (gray), and shaded cumulative
+    feature-group contributions reconstructing the total, with the 68%
+    credible band on the total from the chain. ``decomp_df`` comes from
+    pah_spectrum.evolving_flux_decomposition; ``truth_curves`` optionally
+    maps prop_bin_id → (z, flux) noiseless truth for overlay. A top axis
+    shows the rest wavelength the bandpass center probes at each z.
+    """
+    from .pah_spectrum import get_bandpass
+
+    sub_all = decomp_df[decomp_df["band"] == band]
+    prop_ids = sorted(sub_all["prop_bin_id"].unique())
+    contrib_cols = [c for c in decomp_df.columns if c.startswith("contrib_")]
+    ncols = 2 if len(prop_ids) > 1 else 1
+    nrows = int(np.ceil(len(prop_ids) / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(7.2 * ncols, 4.6 * nrows),
+        sharex=True,
+        squeeze=False,
+    )
+    lam_eff = get_bandpass(band).lam_eff
+    for k, m in enumerate(prop_ids):
+        ax = axes[k // ncols, k % ncols]
+        sub = sub_all[sub_all["prop_bin_id"] == m].sort_values("z_mid")
+        z = sub["z_mid"].to_numpy()
+        cum = sub["baseline"].to_numpy().copy()
+        floor = max(np.nanmin(cum) * 0.3, 1e-12) if logy else 0.0
+        ax.fill_between(
+            z, floor, cum, color="0.75", lw=0, label="cold baseline C·f_cold"
+        )
+        for g, col in enumerate(contrib_cols):
+            top = cum + sub[col].to_numpy()
+            ax.fill_between(
+                z,
+                cum,
+                top,
+                color=_PAH_GROUP_COLORS[g % len(_PAH_GROUP_COLORS)],
+                alpha=0.75,
+                lw=0,
+                label=col.replace("contrib_A", "") + " µm",
+            )
+            cum = top
+        ax.fill_between(
+            z,
+            sub["total_lo"].to_numpy(),
+            sub["total_hi"].to_numpy(),
+            color="k",
+            alpha=0.12,
+            lw=0,
+            label="total (68%)",
+        )
+        ax.plot(z, sub["total"].to_numpy(), "k-", lw=1.0)
+        ax.errorbar(
+            z,
+            sub["f_obs"],
+            yerr=sub["f_err"],
+            fmt="o",
+            ms=3,
+            color="k",
+            mfc="w",
+            lw=0.8,
+            zorder=5,
+            label="stacked flux",
+        )
+        if truth_curves is not None and m in truth_curves:
+            zt, ft = truth_curves[m]
+            ax.plot(zt, ft, "r--", lw=1.2, alpha=0.8, label="noiseless truth")
+        if logy:
+            ax.set_yscale("log")
+        label = (
+            mass_labels[k]
+            if mass_labels is not None
+            else f"log M* = {sub['log_M_star'].iloc[0]:.2f}"
+        )
+        ax.set_title(f"{band.replace('_', ' ')} µm — {label}", fontsize=10)
+        ax.set_ylabel("stacked flux [mJy]")
+        ax.grid(alpha=0.3)
+        top_ax = ax.secondary_xaxis(
+            "top",
+            functions=(
+                lambda zz: lam_eff / (1 + zz),
+                lambda ll: lam_eff / np.maximum(ll, 1e-9) - 1,
+            ),
+        )
+        top_ax.set_xlabel("rest wavelength [µm]", fontsize=8)
+        top_ax.tick_params(labelsize=7)
+        if k == 0:
+            ax.legend(fontsize=7, loc="upper right", ncol=2)
+    for k in range(len(prop_ids), nrows * ncols):
+        axes[k // ncols, k % ncols].set_visible(False)
+    for ax in axes[-1]:
+        ax.set_xlabel("redshift")
+    fig.tight_layout()
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
     return fig

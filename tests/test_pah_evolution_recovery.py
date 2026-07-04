@@ -295,3 +295,107 @@ def test_fit_with_alpha_recovers_wien_slope():
     assert res["alpha_wien"] == pytest.approx(alpha_true, abs=0.25)
     assert res["alpha_prior"] == (2.0, 0.3)
     assert np.all(np.isfinite(res["A_pah"]))
+
+
+def test_fit_evolving_mcmc_recovers_slopes(evolving_df):
+    """Tier 3: the MCMC posterior brackets the injected shared slopes and the
+    decomposition reconstructs the stacked fluxes."""
+    from simstack4.pah_spectrum import evolving_flux_decomposition
+
+    model = PAHSpectrumModel(feature_groups=GROUPS, bands=BANDS)
+    res = model.fit_evolving_mcmc(
+        evolving_df, n_walkers=24, n_steps=400, n_burn=150, seed=3
+    )
+    assert res is not None
+    assert res["valid"] == [0, 1, 2]
+    assert res["chain"].shape[1] == len(res["names"]) == 7  # η_A + 3 η_g + 3 log r
+    assert 0.1 < res["acceptance_fraction"] < 0.9
+    assert res["eta_amp"] == pytest.approx(_ETA_AMP, abs=0.25)
+    assert res["eta_ratio"][1] > 0.0
+    assert res["r"][0] == pytest.approx(1.0)
+    np.testing.assert_allclose(res["A_pah"], _ALPHA / _C, rtol=0.35)
+    # Posterior decomposition: components sum to the total, and the total
+    # tracks the data (the injection noise is 2%).
+    dec = evolving_flux_decomposition(res, n_draws=40)
+    contrib_cols = [c for c in dec.columns if c.startswith("contrib_")]
+    assert len(contrib_cols) == len(GROUPS)
+    np.testing.assert_allclose(
+        dec["total"], dec["baseline"] + dec[contrib_cols].sum(axis=1), rtol=1e-8
+    )
+    resid = (dec["f_obs"] - dec["total"]) / dec["f_err"]
+    assert np.abs(np.median(resid)) < 0.5
+    assert np.all(dec["total_hi"] >= dec["total_lo"])
+
+
+def test_fit_evolving_mcmc_per_bin_ratios(evolving_df):
+    """Per-mass-bin ratio flexibility: dims grow accordingly, r_0 stays pinned,
+    and the recovered per-bin ratios stay consistent with the shared truth."""
+    model = PAHSpectrumModel(feature_groups=GROUPS, bands=BANDS)
+    res = model.fit_evolving_mcmc(
+        evolving_df,
+        per_bin_ratios=True,
+        n_walkers=28,
+        n_steps=400,
+        n_burn=150,
+        seed=4,
+    )
+    assert res is not None
+    ndim = 1 + (len(GROUPS) - 1) + 3 * (len(GROUPS) - 1)  # η_A, η_g, per-bin log r
+    assert res["chain"].shape[1] == len(res["names"]) == ndim
+    assert res["r_per_bin"].shape == (3, len(GROUPS))
+    np.testing.assert_allclose(res["r_per_bin"][:, 0], 1.0)
+    assert np.all(np.isfinite(res["r_per_bin"]))
+    # The truth uses one shared ratio vector, so every bin's posterior median
+    # should sit within a factor ~2 of it for the well-constrained 7.7+8.6 group.
+    np.testing.assert_allclose(
+        np.log10(res["r_per_bin"][:, 1]), np.log10(_R[1]), atol=0.3
+    )
+    assert res["chi2_red"] < 2.0
+
+
+def test_feature_envelope_recovers_under_dimming():
+    """Features that dim with the source (like real observed fluxes) are
+    recovered by feature_envelope="baseline"; the constant-flux model instead
+    absorbs the dimming into a spuriously negative amplitude slope."""
+    model = PAHSpectrumModel(feature_groups=GROUPS, bands=BANDS)
+    rng = np.random.default_rng(7)
+    df = _skeleton(_MASS, _ZEDGES).copy()
+    for col in _BASE.values():
+        df[col] = 0.03 / (1.0 + df["z_mid"]) ** 2  # ~9x envelope decline
+    bl = {b: _BASE[b] for b in model.bands}
+    prep = model._prepare(df, None, None, None, None, None, baseline_cols=bl)
+    ls_all = [
+        main_sequence_ssfr(np.asarray(b["z_mid"]), b["props"]["log_M_star"])
+        for b in prep["bins"]
+    ]
+    s_pivot = float(np.median(np.concatenate(ls_all)))
+    e = _ETA_AMP + _ETA_RATIO
+    for i, b in enumerate(prep["bins"]):
+        sub_idx = df.index[df["prop_bin_id"] == b["m"]]
+        shat = (
+            main_sequence_ssfr(np.asarray(b["z_mid"]), b["props"]["log_M_star"])
+            - s_pivot
+        )
+        for band in model.bands:
+            bidx = model.bands.index(band)
+            kmod = (10.0 ** np.outer(shat, e)) * b["K"][:, bidx, :]
+            fc = b["f_cold_by_band"][band]
+            fc_ref = b["f_cold_by_band"]["MIPS_24"]  # shared source envelope
+            med = float(np.median(fc))
+            env = fc_ref / med
+            flux = _C[i] * fc / med + _ALPHA[i] * env * (kmod @ _R)
+            err = 0.02 * np.abs(flux) + 1e-6
+            df.loc[sub_idx, band] = flux + rng.normal(0.0, err)
+            df.loc[sub_idx, f"{band}_err"] = err
+    res_env = model.fit_evolving(df, feature_envelope="baseline")
+    res_none = model.fit_evolving(df)
+    # Judge on the strong group's TOTAL slope e = eta_A + eta_g -- the
+    # identifiable combination (this fixture references the weak 6.2 um
+    # group, so the eta_A/eta_g split itself can drift). The envelope-aware
+    # fit recovers it; the constant-flux model soaks the ~1 dex dimming
+    # into the slopes instead and fits worse.
+    e_strong_env = res_env["eta_amp"] + res_env["eta_ratio"][1]
+    e_strong_none = res_none["eta_amp"] + res_none["eta_ratio"][1]
+    assert e_strong_env == pytest.approx(_ETA_AMP + _ETA_RATIO[1], abs=0.25)
+    assert e_strong_none < e_strong_env - 0.3
+    assert res_env["chi2_red"] < res_none["chi2_red"]
