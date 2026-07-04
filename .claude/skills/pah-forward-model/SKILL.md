@@ -113,21 +113,25 @@ Publication strategy and talk figure set: `docs/pah-forward-model-3-brief.md`.
 | Path | Role |
 |------|------|
 | `src/simstack4/pah_bandpass.py` | MIPS 24 + MIPS 70 response curves (`get_bandpass`); 24 µm arrays mirror frozen `pah_model` (guarded by test) |
-| `src/simstack4/pah_dither.py` | `DitherScheme` (uniform/adaptive, `to_toml_bins()`), `TruthSpectrum` (independent direct-integration path), `compute_pz_matrix`, `NoiseModel` + shared-source covariance, `simulate_dithered_fluxes`, `fisher_for_scheme`, `sweep_strategies`, `injection_recovery_sweep` |
-| `src/simstack4/pah_spectrum.py` | `build_design_matrix`, `warm_continuum_kernel`, `solve_linear_amplitudes` (GLS), `PAHSpectrumModel.fit_lstsq/.fit_mcmc/.pseudo_spectrum` |
-| `src/simstack4/plots.py` (end of file) | `plot_dither_kernels`, `plot_fisher_summary`, `plot_strategy_sweep`, `plot_pseudo_spectrum_overlay`, `plot_pah_spectrum_corner` |
+| `src/simstack4/pah_dither.py` | `DitherScheme` (uniform/adaptive, `to_toml_bins()`), `TruthSpectrum` (independent direct-integration path; sSFR evolution via `eta_ssfr_amp`/`eta_ssfr_ratio`; hot/VSG MIR power-law continuum via `mir_plaw_amp` — without it simulated 24 µm flux is pure PAH and C_m is unidentifiable; `flux_envelope(z, prop_bin)` observed-flux dimming envelope, calibrate to the real smoothed f24_cold(z, M*)), `compute_pz_matrix`, `NoiseModel` + shared-source covariance, `simulate_dithered_fluxes`, `fisher_for_scheme`, `fisher_evolution`, `evolution_recovery_sweep`, `sweep_strategies`, `injection_recovery_sweep` |
+| `src/simstack4/pah_spectrum.py` | `build_design_matrix`, `warm_continuum_kernel`, `solve_linear_amplitudes` (GLS), `PAHSpectrumModel.fit_lstsq/.fit_shared/.fit_evolving/.fit_evolving_mcmc/.fit_with_alpha/.fit_mcmc/.pseudo_spectrum`, `evolving_flux_decomposition` (posterior baseline + per-group flux split for overlays). Multi-band evolving fits normalize all bands by ONE per-bin scalar (2026-07-02 fix — per-band medians silently forced equal 24/70 continuum levels through the shared C_m; single-band unchanged). Anchor the reference feature group on 7.7+8.6 µm or η_A floats. On real observed-flux data pass `feature_envelope="baseline"` (2026-07-03): features must dim with the source or the ~10× envelope leaks into a spurious negative η_A |
+| `src/simstack4/plots.py` (end of file) | `plot_dither_kernels`, `plot_fisher_summary`, `plot_strategy_sweep`, `plot_pseudo_spectrum_overlay`, `plot_pah_spectrum_corner`, `plot_pah_flux_decomposition` (f_band vs z per mass bin with stacked shaded feature-group contributions) |
 | `src/simstack4/scripts/pah_dither_endtoend.py` | Map-level spot check through the real stacking pipeline (`--quick` for smoke) |
 | `tests/test_pah_dither_strategy.py` | Tier 1 simulator/kernel/Fisher + Tier 2 GLS recovery (incl. photo-z negative control) |
 | `tests/test_pah_spectrum_recovery.py` | Tier 1 math, Tier 2 conditioning/band leverage, Tier 3 MCMC recovery |
 | `tests/test_pah_endtoend.py` | `@pytest.mark.slow` end-to-end smoke |
 | `notebooks/build_pah_dither_strategy_notebook.py` | → `2026-06-11-pah-dither-strategy-explorer.ipynb` (problem 1: scheme design) |
 | `notebooks/build_pah_spectrum_notebook.py` | → `2026-06-11-pah-forward-model-sanity.ipynb` (problem 2: GLS deconvolution) |
+| `notebooks/build_pah_evolving_mcmc_notebook.py` | → `2026-07-02-pah-evolving-template-mcmc-simulation.ipynb` (evolving-truth injection → MCMC flexibility ladder L1–L4 → f24(z) shaded feature-group decomposition; 2026-07-02) |
+| `notebooks/build_pah_money_plots_notebook.py` | → `2026-07-03-pah-money-plots.ipynb` (both money plots standalone + §2b/§3b envelope-aware re-derivations; band-ratio absolute calibration correction ×4.3–6.5) |
 | `notebooks/2026-06-12-load-json-fit-seds-redshift-stellar-mass-PAH-dithered-dz015.ipynb` | Real-data analysis: 3-bin and 4-bin mass runs → `combine_pah_spectra` → `PAHModel.fit_forward_model_multibin` → α(M*), τ_sil, null test |
 | `notebooks/2026-06-14-load-json-fit-seds-redshift-stellar-mass-sigma_sfr-PAH-dithered-dz015.ipynb` | σ_SFR cross-cut: 2 mass × 3 σ_SFR bins; group_col="sigma_sfr" (alias for log_sigma_sfr) |
 | `notebooks/2026-06-15-pah-3bin-vs-4bin-mass-comparison.ipynb` | Accordion vs uniform z-bin comparison; same 4-bin mass scheme both schemes |
 | `config/cosmos25_PAH_dithered.toml` | All dither schemes as commented reference blocks; set active `bins =` to desired run |
 | `config/cosmos25_PAH_dithered_3d.toml` | σ_SFR config (2 mass × 3 σ_SFR bins) |
 | `docs/pah-forward-model-2-summary.md` | Full measurement summary including all runs, coefficient derivation, forward path |
+| `docs/pah-forward-model-7-summary.md` | Branch-7 summary: band-ratio mechanism signal (envelope-aware calibration), Narayanan confrontation, evolution-required result, machinery delivered |
+| `docs/pah-forward-model-8-brief.md` | Branch 8: talk figure set (run on Sonnet) |
 | `docs/pah-forward-model-3-brief.md` | Branch 3 goals: publication figures |
 | `docs/pah-forward-model-4-brief.md` | Branch 4 goals: shared-slope baseline + K-fold catalog splitting |
 | `docs/pah-forward-model-5-brief.md` | Branch 5 goals: error rescaling, robustness, talk figures, T_dust correction |

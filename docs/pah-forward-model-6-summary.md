@@ -11,7 +11,12 @@ See `pah-forward-model-6-brief.md` for the original design rationale;
 
 ---
 
-## Headline result — **the PAH deficit rises with stellar mass, and this is α-robust**
+## Headline result — **the PAH deficit is strongest at low stellar mass, and this is α-robust**
+
+**Wording correction (branch 7, 2026-07-01, advisor-flagged):** both ratios below *rise* with
+M\* — more PAH per unit continuum/L_IR at high mass, i.e. the deficit is a *low-mass*
+phenomenon that weakens toward high mass, not a trend that "rises with mass." Numbers/slopes
+below are unchanged; see `docs/pah-forward-model-7-brief.md` §0.
 
 Two independent ratios both rise with M\* and both survive the branch's own α uncertainty
 range (α=2.0 pinned → α≈2.86-3.3 best-fit):

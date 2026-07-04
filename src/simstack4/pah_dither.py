@@ -221,6 +221,20 @@ class TruthSpectrum:
     T_warm: float = 60.0
     beta_warm: float = 1.5
     continuum_amp: float = 1.0  # C: overall normalization (mJy at MBB peak)
+    # Optional hot/VSG MIR continuum: amp·(λ/10 µm)^slope added to the warm
+    # MBB, in the same relative f_ν units as the unit-peak features. The warm
+    # MBB alone has essentially no rest 5–16 µm continuum (Wien tail), which
+    # makes the simulated 24 µm flux pure PAH; a rising power law restores
+    # the realistic feature-on-continuum mix under the 24 µm bandpass.
+    mir_plaw_amp: float = 0.0
+    mir_plaw_slope: float = 2.0
+    # Optional observed-flux envelope E(z, prop_bin) multiplied into the band
+    # fluxes: distance dimming + luminosity evolution + bandwidth factors,
+    # shared by continuum and features (they come from the same galaxies).
+    # Without it band fluxes are comoving-luminosity-like: constant amplitude
+    # with z, unlike real stacks whose f24 falls ~10x over z = 0.5-3.5.
+    # Called as flux_envelope(z_array, prop_bin_dict_or_None).
+    flux_envelope: Callable | None = None
     # sSFR-driven within-bin evolution (branch 5)
     eta_ssfr_amp: float = 0.0  # η_A: amplitude slope vs centered log sSFR
     eta_ssfr_ratio: NDArray[np.float64] | None = None  # η_g per group (g=0 → 0)
@@ -300,6 +314,8 @@ class TruthSpectrum:
         """
         lam = np.asarray(lam_um, dtype=float)
         spec = _greybody_nu(_c_um_hz / lam, self.T_warm, self.beta_warm)
+        if self.mir_plaw_amp:
+            spec = spec + self.mir_plaw_amp * (lam / 10.0) ** self.mir_plaw_slope
         amps = self.amplitudes(prop_bin, z=z)
         weights = group_weights(self.features, self.feature_groups)
         for g, (grp, w) in enumerate(zip(self.feature_groups, weights, strict=True)):
@@ -329,7 +345,10 @@ class TruthSpectrum:
         spec = self.rest_spectrum(
             lam_rest, prop_bin, z=z_arr if self._evolves else None
         )
-        return np.trapezoid(spec * bp.resp_fine, bp.lam_fine, axis=1) / bp.norm
+        flux = np.trapezoid(spec * bp.resp_fine, bp.lam_fine, axis=1) / bp.norm
+        if self.flux_envelope is not None:
+            flux = flux * self.flux_envelope(z_arr, prop_bin)
+        return flux
 
     def band_flux(
         self, z: float, band: str, prop_bin: dict[str, float] | None = None

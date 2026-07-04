@@ -855,6 +855,163 @@ class PAHSpectrumModel:
 
     # -- evolving shared-ratio fit (sSFR-anchored amplitude + ratio drift) --
 
+    def _resolve_baseline_cols(self, df, baseline_cols, baseline_col):
+        """Band → cold-baseline-column map restricted to usable columns."""
+        default_names = {"MIPS_24": "f24_cold", "MIPS_70": "f70_cold"}
+        if baseline_cols is None:
+            if baseline_col is not None:
+                baseline_cols = {self.bands[0]: baseline_col}
+            else:
+                baseline_cols = {
+                    b: default_names[b] for b in self.bands if b in default_names
+                }
+        baseline_cols = {
+            b: c
+            for b, c in baseline_cols.items()
+            if b in self.bands and c in df.columns
+        }
+        if not baseline_cols:
+            raise ValueError(
+                "no usable baseline columns; pass baseline_cols={band: column}"
+            )
+        return baseline_cols
+
+    def _evolving_data(
+        self,
+        prep,
+        baseline_cols,
+        ssfr_relation="speagle2014",
+        feature_envelope=None,
+    ):
+        """θ-independent band-stacked per-bin data for the evolving fits.
+
+        Per property bin: resolve per-point log sSFR (data column where
+        finite, main-sequence proxy elsewhere), set the pivot from every
+        fitted point, and flatten the participating bands into one stacked
+        point list. Returns ``(data, valid, s_pivot)``; ``data[i]`` is None
+        when bin i has < 3 usable points. Beyond the fit inputs each entry
+        keeps per-point ``z_mid`` / ``band`` / ``f_err`` (and the bin's
+        ``m`` / ``log_M_star``) so posterior decompositions can be plotted
+        against the data.
+
+        All participating bands are normalized by ONE per-bin scalar (the
+        first participating band's median baseline), preserving the
+        cross-band continuum amplitude ratio the baseline columns encode.
+        A per-band median would force the shared ``C_m`` to assert equal
+        continuum levels in every band — mis-specified whenever the bands'
+        true continua differ (24 vs 70 µm). Single-band fits are unchanged
+        (one scalar either way), as are fits whose baseline columns are
+        identical across bands (the test fixtures).
+
+        ``feature_envelope="baseline"`` multiplies each point's feature
+        kernel row by the REFERENCE (first participating) band's normalized
+        cold baseline for that row — i.e. features dim with the source like
+        the continuum does (distance dimming + luminosity evolution), and
+        the fitted ``alpha_m`` becomes an EW-like feature-to-continuum
+        ratio at the reference. Without it (default ``None``, the historic
+        behavior) feature amplitudes are constant in FLUX across each mass
+        bin's whole z range, which real dimming data violate by ~10× — a
+        decline the sSFR evolution term can then spuriously absorb as a
+        negative η_A.
+        """
+        from .dust_evolution import main_sequence_ssfr
+
+        bins = prep["bins"]
+
+        def _resolve_ssfr(b):
+            ls = b["log_ssfr"]
+            z = np.asarray(b["z_mid"], dtype=float)
+            logM = b["props"]["log_M_star"]
+            ms = main_sequence_ssfr(z, logM, ssfr_relation)
+            if ls is None:
+                return ms
+            ls = np.asarray(ls, dtype=float)
+            return np.where(np.isfinite(ls), ls, ms)
+
+        def _ok_mask(f_obs, f_err, fcold, ls):
+            return (
+                np.isfinite(f_obs)
+                & np.isfinite(f_err)
+                & np.isfinite(fcold)
+                & np.isfinite(ls)
+                & (f_err > 0)
+                & (fcold > 0)
+                & (f_obs > 0)
+            )
+
+        # First pass: gather resolved log sSFR to set the pivot.
+        all_ls = []
+        for b in bins:
+            ls = _resolve_ssfr(b)
+            for band in baseline_cols:
+                fcold = b["f_cold_by_band"][band]
+                if fcold is None:
+                    continue
+                bidx = self.bands.index(band)
+                ok = _ok_mask(b["F"][:, bidx], b["Ferr"][:, bidx], fcold, ls)
+                all_ls.append(ls[ok])
+        all_ls = np.concatenate(all_ls) if all_ls else np.array([0.0])
+        s_pivot = float(np.median(all_ls))
+
+        # Second pass: build θ-independent band-stacked per-bin data.
+        data = []
+        for b in bins:
+            ls = _resolve_ssfr(b)
+            parts = {
+                k: []
+                for k in (
+                    "f_obs",
+                    "f_err",
+                    "w",
+                    "f_cold_norm",
+                    "K",
+                    "shat",
+                    "z_mid",
+                    "band",
+                )
+            }
+            med_ref = None
+            fcold_ref = None  # reference band's baseline, row-aligned
+            for band in baseline_cols:
+                fcold = b["f_cold_by_band"][band]
+                if fcold is None:
+                    continue
+                bidx = self.bands.index(band)
+                f_obs = b["F"][:, bidx]
+                f_err = b["Ferr"][:, bidx]
+                ok = _ok_mask(f_obs, f_err, fcold, ls)
+                if feature_envelope == "baseline":
+                    if fcold_ref is None:
+                        fcold_ref = fcold
+                    ok &= np.isfinite(fcold_ref) & (fcold_ref > 0)
+                if ok.sum() == 0:
+                    continue
+                if med_ref is None:
+                    med_ref = float(np.median(fcold[ok]))
+                parts["f_obs"].append(f_obs[ok])
+                parts["f_err"].append(f_err[ok])
+                parts["w"].append(1.0 / f_err[ok] ** 2)
+                parts["f_cold_norm"].append(fcold[ok] / med_ref)
+                K_rows = b["K"][:, bidx, :][ok]
+                if feature_envelope == "baseline":
+                    K_rows = K_rows * (fcold_ref[ok] / med_ref)[:, None]
+                parts["K"].append(K_rows)
+                parts["shat"].append(ls[ok] - s_pivot)
+                parts["z_mid"].append(np.asarray(b["z_mid"], dtype=float)[ok])
+                parts["band"].append(np.full(int(ok.sum()), band, dtype=object))
+            if not parts["f_obs"] or sum(len(x) for x in parts["f_obs"]) < 3:
+                data.append(None)
+                continue
+            d = {
+                k: (np.vstack(v) if k == "K" else np.concatenate(v))
+                for k, v in parts.items()
+            }
+            d["m"] = b["m"]
+            d["log_M_star"] = b["props"]["log_M_star"]
+            data.append(d)
+        valid = [i for i, d in enumerate(data) if d is not None]
+        return data, valid, s_pivot
+
     def fit_evolving(
         self,
         df,
@@ -873,6 +1030,7 @@ class PAHSpectrumModel:
         sigma_z0=None,
         f_cat=None,
         smooth_baseline=False,
+        feature_envelope=None,
         n_iter=200,
         tol=1e-7,
     ):
@@ -909,32 +1067,19 @@ class PAHSpectrumModel:
         uncertainties are best taken from the disjoint-fold ensemble; formal
         curvature errors are also returned.
 
+        ``feature_envelope="baseline"`` scales the feature kernel by the
+        reference band's normalized cold baseline so features dim with the
+        source like the continuum (see :meth:`_evolving_data`); recommended
+        on real (observed-flux) data, where the default constant-flux
+        feature term lets η_A absorb the dimming envelope.
+
         Returns ``fit_shared``'s keys plus ``eta_amp``, ``eta_amp_err``,
         ``eta_ratio`` (length G, ``η_0 ≡ 0``), ``eta_ratio_err``, ``s_pivot`` and
         ``bands``.
         """
         from scipy.optimize import minimize
 
-        from .dust_evolution import main_sequence_ssfr
-
-        # Resolve which bands participate via their cold-baseline columns.
-        default_names = {"MIPS_24": "f24_cold", "MIPS_70": "f70_cold"}
-        if baseline_cols is None:
-            if baseline_col is not None:
-                baseline_cols = {self.bands[0]: baseline_col}
-            else:
-                baseline_cols = {
-                    b: default_names[b] for b in self.bands if b in default_names
-                }
-        baseline_cols = {
-            b: c
-            for b, c in baseline_cols.items()
-            if b in self.bands and c in df.columns
-        }
-        if not baseline_cols:
-            raise ValueError(
-                "no usable baseline columns; pass baseline_cols={band: column}"
-            )
+        baseline_cols = self._resolve_baseline_cols(df, baseline_cols, baseline_col)
         if smooth_baseline and "MIPS_24" in baseline_cols:
             df = smoothed_ms_baseline(df, baseline_col=baseline_cols["MIPS_24"])
 
@@ -951,84 +1096,9 @@ class PAHSpectrumModel:
         bins = prep["bins"]
         G = self.n_groups
         n_m = len(bins)
-
-        def _resolve_ssfr(b):
-            ls = b["log_ssfr"]
-            z = np.asarray(b["z_mid"], dtype=float)
-            logM = b["props"]["log_M_star"]
-            ms = main_sequence_ssfr(z, logM, ssfr_relation)
-            if ls is None:
-                return ms
-            ls = np.asarray(ls, dtype=float)
-            return np.where(np.isfinite(ls), ls, ms)
-
-        # First pass: gather resolved log sSFR to set the pivot.
-        all_ls = []
-        for b in bins:
-            ls = _resolve_ssfr(b)
-            for band in baseline_cols:
-                fcold = b["f_cold_by_band"][band]
-                if fcold is None:
-                    continue
-                bidx = self.bands.index(band)
-                f_obs = b["F"][:, bidx]
-                f_err = b["Ferr"][:, bidx]
-                ok = (
-                    np.isfinite(f_obs)
-                    & np.isfinite(f_err)
-                    & np.isfinite(fcold)
-                    & np.isfinite(ls)
-                    & (f_err > 0)
-                    & (fcold > 0)
-                    & (f_obs > 0)
-                )
-                all_ls.append(ls[ok])
-        all_ls = np.concatenate(all_ls) if all_ls else np.array([0.0])
-        s_pivot = float(np.median(all_ls))
-
-        # Second pass: build θ-independent band-stacked per-bin data.
-        data = []
-        for b in bins:
-            ls = _resolve_ssfr(b)
-            f_obs_l, w_l, fcn_l, K_l, shat_l = [], [], [], [], []
-            for band in baseline_cols:
-                fcold = b["f_cold_by_band"][band]
-                if fcold is None:
-                    continue
-                bidx = self.bands.index(band)
-                f_obs = b["F"][:, bidx]
-                f_err = b["Ferr"][:, bidx]
-                K_g = b["K"][:, bidx, :]
-                ok = (
-                    np.isfinite(f_obs)
-                    & np.isfinite(f_err)
-                    & np.isfinite(fcold)
-                    & np.isfinite(ls)
-                    & (f_err > 0)
-                    & (fcold > 0)
-                    & (f_obs > 0)
-                )
-                if ok.sum() == 0:
-                    continue
-                med = float(np.median(fcold[ok]))
-                f_obs_l.append(f_obs[ok])
-                w_l.append(1.0 / f_err[ok] ** 2)
-                fcn_l.append(fcold[ok] / med)
-                K_l.append(K_g[ok])
-                shat_l.append(ls[ok] - s_pivot)
-            if not f_obs_l or sum(len(x) for x in f_obs_l) < 3:
-                data.append(None)
-                continue
-            data.append(
-                {
-                    "f_obs": np.concatenate(f_obs_l),
-                    "w": np.concatenate(w_l),
-                    "f_cold_norm": np.concatenate(fcn_l),
-                    "K": np.vstack(K_l),
-                    "shat": np.concatenate(shat_l),
-                }
-            )
-        valid = [i for i, d in enumerate(data) if d is not None]
+        data, valid, s_pivot = self._evolving_data(
+            prep, baseline_cols, ssfr_relation, feature_envelope=feature_envelope
+        )
         if not valid:
             return None
 
@@ -1189,6 +1259,300 @@ class PAHSpectrumModel:
             "dof": dof,
             "chi2_red": chi2 / dof,
             "valid": valid,
+        }
+
+    # -- MCMC over the evolving-template parameters ------------------------
+
+    def fit_evolving_mcmc(
+        self,
+        df,
+        *,
+        baseline_cols=None,
+        baseline_col=None,
+        ssfr_col="log_ssfr",
+        ssfr_relation="speagle2014",
+        evolve_amp=True,
+        evolve_ratios=True,
+        per_bin_ratios=False,
+        eta_bounds=(-3.0, 3.0),
+        eta_prior_sigma=1.0,
+        log_r_bounds=(-2.0, 2.0),
+        cov=None,
+        scheme=None,
+        dndz=None,
+        sigma_z0=None,
+        f_cat=None,
+        smooth_baseline=False,
+        feature_envelope=None,
+        n_walkers=32,
+        n_steps=1000,
+        n_burn=300,
+        seed=0,
+        progress=False,
+    ):
+        """MCMC posterior over the evolving-template parameters.
+
+        Samples the nonlinear/shape parameters of the :meth:`fit_evolving`
+        model with emcee while the per-bin linear pair ``(C_m, alpha_m)`` is
+        profiled analytically at every step (the DustEvolutionModel pattern),
+        so the chain stays low-dimensional::
+
+            θ = [η_A?, η_g (G−1)?, log10 r-block]
+
+        The ratio block is the flexibility knob: ``per_bin_ratios=False``
+        shares one ``r_g`` vector across mass bins (G−1 parameters, the
+        :meth:`fit_evolving` model); ``per_bin_ratios=True`` gives every mass
+        bin its own ratio vector (M·(G−1) parameters — the §1a-style
+        band-ratio-vs-mass flexibility). ``evolve_amp`` / ``evolve_ratios``
+        toggle the sSFR slopes. Gaussian priors of width ``eta_prior_sigma``
+        act on every η; the log-ratios take a flat prior inside
+        ``log_r_bounds``.
+
+        ``feature_envelope="baseline"`` scales the feature kernel by the
+        reference band's normalized cold baseline (features dim with the
+        source; α becomes EW-like) — recommended on real data.
+
+        Walkers start from the :meth:`fit_evolving` point estimate. Returns a
+        dict with the flat post-burn ``chain`` (+ ``names``, ``sampler``),
+        posterior medians/stds for every sampled parameter, profiled per-bin
+        ``alpha``/``C_m``/``A_pah`` summaries from a chain subsample, and the
+        per-point ``data`` needed by :func:`evolving_flux_decomposition`.
+        """
+        import emcee
+
+        baseline_cols = self._resolve_baseline_cols(df, baseline_cols, baseline_col)
+        if smooth_baseline and "MIPS_24" in baseline_cols:
+            df = smoothed_ms_baseline(df, baseline_col=baseline_cols["MIPS_24"])
+
+        prep = self._prepare(
+            df,
+            cov,
+            scheme,
+            dndz,
+            sigma_z0,
+            f_cat,
+            baseline_cols=baseline_cols,
+            ssfr_col=ssfr_col,
+        )
+        bins = prep["bins"]
+        G = self.n_groups
+        n_m = len(bins)
+        data, valid, s_pivot = self._evolving_data(
+            prep, baseline_cols, ssfr_relation, feature_envelope=feature_envelope
+        )
+        if not valid:
+            return None
+
+        n_amp = 1 if evolve_amp else 0
+        n_rat = (G - 1) if (evolve_ratios and G > 1) else 0
+        n_rblk = 0
+        if G > 1:
+            n_rblk = len(valid) * (G - 1) if per_bin_ratios else (G - 1)
+        ndim = n_amp + n_rat + n_rblk
+
+        rlab = self._labels()[1:]
+        names = []
+        if evolve_amp:
+            names.append("eta_A")
+        if n_rat:
+            names += [f"eta_{lab}" for lab in rlab]
+        if n_rblk:
+            if per_bin_ratios:
+                names += [f"logr_{lab}_m{bins[i]['m']}" for i in valid for lab in rlab]
+            else:
+                names += [f"logr_{lab}" for lab in rlab]
+
+        def unpack(theta):
+            k = 0
+            eta_amp = float(theta[0]) if evolve_amp else 0.0
+            k += n_amp
+            eta_ratio = np.zeros(G)
+            if n_rat:
+                eta_ratio[1:] = theta[k : k + n_rat]
+            k += n_rat
+            logr = np.asarray(theta[k:], dtype=float)
+            return eta_amp, eta_ratio, logr
+
+        def r_vec(j, logr):
+            """Ratio vector for the j-th VALID bin (r_0 ≡ 1)."""
+            if G == 1:
+                return np.ones(1)
+            blk = logr[j * (G - 1) : (j + 1) * (G - 1)] if per_bin_ratios else logr
+            return np.concatenate([[1.0], 10.0**blk])
+
+        def _wls2(D, y, w):
+            H = D.T @ (w[:, None] * D)
+            rhs = D.T @ (w * y)
+            try:
+                return np.linalg.solve(H, rhs), H
+            except np.linalg.LinAlgError:
+                return np.linalg.pinv(H) @ rhs, H
+
+        def profile(theta):
+            """Profiled (C, alpha) per valid bin and the total chi²."""
+            eta_amp, eta_ratio, logr = unpack(theta)
+            e = eta_amp + eta_ratio
+            C_l, a_l, chi2 = [], [], 0.0
+            for j, i in enumerate(valid):
+                d = data[i]
+                Kmod = (10.0 ** np.outer(d["shat"], e)) * d["K"]
+                t = Kmod @ r_vec(j, logr)
+                D = np.column_stack([d["f_cold_norm"], t])
+                th, _ = _wls2(D, d["f_obs"], d["w"])
+                resid = d["f_obs"] - D @ th
+                chi2 += float(np.sum(resid**2 * d["w"]))
+                C_l.append(float(th[0]))
+                a_l.append(float(th[1]))
+            return np.array(C_l), np.array(a_l), chi2
+
+        eta_slice = slice(0, n_amp + n_rat)
+        r_slice = slice(n_amp + n_rat, ndim)
+
+        def log_prob(theta):
+            th = np.asarray(theta, dtype=float)
+            if np.any(th[eta_slice] < eta_bounds[0]) or np.any(
+                th[eta_slice] > eta_bounds[1]
+            ):
+                return -np.inf
+            if np.any(th[r_slice] < log_r_bounds[0]) or np.any(
+                th[r_slice] > log_r_bounds[1]
+            ):
+                return -np.inf
+            lp = 0.0
+            if eta_prior_sigma and (n_amp + n_rat):
+                lp -= 0.5 * float(np.sum((th[eta_slice] / eta_prior_sigma) ** 2))
+            chi2 = profile(th)[2]
+            return lp - 0.5 * chi2
+
+        # Initialize from the alternating-WLS point estimate.
+        init = self.fit_evolving(
+            df,
+            baseline_cols=baseline_cols,
+            ssfr_col=ssfr_col,
+            ssfr_relation=ssfr_relation,
+            evolve_amp=evolve_amp,
+            evolve_ratios=evolve_ratios,
+            eta_bounds=eta_bounds,
+            eta_prior_sigma=eta_prior_sigma,
+            cov=cov,
+            scheme=prep["scheme"],
+            dndz=dndz,
+            sigma_z0=sigma_z0,
+            f_cat=f_cat,
+            feature_envelope=feature_envelope,
+        )
+        if init is None:
+            return None
+        pad = 0.05
+        theta0 = []
+        if evolve_amp:
+            theta0.append(
+                np.clip(init["eta_amp"], eta_bounds[0] + pad, eta_bounds[1] - pad)
+            )
+        if n_rat:
+            theta0 += list(
+                np.clip(init["eta_ratio"][1:], eta_bounds[0] + pad, eta_bounds[1] - pad)
+            )
+        if n_rblk:
+            logr0 = np.log10(np.clip(init["r"][1:], 10.0 ** log_r_bounds[0], None))
+            logr0 = np.clip(logr0, log_r_bounds[0] + pad, log_r_bounds[1] - pad)
+            reps = len(valid) if per_bin_ratios else 1
+            theta0 += list(np.tile(logr0, reps))
+        theta0 = np.asarray(theta0)
+
+        rng = np.random.default_rng(seed)
+        p0 = theta0 + 1e-2 * rng.standard_normal((n_walkers, ndim))
+        p0[:, eta_slice] = np.clip(
+            p0[:, eta_slice], eta_bounds[0] + pad, eta_bounds[1] - pad
+        )
+        p0[:, r_slice] = np.clip(
+            p0[:, r_slice], log_r_bounds[0] + pad, log_r_bounds[1] - pad
+        )
+
+        sampler = emcee.EnsembleSampler(n_walkers, ndim, log_prob)
+        sampler.run_mcmc(p0, n_steps, progress=progress)
+        chain = sampler.get_chain(discard=n_burn, flat=True)
+        theta_med = np.median(chain, axis=0)
+        theta_err = np.std(chain, axis=0)
+
+        eta_amp, eta_ratio, logr_med = unpack(theta_med)
+        eta_amp_err = float(theta_err[0]) if evolve_amp else np.nan
+        eta_ratio_err = np.zeros(G)
+        if n_rat:
+            eta_ratio_err[1:] = theta_err[n_amp : n_amp + n_rat]
+
+        # Ratio summaries in linear units, tiled to (n_m, G) for convenience.
+        r_per_bin = np.full((n_m, G), np.nan)
+        r_per_bin_err = np.full((n_m, G), np.nan)
+        for j, i in enumerate(valid):
+            r_draws = np.stack(
+                [r_vec(j, unpack(c)[2]) for c in chain[:: max(1, len(chain) // 400)]]
+            )
+            r_per_bin[i] = np.median(r_draws, axis=0)
+            r_per_bin_err[i] = np.std(r_draws, axis=0)
+        if per_bin_ratios or G == 1:
+            r = np.nanmean(r_per_bin, axis=0)
+            r_err = np.nanmean(r_per_bin_err, axis=0)
+        else:
+            r = r_per_bin[valid[0]]
+            r_err = r_per_bin_err[valid[0]]
+
+        # Profiled per-bin summaries from a chain subsample.
+        sub_idx = np.linspace(0, len(chain) - 1, min(200, len(chain))).astype(int)
+        C_samp = np.zeros((len(sub_idx), len(valid)))
+        a_samp = np.zeros((len(sub_idx), len(valid)))
+        for k, jc in enumerate(sub_idx):
+            C_samp[k], a_samp[k], _ = profile(chain[jc])
+        alpha = np.full(n_m, np.nan)
+        alpha_err = np.full(n_m, np.nan)
+        C_m = np.full(n_m, np.nan)
+        C_m_err = np.full(n_m, np.nan)
+        A_pah = np.full(n_m, np.nan)
+        A_pah_err = np.full(n_m, np.nan)
+        for j, i in enumerate(valid):
+            alpha[i] = np.median(a_samp[:, j])
+            alpha_err[i] = np.std(a_samp[:, j])
+            C_m[i] = np.median(C_samp[:, j])
+            C_m_err[i] = np.std(C_samp[:, j])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ratio_samp = a_samp[:, j] / C_samp[:, j]
+            A_pah[i] = np.median(ratio_samp)
+            A_pah_err[i] = np.std(ratio_samp)
+
+        _, _, chi2 = profile(theta_med)
+        ndata = sum(len(data[i]["f_obs"]) for i in valid)
+        dof = max(1, ndata - (2 * len(valid) + ndim))
+        return {
+            "chain": chain,
+            "names": names,
+            "sampler": sampler,
+            "acceptance_fraction": float(np.mean(sampler.acceptance_fraction)),
+            "eta_amp": eta_amp,
+            "eta_amp_err": eta_amp_err,
+            "eta_ratio": eta_ratio,
+            "eta_ratio_err": eta_ratio_err,
+            "r": r,
+            "r_err": r_err,
+            "r_per_bin": r_per_bin,
+            "r_per_bin_err": r_per_bin_err,
+            "alpha": alpha,
+            "alpha_err": alpha_err,
+            "C_m": C_m,
+            "C_m_err": C_m_err,
+            "A_pah": A_pah,
+            "A_pah_err": A_pah_err,
+            "A": A_pah[:, None] * r_per_bin,
+            "s_pivot": s_pivot,
+            "bands": tuple(baseline_cols.keys()),
+            "labels": self._labels(),
+            "chi2": chi2,
+            "dof": dof,
+            "chi2_red": chi2 / dof,
+            "valid": valid,
+            "data": data,
+            "evolve_amp": evolve_amp,
+            "evolve_ratios": evolve_ratios,
+            "per_bin_ratios": per_bin_ratios,
         }
 
     # -- fit the Wien-slope alpha jointly, with a Gaussian prior ----------
@@ -1512,6 +1876,103 @@ class PAHSpectrumModel:
                     )
                 )
         return pd.concat(rows, ignore_index=True).sort_values("lam_rest")
+
+
+def evolving_flux_decomposition(result, n_draws=120, seed=0):
+    """Posterior flux decomposition of a :meth:`fit_evolving_mcmc` result.
+
+    One row per fitted (dither-bin, band) point: the posterior-median cold
+    baseline ``C_m·f_cold_norm``, each feature group's contribution
+    ``alpha_m·r_g·10^((η_A+η_g)·ŝ_i)·K_gi``, their ``total``, and a 68%
+    credible band on the total (``total_lo``/``total_hi``) from ``n_draws``
+    chain draws with the per-bin linear pair re-profiled at each draw.
+    Feature-group columns are named ``contrib_<label>`` following
+    ``result["labels"]``; the baseline column is ``baseline``.
+    """
+    chain = result["chain"]
+    valid = result["valid"]
+    data = result["data"]
+    labels = result["labels"]
+    G = len(labels)
+    n_amp = 1 if result["evolve_amp"] else 0
+    n_rat = (G - 1) if (result["evolve_ratios"] and G > 1) else 0
+    per_bin = result["per_bin_ratios"]
+
+    def unpack(theta):
+        k = 0
+        eta_amp = float(theta[0]) if n_amp else 0.0
+        k += n_amp
+        eta_ratio = np.zeros(G)
+        if n_rat:
+            eta_ratio[1:] = theta[k : k + n_rat]
+        k += n_rat
+        return eta_amp, eta_ratio, np.asarray(theta[k:], dtype=float)
+
+    def r_vec(j, logr):
+        if G == 1:
+            return np.ones(1)
+        blk = logr[j * (G - 1) : (j + 1) * (G - 1)] if per_bin else logr
+        return np.concatenate([[1.0], 10.0**blk])
+
+    def components(theta):
+        """Per valid bin: (baseline, per-group contributions, total)."""
+        eta_amp, eta_ratio, logr = unpack(theta)
+        e = eta_amp + eta_ratio
+        out = []
+        for j, i in enumerate(valid):
+            d = data[i]
+            Kmod = (10.0 ** np.outer(d["shat"], e)) * d["K"]
+            r_m = r_vec(j, logr)
+            t = Kmod @ r_m
+            D = np.column_stack([d["f_cold_norm"], t])
+            H = D.T @ (d["w"][:, None] * D)
+            rhs = D.T @ (d["w"] * d["f_obs"])
+            try:
+                C, a = np.linalg.solve(H, rhs)
+            except np.linalg.LinAlgError:
+                C, a = np.linalg.pinv(H) @ rhs
+            base = C * d["f_cold_norm"]
+            contrib = a * r_m[None, :] * Kmod  # (n_pts, G)
+            out.append((base, contrib, base + contrib.sum(axis=1)))
+        return out
+
+    theta_med = np.median(chain, axis=0)
+    med = components(theta_med)
+
+    rng = np.random.default_rng(seed)
+    draw_idx = rng.choice(len(chain), size=min(n_draws, len(chain)), replace=False)
+    totals = [[] for _ in valid]
+    for jc in draw_idx:
+        comps = components(chain[jc])
+        for j in range(len(valid)):
+            totals[j].append(comps[j][2])
+    totals = [np.stack(t) for t in totals]
+
+    frames = []
+    for j, i in enumerate(valid):
+        d = data[i]
+        base, contrib, total = med[j]
+        lo, hi = np.percentile(totals[j], [16, 84], axis=0)
+        cols = {
+            "prop_bin_id": d["m"],
+            "log_M_star": d["log_M_star"],
+            "band": d["band"],
+            "z_mid": d["z_mid"],
+            "f_obs": d["f_obs"],
+            "f_err": d["f_err"],
+            "baseline": base,
+            "total": total,
+            "total_lo": lo,
+            "total_hi": hi,
+        }
+        for g, lab in enumerate(labels):
+            cols[f"contrib_{lab}"] = contrib[:, g]
+        frames.append(pd.DataFrame(cols))
+    return (
+        pd.concat(frames, ignore_index=True)
+        .sort_values(["prop_bin_id", "band", "z_mid"])
+        .reset_index(drop=True)
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
