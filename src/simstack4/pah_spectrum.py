@@ -882,6 +882,7 @@ class PAHSpectrumModel:
         baseline_cols,
         ssfr_relation="speagle2014",
         feature_envelope=None,
+        ssfr_fallback="main_sequence",
     ):
         """θ-independent band-stacked per-bin data for the evolving fits.
 
@@ -913,20 +914,47 @@ class PAHSpectrumModel:
         bin's whole z range, which real dimming data violate by ~10× — a
         decline the sSFR evolution term can then spuriously absorb as a
         negative η_A.
-        """
-        from .dust_evolution import main_sequence_ssfr
 
+        ``ssfr_fallback`` controls how missing/NaN driver values are handled.
+        ``"main_sequence"`` (default) back-fills gaps with
+        :func:`~simstack4.dust_evolution.main_sequence_ssfr` — correct when
+        the driver column really is log sSFR, for which that proxy is
+        physically motivated. Pass ``None`` when driving on a column with no
+        sSFR-equivalent proxy (e.g. ``log_sigma_sfr``): gaps are then left as
+        NaN and dropped by the per-point validity mask instead of being
+        silently replaced by an sSFR-scaled value in the wrong units.
+        """
         bins = prep["bins"]
 
-        def _resolve_ssfr(b):
-            ls = b["log_ssfr"]
-            z = np.asarray(b["z_mid"], dtype=float)
-            logM = b["props"]["log_M_star"]
-            ms = main_sequence_ssfr(z, logM, ssfr_relation)
-            if ls is None:
-                return ms
-            ls = np.asarray(ls, dtype=float)
-            return np.where(np.isfinite(ls), ls, ms)
+        if ssfr_fallback == "main_sequence":
+            from .dust_evolution import main_sequence_ssfr
+
+            def _resolve_ssfr(b):
+                ls = b["log_ssfr"]
+                z = np.asarray(b["z_mid"], dtype=float)
+                logM = b["props"]["log_M_star"]
+                ms = main_sequence_ssfr(z, logM, ssfr_relation)
+                if ls is None:
+                    return ms
+                ls = np.asarray(ls, dtype=float)
+                return np.where(np.isfinite(ls), ls, ms)
+        elif ssfr_fallback is None:
+
+            def _resolve_ssfr(b):
+                ls = b["log_ssfr"]
+                if ls is None:
+                    raise ValueError(
+                        "ssfr_fallback=None requires the driver column (ssfr_col) "
+                        "to be present in df — there is no main-sequence-style "
+                        "proxy for a non-sSFR driver (e.g. log_sigma_sfr). NaN "
+                        "values within the column are dropped, but the column "
+                        "itself must exist."
+                    )
+                return np.asarray(ls, dtype=float)
+        else:
+            raise ValueError(
+                f"Unknown ssfr_fallback={ssfr_fallback!r}; use 'main_sequence' or None"
+            )
 
         def _ok_mask(f_obs, f_err, fcold, ls):
             return (
@@ -1020,6 +1048,7 @@ class PAHSpectrumModel:
         baseline_col=None,
         ssfr_col="log_ssfr",
         ssfr_relation="speagle2014",
+        ssfr_fallback="main_sequence",
         evolve_amp=True,
         evolve_ratios=True,
         eta_bounds=(-3.0, 3.0),
@@ -1057,15 +1086,21 @@ class PAHSpectrumModel:
         baseline column to participate, so passing only 24 µm gives the
         degeneracy-prone 24-only fit).
 
-        Per-point ``log_ssfr`` is read from ``ssfr_col`` when present, else filled
-        from :func:`~simstack4.dust_evolution.main_sequence_ssfr`. ``s_pivot`` is
-        the median resolved log sSFR over all fitted points. ``eta_prior_sigma``
-        adds a Gaussian prior (width in dex of sSFR) on every slope; when the
-        sSFR lever arm is short the slopes are degenerate with the per-bin
-        amplitude and run to the bounds with unphysical pivot amplitudes, so a
-        prior of order unity is recommended on real data. Slope/amplitude
-        uncertainties are best taken from the disjoint-fold ensemble; formal
-        curvature errors are also returned.
+        Per-point driver values are read from ``ssfr_col`` (default
+        ``"log_ssfr"``; pass e.g. ``"log_sigma_sfr"`` to drive on Σ_SFR
+        instead). With ``ssfr_fallback="main_sequence"`` (default, correct
+        for sSFR) missing/NaN values are filled from
+        :func:`~simstack4.dust_evolution.main_sequence_ssfr`; pass
+        ``ssfr_fallback=None`` when using a driver with no sSFR-equivalent
+        proxy (Σ_SFR has none) so gaps are dropped instead of silently
+        back-filled with a mismatched-unit sSFR value. ``s_pivot`` is the
+        median resolved driver value over all fitted points. ``eta_prior_sigma``
+        adds a Gaussian prior (width in dex of the driver) on every slope; when
+        the driver's lever arm is short the slopes are degenerate with the
+        per-bin amplitude and run to the bounds with unphysical pivot
+        amplitudes, so a prior of order unity is recommended on real data.
+        Slope/amplitude uncertainties are best taken from the disjoint-fold
+        ensemble; formal curvature errors are also returned.
 
         ``feature_envelope="baseline"`` scales the feature kernel by the
         reference band's normalized cold baseline so features dim with the
@@ -1097,7 +1132,11 @@ class PAHSpectrumModel:
         G = self.n_groups
         n_m = len(bins)
         data, valid, s_pivot = self._evolving_data(
-            prep, baseline_cols, ssfr_relation, feature_envelope=feature_envelope
+            prep,
+            baseline_cols,
+            ssfr_relation,
+            feature_envelope=feature_envelope,
+            ssfr_fallback=ssfr_fallback,
         )
         if not valid:
             return None
@@ -1271,6 +1310,7 @@ class PAHSpectrumModel:
         baseline_col=None,
         ssfr_col="log_ssfr",
         ssfr_relation="speagle2014",
+        ssfr_fallback="main_sequence",
         evolve_amp=True,
         evolve_ratios=True,
         per_bin_ratios=False,
@@ -1312,6 +1352,10 @@ class PAHSpectrumModel:
         reference band's normalized cold baseline (features dim with the
         source; α becomes EW-like) — recommended on real data.
 
+        See :meth:`fit_evolving` for ``ssfr_col``/``ssfr_fallback`` (driving
+        on a non-sSFR column such as ``log_sigma_sfr`` requires
+        ``ssfr_fallback=None``).
+
         Walkers start from the :meth:`fit_evolving` point estimate. Returns a
         dict with the flat post-burn ``chain`` (+ ``names``, ``sampler``),
         posterior medians/stds for every sampled parameter, profiled per-bin
@@ -1338,7 +1382,11 @@ class PAHSpectrumModel:
         G = self.n_groups
         n_m = len(bins)
         data, valid, s_pivot = self._evolving_data(
-            prep, baseline_cols, ssfr_relation, feature_envelope=feature_envelope
+            prep,
+            baseline_cols,
+            ssfr_relation,
+            feature_envelope=feature_envelope,
+            ssfr_fallback=ssfr_fallback,
         )
         if not valid:
             return None
@@ -1430,6 +1478,7 @@ class PAHSpectrumModel:
             baseline_cols=baseline_cols,
             ssfr_col=ssfr_col,
             ssfr_relation=ssfr_relation,
+            ssfr_fallback=ssfr_fallback,
             evolve_amp=evolve_amp,
             evolve_ratios=evolve_ratios,
             eta_bounds=eta_bounds,

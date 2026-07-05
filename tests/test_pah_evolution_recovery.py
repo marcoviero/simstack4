@@ -399,3 +399,83 @@ def test_feature_envelope_recovers_under_dimming():
     assert e_strong_env == pytest.approx(_ETA_AMP + _ETA_RATIO[1], abs=0.25)
     assert e_strong_none < e_strong_env - 0.3
     assert res_env["chi2_red"] < res_none["chi2_red"]
+
+
+def _sigma_sfr_skeleton():
+    """Skeleton with a real per-row log_sigma_sfr driver (distinct scale/values
+    from the sSFR main-sequence proxy) and constant, valid MIPS_24/70 fluxes."""
+    df = _skeleton(_MASS, _ZEDGES).copy()
+    for col in _BASE.values():
+        df[col] = 0.03 / (1.0 + df["z_mid"]) ** 2
+    df["log_sigma_sfr"] = -1.5 + 0.3 * df["z_mid"].to_numpy()
+    return df
+
+
+def test_evolving_data_sigma_sfr_driver_matches_main_sequence_when_no_gaps():
+    """ssfr_fallback=None is a no-op when the driver column has no NaNs, so
+    driving on log_sigma_sfr (via ssfr_col) recovers exactly like the default
+    fallback for the same complete column."""
+    model = PAHSpectrumModel(feature_groups=GROUPS, bands=BANDS)
+    df = _sigma_sfr_skeleton()
+    bl = {b: _BASE[b] for b in model.bands}
+    prep = model._prepare(
+        df, None, None, None, None, None, baseline_cols=bl, ssfr_col="log_sigma_sfr"
+    )
+    data_ms, valid_ms, pivot_ms = model._evolving_data(
+        prep, bl, ssfr_fallback="main_sequence"
+    )
+    data_none, valid_none, pivot_none = model._evolving_data(
+        prep, bl, ssfr_fallback=None
+    )
+    assert valid_ms == valid_none
+    assert pivot_ms == pytest.approx(pivot_none)
+    for i in valid_ms:
+        np.testing.assert_allclose(data_ms[i]["shat"], data_none[i]["shat"])
+
+
+def test_evolving_data_sigma_sfr_driver_drops_nan_instead_of_backfilling():
+    """With a non-sSFR driver, ssfr_fallback=None drops NaN gaps; the default
+    ssfr_fallback="main_sequence" would instead silently splice in an
+    sSFR-scale value (~-9) into a Sigma_SFR-scale column (~-1.5..-1.0) --
+    exactly the unit-mismatch bug this option exists to avoid.
+    """
+    model = PAHSpectrumModel(feature_groups=GROUPS, bands=BANDS)
+    df = _sigma_sfr_skeleton()
+    gap_mask = (df["prop_bin_id"] == 0) & (df["z_mid"] < 1.0)
+    assert gap_mask.sum() > 0
+    df.loc[gap_mask, "log_sigma_sfr"] = np.nan
+    bl = {b: _BASE[b] for b in model.bands}
+    prep = model._prepare(
+        df, None, None, None, None, None, baseline_cols=bl, ssfr_col="log_sigma_sfr"
+    )
+
+    data_none, valid_none, _ = model._evolving_data(prep, bl, ssfr_fallback=None)
+    for i in valid_none:
+        assert np.isfinite(data_none[i]["shat"]).all()
+    n_none = sum(len(data_none[i]["f_obs"]) for i in valid_none)
+
+    data_ms, valid_ms, _ = model._evolving_data(
+        prep, bl, ssfr_fallback="main_sequence"
+    )
+    n_ms = sum(len(data_ms[i]["f_obs"]) for i in valid_ms)
+    # The main_sequence fallback keeps every point (fills gaps instead of
+    # dropping them), so it never loses points the way ssfr_fallback=None does.
+    assert n_ms > n_none
+    # Those filled-in points sit on the sSFR scale (~-9), far outside the
+    # Sigma_SFR-scale driver values (~-1.5..-1.0) -- the mismatch that
+    # ssfr_fallback=None is designed to prevent.
+    assert np.nanmin(data_ms[0]["shat"]) < -5.0
+    assert np.nanmin(data_none[0]["shat"]) > -5.0
+
+
+def test_evolving_data_sigma_sfr_requires_column_when_fallback_disabled():
+    """ssfr_fallback=None has no proxy to fall back on, so a wholly missing
+    driver column must raise rather than silently defaulting to sSFR."""
+    model = PAHSpectrumModel(feature_groups=GROUPS, bands=BANDS)
+    df = _sigma_sfr_skeleton().drop(columns=["log_sigma_sfr"])
+    bl = {b: _BASE[b] for b in model.bands}
+    prep = model._prepare(
+        df, None, None, None, None, None, baseline_cols=bl, ssfr_col="log_sigma_sfr"
+    )
+    with pytest.raises(ValueError, match="ssfr_fallback=None"):
+        model._evolving_data(prep, bl, ssfr_fallback=None)
