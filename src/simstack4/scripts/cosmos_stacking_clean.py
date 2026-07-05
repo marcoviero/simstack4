@@ -9,6 +9,13 @@ Usage:
     python cosmos_stacking.py                    # Run with default config
     python cosmos_stacking.py --output-dir ./    # Override output directory
     python cosmos_stacking.py --config path/to/config.toml  # Use different config
+
+Before stacking, loads the catalog + maps and estimates peak memory and
+wall-clock time on this machine; if the estimate exceeds
+--max-memory-fraction of available RAM or --max-time-minutes, it pauses for
+confirmation (or aborts outright in a non-interactive session without
+--yes). Use --skip-preflight to bypass the estimate entirely, or --yes/-y
+to proceed without the confirmation prompt.
 """
 
 import argparse
@@ -21,6 +28,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from simstack4.config import load_config  # noqa: E402
+from simstack4.preflight import (  # noqa: E402
+    confirm_or_abort,
+    estimate_compute_requirements,
+)
 from simstack4.wrapper import SimstackWrapper  # noqa: E402
 
 
@@ -55,7 +66,15 @@ def setup_paths(config_arg=None):
     return config_path
 
 
-def run_stacking_pipeline(config_path: Path, output_dir: Path):
+def run_stacking_pipeline(
+    config_path: Path,
+    output_dir: Path,
+    *,
+    skip_preflight: bool = False,
+    assume_yes: bool = False,
+    max_memory_fraction: float = 0.8,
+    max_time_minutes: float = 15.0,
+):
     """Run stacking pipeline and save results as JSON"""
     print("🚀 COSMOS Stacking Pipeline")
     print("=" * 50)
@@ -72,14 +91,34 @@ def run_stacking_pipeline(config_path: Path, output_dir: Path):
     print(f"⏰ Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     try:
-        # Run stacking only
+        # Load catalog + maps first (real, unavoidable work) so we can
+        # estimate compute requirements before the expensive stacking step.
         wrapper = SimstackWrapper(
             config=config_path,
             read_maps=True,
             read_catalog=True,
-            stack_automatically=True,
+            stack_automatically=False,
             analyze_automatically=False,
         )
+
+        if not skip_preflight:
+            print("\n📐 Estimating compute requirements...")
+            estimate = estimate_compute_requirements(
+                wrapper.config, wrapper.population_manager, wrapper.sky_maps
+            )
+            print()
+            if not confirm_or_abort(
+                estimate,
+                memory_fraction=max_memory_fraction,
+                time_seconds=max_time_minutes * 60.0,
+                assume_yes=assume_yes,
+            ):
+                print("\n🛑 Aborted before stacking (compute estimate exceeded budget).")
+                return {"success": False, "error": "aborted_by_user_preflight"}
+            print()
+
+        # Run stacking (catalog/maps already loaded above, so this reuses them)
+        wrapper._run_stacking()
 
         execution_time = time.time() - start_time
 
@@ -161,6 +200,31 @@ def main():
     parser.add_argument(
         "--output-dir", type=Path, help="Output directory (default: from config file)"
     )
+    parser.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Skip the compute-requirement estimate and run stacking immediately",
+    )
+    parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Don't pause for confirmation even if the estimate exceeds budget",
+    )
+    parser.add_argument(
+        "--max-memory-fraction",
+        type=float,
+        default=0.8,
+        metavar="FRACTION",
+        help="Pause if estimated peak memory exceeds this fraction of "
+             "available RAM (default: 0.8)",
+    )
+    parser.add_argument(
+        "--max-time-minutes",
+        type=float,
+        default=15.0,
+        metavar="MINUTES",
+        help="Pause if estimated run time exceeds this many minutes (default: 15)",
+    )
 
     args = parser.parse_args()
 
@@ -176,7 +240,14 @@ def main():
         print()
 
         # Run stacking
-        results = run_stacking_pipeline(config_path, output_dir)
+        results = run_stacking_pipeline(
+            config_path,
+            output_dir,
+            skip_preflight=args.skip_preflight,
+            assume_yes=args.yes,
+            max_memory_fraction=args.max_memory_fraction,
+            max_time_minutes=args.max_time_minutes,
+        )
 
         # Print final status
         if results["success"]:
@@ -185,6 +256,8 @@ def main():
             )
             print(f"📊 {results['n_populations']} populations processed")
             print(f"📁 Results file: {results['stacking_file']}")
+        elif results["error"] == "aborted_by_user_preflight":
+            sys.exit(0)
         else:
             print(f"\n❌ FAILED: {results['error']}")
             sys.exit(1)
