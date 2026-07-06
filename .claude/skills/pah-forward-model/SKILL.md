@@ -123,7 +123,7 @@ Publication strategy and talk figure set: `docs/pah-forward-model-3-brief.md`.
 | `notebooks/build_pah_dither_strategy_notebook.py` | → `2026-06-11-pah-dither-strategy-explorer.ipynb` (problem 1: scheme design) |
 | `notebooks/build_pah_spectrum_notebook.py` | → `2026-06-11-pah-forward-model-sanity.ipynb` (problem 2: GLS deconvolution) |
 | `notebooks/build_pah_evolving_mcmc_notebook.py` | → `2026-07-02-pah-evolving-template-mcmc-simulation.ipynb` (evolving-truth injection → MCMC flexibility ladder L1–L4 → f24(z) shaded feature-group decomposition; 2026-07-02) |
-| `notebooks/build_pah_money_plots_notebook.py` | → `2026-07-03-pah-money-plots.ipynb` (both money plots standalone + §2b/§3b envelope-aware re-derivations; band-ratio absolute calibration correction ×4.3–6.5) |
+| `notebooks/build_pah_money_plots_notebook.py` | → `2026-07-03-pah-money-plots.ipynb` (money plots with POOLED centrals + fold errors; §2b intrinsic band ratios; §2c sSFR-coloured + standard decompositions; §3c z-sliced L_PAH/L_IR crossing pattern — per-mass-bin templates REQUIRED, a global template flattens it; §3d slice-slope sweep vs branch bands) |
 | `notebooks/2026-06-12-load-json-fit-seds-redshift-stellar-mass-PAH-dithered-dz015.ipynb` | Real-data analysis: 3-bin and 4-bin mass runs → `combine_pah_spectra` → `PAHModel.fit_forward_model_multibin` → α(M*), τ_sil, null test |
 | `notebooks/2026-06-14-load-json-fit-seds-redshift-stellar-mass-sigma_sfr-PAH-dithered-dz015.ipynb` | σ_SFR cross-cut: 2 mass × 3 σ_SFR bins; group_col="sigma_sfr" (alias for log_sigma_sfr) |
 | `notebooks/2026-06-15-pah-3bin-vs-4bin-mass-comparison.ipynb` | Accordion vs uniform z-bin comparison; same 4-bin mass scheme both schemes |
@@ -131,7 +131,8 @@ Publication strategy and talk figure set: `docs/pah-forward-model-3-brief.md`.
 | `config/cosmos25_PAH_dithered_3d.toml` | σ_SFR config (2 mass × 3 σ_SFR bins) |
 | `docs/pah-forward-model-2-summary.md` | Full measurement summary including all runs, coefficient derivation, forward path |
 | `docs/pah-forward-model-7-summary.md` | Branch-7 summary: band-ratio mechanism signal (envelope-aware calibration), Narayanan confrontation, evolution-required result, machinery delivered |
-| `docs/pah-forward-model-8-brief.md` | Branch 8: talk figure set (run on Sonnet) |
+| `docs/pah-forward-model-8-brief.md` | Branch 8: talk figures → pivoted to figure corrections (pooled centrals, §3c/§3d); styling tasks still open |
+| `docs/pah-forward-model-9-brief.md` | Branch 9: stress tests + literature confrontation (template systematic first) |
 | `docs/pah-forward-model-3-brief.md` | Branch 3 goals: publication figures |
 | `docs/pah-forward-model-4-brief.md` | Branch 4 goals: shared-slope baseline + K-fold catalog splitting |
 | `docs/pah-forward-model-5-brief.md` | Branch 5 goals: error rescaling, robustness, talk figures, T_dust correction |

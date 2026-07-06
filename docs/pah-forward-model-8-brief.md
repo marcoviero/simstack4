@@ -48,3 +48,33 @@ Fable/Opus.
   PDFs into `notebooks/` (gitignored) with build scripts force-added, per repo convention.
 - Figure captions drafted alongside each figure in the build script docstring, so the talk
   and a future paper pull from the same source.
+
+
+---
+
+## Outcome (2026-07-05) — the branch pivoted from styling to figure *corrections* + new science
+
+User review of the money plots drove the agenda; the styling tasks above remain open (deferred,
+not superseded). What landed, all in `2026-07-03-pah-money-plots.ipynb` (30 cells, executed):
+
+1. **Pooled-centrals convention** (user-flagged): the 3 K-folds are disjoint subsets of one
+   field whose *pooling* delivers the dense dithered wavelength sampling — so pooled fits are
+   the measurement and fold scatter is the (jackknife-style) error only. Fold-mean centrals
+   were 10–40% high. Canonical §2b intrinsic band ratios: 11.2 → 1.24 → 0.78 → 0.10.
+2. **§2c**: the failed sSFR-coloured figure reworked (measured `lp_sSFR_med` extracted as
+   `log_ssfr_measured`; overlay = pooled envelope-aware evolving-MCMC decomposition) plus the
+   restored standard decomposition 4-panel. PNGs: `pah_money_f24_decomposition.png`,
+   `pah_money_f24_vs_z_ssfr.png`.
+3. **§3c z-resolved L_PAH/L_IR** (user-caught error → fix): a global template spuriously
+   flattened the slices; per-mass-bin envelope-aware templates reveal the **crossing
+   pattern** — L_PAH/L_IR rises with z at low mass, falls at high mass — matching the letter
+   §5b non-parametric split. Validated: all-z window reproduces the §3 money-plot means.
+4. **§3d z-resolved confrontation**: slice mass slopes **+0.602 (z~1) → +0.113 (z~2) →
+   −1.088 (z~3)** sweep from above the enrichment band, through it, to below the
+   density/shattering band — the two chains trade dominance with epoch; the all-z +0.234 is
+   the blend. `pah_money_slice_slopes_vs_branches.png`. Caveat: fold errors exclude the
+   common-mode per-bin-template systematic — the dominant unquantified error, first item for
+   branch 9.
+
+Branch 9 (`pah-forward-model-9-brief.md`) stress-tests these results against the literature
+and our own sanity checks before any of them are quoted externally.

@@ -189,10 +189,12 @@ code(
                 except Exception:
                     props = {}
             stellar_mass = None
+            log_ssfr_measured = np.nan
             for key, val in props.items():
                 if "mass" in key.lower() and "delta" not in key.lower():
                     stellar_mass = float(val)
-                    break
+                if "ssfr" in key.lower():
+                    log_ssfr_measured = float(val)
             if stellar_mass is None:
                 continue
             prop_bin_id = next(
@@ -228,6 +230,7 @@ code(
                 "run_id": run_id, "z_lo": z_lo, "z_hi": z_hi,
                 "z_mid": 0.5 * (z_lo + z_hi), "prop_bin_id": int(prop_bin_id),
                 "log_M_star": stellar_mass,
+                "log_ssfr_measured": log_ssfr_measured,
                 "n_sources": int(getattr(sed, "n_sources", 0)),
                 "MIPS_24": f24, "MIPS_24_err": f24_err,
                 "MIPS_70": f70, "MIPS_70_err": f70_err,
@@ -372,41 +375,57 @@ for fi, dff in enumerate(fold_dfs_sm):
         r_str = "  ".join(f"{glbl}={res_i['r'][g]:.2f}"
                           for g, glbl in enumerate(group_labels))
         print(f"  {lbl:<28} n={len(sub):>3}  chi2_red={res_i['chi2_red']:.2f}  {r_str}")
+
+# POOLED per-mass-bin fits: all 3 disjoint folds jointly -- the dense
+# interleaved wavelength sampling the dither design was built for. The pooled
+# fit is the MEASUREMENT; the folds above only supply the subsample error
+# (they share the field, so fold scatter is a jackknife-style error, not
+# three independent observations).
+pooled_flux = []
+for i, (m_lo, m_hi, col, lbl) in enumerate(MASS_BINS):
+    sub = df_pool_sm[df_pool_sm["prop_bin_id"] == i].copy()
+    sub["prop_bin_id"] = 0
+    res_i = _kmodel.fit_shared(sub, baseline_col="f24_cold")
+    pooled_flux.append(res_i["r"][2])
 '''
 )
 
 code(
     r'''labels = [lbl for _, _, _, lbl in MASS_BINS]
 means, errs = [], []
-print(f"{'mass bin':<28} {'fold values (12.7/6.2)':<28} {'mean':>8} {'+/- (fold scatter/sqrt3)':>26}")
+print(f"{'mass bin':<28} {'fold values (12.7/6.2)':<24} {'fold mean':>10} {'pooled fit':>11} {'+/- fold/sqrt3':>15}")
 for i in range(len(MASS_BINS)):
     v = np.array([r[2] for r in fold_results[i]])
     m, e = v.mean(), v.std(ddof=1) / np.sqrt(len(v))
     means.append(m); errs.append(e)
-    print(f"{labels[i]:<28} {str(np.round(v, 2)):<28} {m:>8.2f} {e:>26.2f}")
+    print(f"{labels[i]:<28} {str(np.round(v, 2)):<24} {m:>10.2f} {pooled_flux[i]:>11.2f} {e:>15.2f}")
 
-print("\nAdjacent-mass-bin separation (sigma, combined fold-ensemble errors):")
+print("\nAdjacent-mass-bin separation (pooled centrals, fold-ensemble errors):")
 for i in range(len(MASS_BINS) - 1):
-    sep = (means[i] - means[i + 1]) / np.sqrt(errs[i] ** 2 + errs[i + 1] ** 2)
-    print(f"  {labels[i]} ({means[i]:.2f}+/-{errs[i]:.2f})  vs  "
-          f"{labels[i+1]} ({means[i+1]:.2f}+/-{errs[i+1]:.2f})  ->  {sep:.2f} sigma")
+    sep = (pooled_flux[i] - pooled_flux[i + 1]) / np.sqrt(errs[i] ** 2 + errs[i + 1] ** 2)
+    print(f"  {labels[i]} ({pooled_flux[i]:.2f}+/-{errs[i]:.2f})  vs  "
+          f"{labels[i+1]} ({pooled_flux[i+1]:.2f}+/-{errs[i+1]:.2f})  ->  {sep:.2f} sigma")
 
 
-# Cross-check against the documented Sec 4a values (branch-7 brief Sec 1a)
+# Cross-check against the documented Sec 4a values (branch-7 brief Sec 1a).
+# The documented numbers are FOLD-ENSEMBLE MEANS; the check verifies those
+# reproduce. The pooled fit is the canonical central value going forward
+# (2026-07-05 convention fix: pooled = measurement, folds = error bar only).
 DOCUMENTED = [(72.4, 23.1), (12.8, 4.0), (3.7, 0.5), (0.8, 0.6)]
-print("\nreproduction check vs documented (brief Sec 1a):")
+print("\nreproduction check vs documented fold means (brief Sec 1a):")
 for i, (dm, de) in enumerate(DOCUMENTED):
-    print(f"  bin {i}: reproduced {means[i]:6.1f} +/- {errs[i]:4.1f}   "
+    print(f"  bin {i}: fold mean {means[i]:6.1f} +/- {errs[i]:4.1f}   "
           f"documented {dm:6.1f} +/- {de:4.1f}   "
-          f"{'MATCH' if abs(means[i]-dm) < 0.15*max(abs(dm),1) + 1e-9 else 'DIFFERS'}")
+          f"{'MATCH' if abs(means[i]-dm) < 0.15*max(abs(dm),1) + 1e-9 else 'DIFFERS'}"
+          f"   -> pooled central {pooled_flux[i]:6.1f}")
 '''
 )
 
 code(
     r'''bin_ctrs = np.array([0.5 * (lo + hi) for lo, hi, *_ in MASS_BINS])
 fig, ax = plt.subplots(figsize=(7, 5))
-ax.errorbar(bin_ctrs, means, yerr=errs, fmt="o-", ms=9, color="C3", capsize=5, elinewidth=1.5,
-            label="fold-ensemble mean +/- scatter/sqrt(3)")
+ax.errorbar(bin_ctrs, pooled_flux, yerr=errs, fmt="o-", ms=9, color="C3", capsize=5, elinewidth=1.5,
+            label="pooled 3-fold fit +/- fold scatter/sqrt(3)")
 for fi in range(3):
     ys = [fold_results[i][fi][2] if fi < len(fold_results[i]) else np.nan
           for i in range(len(MASS_BINS))]
@@ -456,29 +475,39 @@ for fi, dff in enumerate(fold_dfs_sm):
             continue
         fold_results_env[i].append(res_i["r"])
 
+# POOLED envelope-aware per-bin fits (canonical central values)
+pooled_env = []
+for i, (m_lo, m_hi, col, lbl) in enumerate(MASS_BINS):
+    sub = df_pool_sm[df_pool_sm["prop_bin_id"] == i].copy()
+    sub["prop_bin_id"] = 0
+    res_i = _kmodel.fit_evolving(sub, evolve_amp=False, evolve_ratios=False,
+                                 baseline_cols={"MIPS_24": "f24_cold"},
+                                 feature_envelope="baseline")
+    pooled_env.append(res_i["r"][2])
+
 means_env, errs_env = [], []
-print(f"{'mass bin':<28} {'12.7/6.2 envelope-aware':>24} {'flux-amplitude (Sec 2)':>24}")
+print(f"{'mass bin':<28} {'env-aware pooled':>17} {'fold mean':>10} {'+/- fold/sqrt3':>15} {'flux-amp pooled':>16}")
 for i in range(len(MASS_BINS)):
     v = np.array([r[2] for r in fold_results_env[i]])
     m, e = v.mean(), v.std(ddof=1) / np.sqrt(len(v))
     means_env.append(m); errs_env.append(e)
-    print(f"{labels[i]:<28} {m:>12.2f} +/- {e:<7.2f}  {means[i]:>12.2f} +/- {errs[i]:<7.2f}")
-print("\nwindow-envelope bias (old/new per bin):",
-      np.round(np.array(means) / np.array(means_env), 2))
-print("\nAdjacent-mass-bin separation, envelope-aware (sigma):")
+    print(f"{labels[i]:<28} {pooled_env[i]:>17.2f} {m:>10.2f} {e:>15.2f} {pooled_flux[i]:>16.2f}")
+print("\nwindow-envelope bias (flux-amp/env-aware, pooled):",
+      np.round(np.array(pooled_flux) / np.array(pooled_env), 2))
+print("\nAdjacent-mass-bin separation, envelope-aware pooled (sigma):")
 for i in range(len(MASS_BINS) - 1):
-    sep = (means_env[i] - means_env[i + 1]) / np.sqrt(errs_env[i]**2 + errs_env[i+1]**2)
+    sep = (pooled_env[i] - pooled_env[i + 1]) / np.sqrt(errs_env[i]**2 + errs_env[i+1]**2)
     print(f"  {labels[i]}  vs  {labels[i+1]}  ->  {sep:.2f} sigma")
 '''
 )
 
 code(
     r'''fig, ax = plt.subplots(figsize=(7, 5))
-ax.errorbar(bin_ctrs, means, yerr=errs, fmt="o--", ms=7, color="0.6", capsize=4,
+ax.errorbar(bin_ctrs, pooled_flux, yerr=errs, fmt="o--", ms=7, color="0.6", capsize=4,
             label="flux-amplitude ratios (Sec 2, window-envelope contaminated)")
-ax.errorbar(bin_ctrs, means_env, yerr=errs_env, fmt="o-", ms=9, color="C3",
+ax.errorbar(bin_ctrs, pooled_env, yerr=errs_env, fmt="o-", ms=9, color="C3",
             capsize=5, elinewidth=1.5,
-            label="envelope-aware (intrinsic template ratios)")
+            label="envelope-aware pooled fit (intrinsic template ratios)")
 for fi in range(3):
     ys = [fold_results_env[i][fi][2] if fi < len(fold_results_env[i]) else np.nan
           for i in range(len(MASS_BINS))]
@@ -493,6 +522,130 @@ ax.legend(fontsize=8.5)
 ax.grid(alpha=0.15, which="both")
 plt.tight_layout()
 fig.savefig("pah_money_bandratio_vs_mass_envaware.png", dpi=150, bbox_inches="tight")
+plt.show()
+'''
+)
+
+md(
+    r"""### 2c · The model against the data, coloured by measured sSFR
+
+Rework of the letter-notebook §4e figure (a first attempt here failed for two
+reasons, both fixed): it needed the per-bin measured sSFR, which this
+notebook's DataFrame builder now extracts (`lp_sSFR_med` →
+`log_ssfr_measured`; deliberately NOT named `log_ssfr`, so the §3 fits keep
+their main-sequence proxy and remain strict re-derivations), and it overlaid
+the old per-bin `fit_shared` model — the overlay below is the current one:
+the pooled, envelope-aware `fit_evolving_mcmc` posterior, decomposed into
+baseline + feature-group contributions. Points are the pooled stacked fluxes
+coloured by each bin's median measured sSFR; the smooth baseline (§2c first
+panel shows raw-vs-smoothed) is what makes the model bands smooth. Two views
+of the same posterior: the standard decomposition figure (credible band,
+plain points) and the sSFR-coloured variant."""
+)
+
+code(
+    r'''# Baseline sanity: raw per-bin Wien extrapolation vs smoothed MS relation
+fig, axes = plt.subplots(1, len(MASS_BINS), figsize=(5 * len(MASS_BINS), 4), sharey=True)
+for ax, (i, (m_lo, m_hi, col, lbl)) in zip(axes, enumerate(MASS_BINS)):
+    sub = df_pool_sm[df_pool_sm["prop_bin_id"] == i].sort_values("z_mid")
+    ax.scatter(sub["z_mid"], sub["f24_cold_raw"] * 1e3, s=18, color="0.6",
+               alpha=0.6, label="raw per-bin")
+    o = np.argsort(sub["z_mid"].values)
+    ax.plot(sub["z_mid"].values[o], sub["f24_cold_smooth"].values[o] * 1e3,
+            "-", color=col, lw=2.2, label="smoothed MS")
+    ax.set_title(lbl, fontsize=9)
+    ax.set_xlabel("z")
+    if i == 0:
+        ax.set_ylabel(r"$f_{24,\rm cold}$ [mJy]")
+    ax.set_yscale("log")
+    ax.grid(alpha=0.15)
+    ax.legend(fontsize=8)
+fig.suptitle("Baseline: raw per-bin Wien extrapolation vs smoothed main-sequence relation")
+plt.tight_layout()
+plt.show()
+'''
+)
+
+code(
+    r'''# Pooled envelope-aware evolving MCMC on the smoothed df (mJy working copy).
+# Reference group FIRST (7.7+8.6 um) per the branch-7 identifiability lesson.
+from simstack4.pah_spectrum import evolving_flux_decomposition
+
+GROUPS_DEC = [[1, 2], [0], [4]]
+model_dec = PAHSpectrumModel(feature_groups=GROUPS_DEC, bands=("MIPS_24", "MIPS_70"),
+                             sigma_z0=SIGMA_Z0, f_cat=0.03)
+df_mjy = df_pool_sm.copy()
+for c in ["MIPS_24", "MIPS_24_err", "MIPS_70", "MIPS_70_err", "f24_cold", "f70_cold"]:
+    df_mjy[c] = 1e3 * df_mjy[c]
+
+evolving = model_dec.fit_evolving_mcmc(df_mjy, feature_envelope="baseline",
+                                       eta_prior_sigma=1.0,
+                                       n_walkers=32, n_steps=800, n_burn=300, seed=2)
+print(f"pooled evolving MCMC: chi2_red = {evolving['chi2_red']:.2f}, "
+      f"eta_A = {evolving['eta_amp']:+.3f} +/- {evolving['eta_amp_err']:.3f}, "
+      f"r = {np.round(evolving['r'], 3)}")
+dec = evolving_flux_decomposition(evolving, n_draws=100, seed=3)
+'''
+)
+
+code(
+    r'''# The standard decomposition view first (same machinery as the evolving-MCMC
+# notebook's Sec 7 figure): posterior-median baseline + stacked feature-group
+# wedges + 68% band, data as plain points.
+from simstack4.plots import plot_pah_flux_decomposition
+
+fig = plot_pah_flux_decomposition(
+    dec, band="MIPS_24",
+    mass_labels=[lbl for *_, lbl in MASS_BINS],
+    save_path="pah_money_f24_decomposition.png",
+)
+plt.show()
+'''
+)
+
+code(
+    r'''# f24 vs z per mass bin: data coloured by measured sSFR, model decomposition under it
+from simstack4.plots import _PAH_GROUP_COLORS
+
+dec_labels = ["7.7+8.6 um", "6.2 um", "12.7 um"]   # GROUPS_DEC order
+_ssfr = df_mjy["log_ssfr_measured"].replace([np.inf, -np.inf], np.nan)
+vmin, vmax = np.nanpercentile(_ssfr.dropna(), [5, 95])
+norm = plt.Normalize(vmin=vmin, vmax=vmax)
+
+fig, axes = plt.subplots(2, 2, figsize=(14.5, 9), sharex=True)
+contrib_cols = [c for c in dec.columns if c.startswith("contrib_")]
+for k, (m_lo, m_hi, col, lbl) in enumerate(MASS_BINS):
+    ax = axes[k // 2, k % 2]
+    dm = dec[(dec["prop_bin_id"] == k) & (dec["band"] == "MIPS_24")].sort_values("z_mid")
+    if len(dm):
+        z = dm["z_mid"].to_numpy()
+        cum = dm["baseline"].to_numpy().copy()
+        ax.plot(z, cum, "--", color="0.4", lw=1.5, label="cold baseline", zorder=2)
+        for g, cc in enumerate(contrib_cols):
+            top = cum + dm[cc].to_numpy()
+            ax.fill_between(z, cum, top, color=_PAH_GROUP_COLORS[g % 5], alpha=0.55,
+                            lw=0, label=dec_labels[g], zorder=1)
+            cum = top
+        ax.plot(z, dm["total"].to_numpy(), "k-", lw=1.2, zorder=3, label="model total")
+    sub = df_mjy[df_mjy["prop_bin_id"] == k]
+    ax.errorbar(sub["z_mid"], sub["MIPS_24"], yerr=sub["MIPS_24_err"], fmt="none",
+                ecolor="0.65", elinewidth=0.8, capsize=2, zorder=4)
+    sc = ax.scatter(sub["z_mid"], sub["MIPS_24"], c=sub["log_ssfr_measured"],
+                    cmap="Blues", norm=norm, s=40, edgecolor="0.25", linewidth=0.4,
+                    zorder=5, label="stacked flux (colour: sSFR)")
+    ax.set_title(f"MIPS 24 um -- {lbl}", fontsize=10)
+    ax.grid(alpha=0.15)
+    if k % 2 == 0:
+        ax.set_ylabel("stacked flux [mJy]")
+    if k // 2 == 1:
+        ax.set_xlabel("redshift")
+    if k == 0:
+        ax.legend(fontsize=8, ncol=2, loc="upper right")
+cb = fig.colorbar(sc, ax=axes, fraction=0.025, pad=0.01)
+cb.set_label(r"median measured $\log\,{\rm sSFR}$ [yr$^{-1}$]")
+fig.suptitle("Pooled stacks vs the envelope-aware evolving model, coloured by measured sSFR",
+             fontsize=12)
+fig.savefig("pah_money_f24_vs_z_ssfr.png", dpi=150, bbox_inches="tight")
 plt.show()
 '''
 )
@@ -917,21 +1070,266 @@ print("\nBranch bands for reference: A (density) [-0.35, +0.09], B (enrichment) 
 )
 
 md(
+    r"""### 3c · Redshift-resolved L_PAH/L_IR vs stellar mass
+
+Can the money plots be split into z~1 / z~2 / z~3 lines? **Money plot 1
+cannot** — at 24 µm the 12.7 µm feature is only in-band at z ≈ 0.7–1.1 and
+6.2 µm only at z ≈ 2.6–3.4, so their ratio is intrinsically a cross-redshift
+construct. **Money plot 2 can**: per (mass bin × z slice) the feature
+amplitude is refit (2-parameter WLS, envelope-aware), and converted to total
+L_PAH with a fixed template.
+
+**Template choice matters — a first version of this section was wrong.** A
+single *global* template forced onto all mass bins produced spuriously
+flat/declining slices, because §2b shows the true band ratios vary ~100×
+across mass and each slice's amplitude is anchored by one feature window
+(12.7 µm at z~1, 7.7+8.6 at z~2, 6.2 at z~3): under-weighting a bin's
+dominant feature misconverts that bin's slice level. The fit below uses
+**per-mass-bin envelope-aware templates** (the §2b pooled per-bin fits).
+Validation: (i) with an all-z window this estimator reproduces the §3 money
+plot means; (ii) the resulting pattern — L_PAH/L_IR *rising* with z at low
+mass, *falling* at high mass — independently matches the letter-notebook
+§5b non-parametric sSFR median-split. Absolute slice levels still inherit
+the template conversion; the crossing pattern and the per-line trends are
+the robust content."""
+)
+
+code(
+    r'''Z_SLICES = [(0.5, 1.4, "z~1"), (1.4, 2.4, "z~2"), (2.4, 3.5, "z~3")]
+
+# Anchors: global envelope-aware alpha_wien + PER-MASS-BIN envelope-aware
+# templates (the Sec 2b pooled per-bin fits, full r vectors).
+res_env_pool = _emodel.fit_with_alpha(
+    df_pool_sm, evolving=True, evolve_amp=False, evolve_ratios=False,
+    baseline_cols=_acols, alpha_prior=(2.0, 0.3), alpha_bounds=(1.0, 5.0),
+    feature_envelope="baseline")
+AW_POOL = float(res_env_pool["alpha_wien"])
+R_BINS = []
+for i in range(len(MASS_BINS)):
+    sub = df_pool_sm[df_pool_sm["prop_bin_id"] == i].copy()
+    sub["prop_bin_id"] = 0
+    ri = _kmodel.fit_evolving(sub, evolve_amp=False, evolve_ratios=False,
+                              baseline_cols={"MIPS_24": "f24_cold"},
+                              feature_envelope="baseline")
+    R_BINS.append(np.asarray(ri["r"]))
+print(f"alpha_wien (global, envelope-aware) = {AW_POOL:.2f}")
+for i, r in enumerate(R_BINS):
+    print(f"  per-bin template r (bin {i}):", np.round(r, 3))
+
+
+def zslice_ratios(dff, r_by_bin, aw, z_windows):
+    """L_PAH/L_IR per (mass bin, z window): envelope-aware amplitude refit per
+    window with (per-bin r, alpha_wien) fixed; returns (n_bins, n_win)."""
+    m24 = PAHSpectrumModel(feature_groups=FEATURE_GROUPS, bands=("MIPS_24",),
+                           sigma_z0=SIGMA_Z0, f_cat=0.03)
+    dt = dff.copy()
+    dt["f24_cold"] = dt["f24_cold"] * (1 + dt["z_mid"]) ** (2.0 - aw)
+    prep = m24._prepare(dt, None, None, None, None, None,
+                        baseline_cols={"MIPS_24": "f24_cold"})
+    _gb = _Greybody()
+    _gb.alpha_wien = aw
+    out = np.full((len(MASS_BINS), len(z_windows)), np.nan)
+    for b in prep["bins"]:
+        i = b["m"]
+        r_ratios = np.asarray(r_by_bin[i])
+        K = b["K"][:, 0, :]
+        fcold = b["f_cold_by_band"]["MIPS_24"]
+        f, e = b["F"][:, 0], b["Ferr"][:, 0]
+        z = np.asarray(b["z_mid"], dtype=float)
+        sub = dt[dt["prop_bin_id"] == i].sort_values(["run_id", "z_lo"]).reset_index(drop=True)
+        ok = (np.isfinite(f) & np.isfinite(e) & (e > 0)
+              & np.isfinite(fcold) & (fcold > 0) & (f > 0)
+              & np.isfinite(sub["T_dust"].to_numpy())
+              & np.isfinite(sub["log_amp"].to_numpy()))
+        if ok.sum() < 6:
+            continue
+        med = float(np.median(fcold[ok]))
+        env = fcold / med
+        t_full = env * (K @ r_ratios)
+        base = fcold / med
+        for k, (zlo, zhi) in enumerate(z_windows):
+            msk = ok & (z >= zlo) & (z < zhi)
+            if msk.sum() < 4:
+                continue
+            D = np.column_stack([base[msk], t_full[msk]])
+            w = 1.0 / e[msk] ** 2
+            try:
+                C_s, a_s = np.linalg.solve(D.T @ (w[:, None] * D), D.T @ (w * f[msk]))
+            except np.linalg.LinAlgError:
+                continue
+            ratios, wts = [], []
+            for j in np.where(msk)[0]:
+                row = sub.iloc[j]
+                L_IR, _ = _gb.calculate_LIR(row["log_amp"], row["T_dust"],
+                                            row["beta"], row["z_mid"])
+                if not (np.isfinite(L_IR) and L_IR > 0):
+                    continue
+                L_PAH = a_s * env[j] * lshape_at_z(_gb, row["z_mid"], r_ratios,
+                                                   FEATURE_GROUPS)
+                ratios.append(L_PAH / L_IR)
+                wts.append(float(row["n_sources"]) if np.isfinite(row["n_sources"]) else 1.0)
+            if ratios:
+                wts = np.array(wts) / np.sum(wts)
+                out[i, k] = float(np.sum(wts * np.array(ratios)))
+    return out
+
+
+wins = [(zlo, zhi) for zlo, zhi, _ in Z_SLICES]
+zr_pool = zslice_ratios(df_pool_sm, R_BINS, AW_POOL, wins)
+zr_folds = np.stack([zslice_ratios(dff, R_BINS, AW_POOL, wins) for dff in fold_dfs_sm])
+zr_err = np.nanstd(zr_folds, axis=0, ddof=1) / np.sqrt(3)
+
+# Validation: the same estimator with an all-z window should track the Sec 3
+# money-plot means (it does; residual offsets are the per-bin-template vs
+# global-template conversion).
+allz = zslice_ratios(df_pool_sm, R_BINS, AW_POOL, [(0.5, 3.5)])[:, 0]
+print(f"\n{'mass bin':<28}" + "".join(f"{lab:>16}" for *_, lab in Z_SLICES) + f"{'all-z':>10}{'Sec 3':>8}")
+sec3_ref = 100 * lir_pool["ratio"].to_numpy()
+for i in range(len(MASS_BINS)):
+    cells = []
+    for k in range(len(Z_SLICES)):
+        v, ev = zr_pool[i, k], zr_err[i, k]
+        cells.append(f"{100*v:6.2f}+/-{100*ev:4.2f}%" if np.isfinite(v) else "      --   ")
+    print(f"{labels[i]:<28}" + "".join(f"{c:>16}" for c in cells)
+          + f"{100*allz[i]:>9.2f}%{sec3_ref[i]:>7.2f}%")
+
+'''
+)
+
+code(
+    r'''zcols = plt.cm.Blues(np.linspace(0.45, 0.95, len(Z_SLICES)))
+fig, ax = plt.subplots(figsize=(7.5, 5.5))
+for k, (zlo, zhi, lab) in enumerate(Z_SLICES):
+    x = bin_ctrs + (k - 1) * 0.02
+    okk = np.isfinite(zr_pool[:, k])
+    ax.errorbar(x[okk], 100 * zr_pool[okk, k], yerr=100 * zr_err[okk, k],
+                fmt="o-", ms=7, capsize=4, color=zcols[k],
+                label=f"{lab}  (z = {zlo}-{zhi})")
+ax.set_yscale("log")
+ax.set_xlabel(r"$\log\, M_*/M_\odot$")
+ax.set_ylabel(r"$L_{\rm PAH}/L_{\rm IR}$  [%]")
+ax.set_title("PAH-to-IR ratio vs stellar mass, split by redshift slice\n"
+             "(amplitude refit per slice; per-mass-bin envelope-aware templates)")
+ax.grid(alpha=0.15, which="both")
+ax.legend(fontsize=9)
+plt.tight_layout()
+fig.savefig("pah_money_lpah_lir_vs_mass_zslices.png", dpi=150, bbox_inches="tight")
+plt.show()
+
+'''
+)
+
+md(
+    r"""### 3d · The z-resolved confrontation: slice mass slopes vs the branch bands
+
+The §5 branch derivation is already per-redshift (branch A's ingredients —
+gas fractions, sizes, Σ_SFR — were evaluated at z = 1.0/1.5/2.0/2.5), so the
+§3c slices can be confronted at their own epochs: measure each slice's mass
+slope (pooled centrals, fold-ensemble errors) and compare with branch A
+evaluated over that slice's z range (the z~3 slice uses the z=2.5 row — a
+mild extrapolation) and the z-independent branch B band. Expectation from
+the crossing pattern: the slope should run from enrichment-like (positive,
+branch-B territory) at z~1 to destruction-like (negative, branch-A
+territory) at z~3, with the all-z slope (+0.234) as the blend.
+
+Caveats carried from §3c and §5: the bands are OUR construction from the
+Narayanan+26 mechanism (the paper publishes no mass-slope prediction); the
+slice slopes inherit the measured per-mass-bin templates (template
+uncertainty not propagated); slices with a non-positive bin drop that bin
+from the log-slope fit."""
+)
+
+code(
+    r'''def _mass_slope(vals):
+    v = np.asarray(vals, dtype=float)
+    ok = np.isfinite(v) & (v > 0)
+    if ok.sum() < 3:
+        return np.nan
+    return float(np.polyfit(bin_ctrs[ok], np.log10(v[ok]), 1)[0])
+
+
+slice_slopes = np.array([_mass_slope(zr_pool[:, k]) for k in range(len(Z_SLICES))])
+fold_slopes = np.array([[_mass_slope(zr_folds[f][:, k]) for k in range(len(Z_SLICES))]
+                        for f in range(len(fold_dfs_sm))])
+n_ok = np.sum(np.isfinite(fold_slopes), axis=0)
+slice_serrs = np.nanstd(fold_slopes, axis=0, ddof=1) / np.sqrt(np.maximum(n_ok, 1))
+
+# Branch A band per slice from the Sec 5 per-z rows; branch B is z-independent
+bandA_slice = []
+for zlo, zhi, _ in Z_SLICES:
+    rows = branchA[(branchA["z"] >= zlo) & (branchA["z"] <= zhi)]
+    if len(rows) == 0:
+        rows = branchA.iloc[[int(np.argmin(np.abs(branchA["z"] - 0.5 * (zlo + zhi))))]]
+    bandA_slice.append((float(rows["A_lo"].min()), float(rows["A_hi"].max())))
+
+print(f"{'slice':<8}{'mass slope':>18}{'branch A band':>19}{'in A?':>7}{'in B?':>7}")
+for k, (zlo, zhi, lab) in enumerate(Z_SLICES):
+    alo, ahi = bandA_slice[k]
+    sl, se = slice_slopes[k], slice_serrs[k]
+    inA = alo <= sl <= ahi
+    inB = B_LO <= sl <= B_HI
+    print(f"{lab:<8}{sl:+11.3f}+/-{se:5.3f}   [{alo:+.2f}, {ahi:+.2f}]"
+          f"{str(inA):>8}{str(inB):>7}")
+print(f"\nall-z measurement (money plot 2): +0.234 +/- 0.077 "
+      f"(branch B [{B_LO:+.2f}, {B_HI:+.2f}])")
+
+zmids = np.array([0.5 * (zlo + zhi) for zlo, zhi, _ in Z_SLICES])
+fig, ax = plt.subplots(figsize=(7.5, 5.2))
+for k, (zlo, zhi, lab) in enumerate(Z_SLICES):
+    alo, ahi = bandA_slice[k]
+    ax.fill_between([zlo, zhi], [alo, alo], [ahi, ahi], color="C0", alpha=0.20,
+                    lw=0, label="Narayanan+26 branch A (density/shattering)" if k == 0 else None)
+ax.axhspan(B_LO, B_HI, color="C1", alpha=0.13, lw=0,
+           label="Narayanan+26 branch B (enrichment/PZR)")
+ax.errorbar(zmids, slice_slopes, yerr=slice_serrs, fmt="o", ms=9, capsize=4,
+            color="C3", zorder=5, label="slice mass slope (pooled, fold errors)")
+ax.axhline(0.234, color="0.35", ls="--", lw=1.4,
+           label="all-z slope +0.234 (money plot 2)")
+ax.axhspan(0.234 - 0.077, 0.234 + 0.077, color="0.5", alpha=0.10, lw=0)
+ax.axhline(0.0, color="k", lw=0.6, alpha=0.5)
+ax.set_xlabel("redshift")
+ax.set_ylabel(r"$d\,\log(L_{\rm PAH}/L_{\rm IR})\, /\, d\,\log M_*$  [dex/dex]")
+ax.set_title("Mass slope of the PAH-to-IR ratio vs redshift:\n"
+             "enrichment-like at z~1, destruction-like at z~3")
+ax.grid(alpha=0.15)
+ax.legend(fontsize=8.5, loc="lower left")
+plt.tight_layout()
+fig.savefig("pah_money_slice_slopes_vs_branches.png", dpi=150, bbox_inches="tight")
+plt.show()
+'''
+)
+
+md(
     r"""## 4 · Verdict
 
-- **Money plot 1 (band ratios)**: the §2 flux-amplitude version is a strict
-  reproduction of the documented values (its code path predates this
-  branch's fixes). The §2b envelope-aware version is the *corrected*
-  calibration: the mass trend and adjacent-bin significances are preserved
-  (the window-envelope factor is common to all mass bins), but the absolute
-  ratios shift down by that common factor — use the §2b values when
-  comparing against literature band ratios; the §2 values only for the
-  internal mass trend.
-- **Money plot 2 (confrontation)**: the documented +0.236 ± 0.076 survives
-  the multi-band normalization fix essentially unchanged (+0.234 ± 0.077).
-  The §3b envelope-aware estimators bracket the remaining estimator
-  systematic — quote the spread between the §3 and §3b slopes as such
-  alongside the α_wien systematic.
+- **Central values are the POOLED 3-fold fits** (2026-07-05 convention fix):
+  the folds are disjoint catalog subsets sharing the field, so the pooled fit
+  carries the dense interleaved wavelength sampling the dither design bought,
+  and fold scatter serves only as a jackknife-style subsample error (it
+  undercounts field-level cosmic variance and shared-map systematics — one
+  field). Fold-mean centrals (the previously documented values) are biased
+  10–40% high relative to the pooled fits.
+- **Money plot 1**: use the §2b envelope-aware POOLED ratios for any
+  literature comparison; the §2 flux-amplitude version is the internal-trend
+  calibration only. The ratio itself cannot be redshift-resolved — its two
+  features never share the bandpass at one z.
+- **Money plot 2**: the documented slope survives both the normalization fix
+  and the pooled-vs-fold convention (its central curve was always the pooled
+  fit). §3b brackets the envelope-estimator systematic; §3c adds the
+  z-resolved view — with PER-MASS-BIN templates (a global template
+  spuriously flattens the slices) it shows a crossing pattern: L_PAH/L_IR
+  rises with z at low mass and falls at high mass, matching the
+  letter-notebook §5b non-parametric split; the rising mass trend lives in
+  the all-z aggregate and steepens at z~1. §3d confronts each slice's mass
+  slope with the branch bands at its own redshift: the slope runs from
+  branch-B-like (positive) at z~1 to branch-A-like (negative) at z~3 — the
+  two chains trading dominance with epoch, with the all-z +0.234 as the
+  blend.
+- **§2c** replaces the failed sSFR-coloured figure: measured `lp_sSFR_med`
+  now flows through the DataFrame builder as `log_ssfr_measured` (kept
+  distinct from `log_ssfr` so the §3 fits stay strict re-derivations), and
+  the model overlay is the pooled envelope-aware evolving-MCMC decomposition,
+  not the superseded per-bin `fit_shared`.
 """
 )
 
