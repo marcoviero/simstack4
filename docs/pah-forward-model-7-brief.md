@@ -298,18 +298,45 @@ reproduction checks. PNGs: `pah_money_bandratio_vs_mass.png`,
 - **§2b/§3b (user-directed follow-up, executed same day): envelope-aware re-derivations.**
   (a) *Band ratios*: `fit_shared`'s constant-flux feature term makes each group's amplitude
   absorb the mean dimming envelope of ITS OWN redshift window (12.7 µm measured at z≈0.9,
-  6.2 µm at z≈2.9), so the §1a absolute ratios were window-envelope contaminated by a ×4.3–6.5
-  factor. Intrinsic (envelope-aware) values: **13.4±3.8 → 1.96±0.52 → 0.88±0.06 → 0.19±0.14**;
-  the mass trend, monotonicity and adjacent-bin separations survive (3.0/2.1/4.5σ), but
-  "parity at high mass" moves to the 10.8–11.1 bin and the >11.1 bin sits at 0.19. **Use the
-  §2b values for any literature band-ratio comparison (Xie & Ho, Whitcomb); §1a's table is the
-  internal-trend version only.**
+  6.2 µm at z≈2.9), so the §1a absolute ratios were window-envelope contaminated by a ×4.7–7
+  factor. **2026-07-05 convention fix (user-flagged): central values are now the POOLED
+  3-fold fits** — the folds are disjoint catalog subsets sharing the field, so the pooled fit
+  carries the dense interleaved sampling the dither design bought; fold scatter is the
+  (jackknife-style) error only. Fold-mean centrals were biased 10–40% high. Canonical
+  intrinsic (envelope-aware, pooled) values: **11.2±3.8 → 1.24±0.52 → 0.78±0.06 → 0.10±0.14**;
+  monotonic in all folds, adjacent separations 2.6/0.9/4.4σ (the middle step is the soft one
+  under this convention; the endpoints and the ~2 dex span are robust). **Use these for any
+  literature band-ratio comparison (Xie & Ho, Whitcomb); §1a's table is the internal-trend
+  version only.**
   (b) *L_PAH/L_IR slope*: envelope-static estimator +0.227±0.185 (fold-unstable — the static
   envelope model is mis-specified, per the §7 evolving-fit result); envelope+η_A estimator
   +0.131±0.055 (η_A runs to ~2 in these free-α fits). Slope stays positive under every
   estimator (+0.13…+0.23), but the density-chain tension is estimator-dependent: 1.8σ
   (original) → ~0.7σ (envelope-aware). Quote the estimator spread as a systematic alongside
   α_wien.
+- **§2c/§3c (2026-07-05, user-directed)**: §2c reworks the letter-§4e figure — pooled stacks
+  coloured by measured `lp_sSFR_med` with the pooled envelope-aware evolving-MCMC
+  decomposition as the model overlay (`pah_money_f24_vs_z_ssfr.png`); the DataFrame builder
+  now extracts `log_ssfr_measured` (kept distinct from `log_ssfr` so fits keep the MS proxy).
+  §3c adds the z-resolved L_PAH/L_IR vs M\* view (`pah_money_lpah_lir_vs_mass_zslices.png`):
+  per (mass × z-slice) amplitude refits. **First version was wrong** (user-caught 2026-07-05:
+  slices came out flat/declining, contradicting the rising money plot): forcing one GLOBAL
+  template on all mass bins misconverts each slice's single-window amplitude when the true
+  band ratios vary ~100× across mass. With PER-MASS-BIN envelope-aware templates (validated:
+  all-z window reproduces the §3 means) the slices show a **crossing pattern**: L_PAH/L_IR
+  RISES with z at low mass (4.6→10.3%) and FALLS at high mass (26.7→0.4%), independently
+  matching the letter §5b non-parametric sSFR split; the rising mass trend lives in the all-z
+  aggregate (6.0→14.4%, per-bin templates steepen it) and is carried by the z~1/z~2 slices.
+  Money plot 1 CANNOT be z-resolved: the 12.7 and 6.2 µm features never share the bandpass at
+  one z (the tomography spends the z axis to buy wavelength coverage); absolute slice levels
+  inherit the template conversion, so the crossing pattern is the robust content.
+  **§3d (z-resolved confrontation, `pah_money_slice_slopes_vs_branches.png`)**: per-slice mass
+  slopes vs the branch bands at each slice's own z — **+0.602 (z~1) → +0.113 (z~2) → −1.088
+  (z~3)**. The slope runs from above the enrichment band, through it, to below the
+  density/shattering band: the two chains trade dominance with epoch, and the all-z +0.234 is
+  the blend. Fold errors on the slopes are tiny (±0.004–0.10) because the per-bin template
+  conversion is common-mode across folds — the template systematic dominates and is NOT in
+  those bars.
 
 ## Evolving-template study, part 2 — realism calibration + REAL-DATA comparison (2026-07-03)
 
