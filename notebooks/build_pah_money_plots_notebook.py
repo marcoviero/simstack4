@@ -85,6 +85,17 @@ from simstack4.dust_evolution import main_sequence_ssfr
 # gets immediately overridden (same note as the letter notebook).
 logging.getLogger("simstack4").setLevel(logging.WARNING)
 
+# Talk-projection styling (dataviz skill): larger type so these read from the
+# back of a room, and a validated categorical palette (references/palette.md,
+# checked with scripts/validate_palette.js -- ALL CHECKS PASS) replacing the
+# matplotlib "C0"/"C1"/"C3" cycle colors used in the first executed version.
+plt.rcParams.update({
+    "font.size": 12, "axes.titlesize": 13, "axes.labelsize": 13,
+    "legend.fontsize": 11, "xtick.labelsize": 11, "ytick.labelsize": 11,
+})
+CAT_BLUE, CAT_GREEN, CAT_RED = "#2a78d6", "#008300", "#e34948"
+MUTED = "#898781"   # palette.md "muted (axis/labels)" -- de-emphasized support marks
+
 path_json = os.path.join(os.environ["PICKLESPATH"], "simstack", "stacked_flux_densities")
 
 ANALYSIS_KWARGS = dict(
@@ -423,20 +434,20 @@ for i, (dm, de) in enumerate(DOCUMENTED):
 
 code(
     r'''bin_ctrs = np.array([0.5 * (lo + hi) for lo, hi, *_ in MASS_BINS])
-fig, ax = plt.subplots(figsize=(7, 5))
-ax.errorbar(bin_ctrs, pooled_flux, yerr=errs, fmt="o-", ms=9, color="C3", capsize=5, elinewidth=1.5,
-            label="pooled 3-fold fit +/- fold scatter/sqrt(3)")
+fig, ax = plt.subplots(figsize=(7.5, 5.5))
+ax.errorbar(bin_ctrs, pooled_flux, yerr=errs, fmt="o-", ms=10, lw=2.2, color=CAT_RED,
+            capsize=5, elinewidth=2, label="pooled 3-fold fit +/- fold scatter/sqrt(3)")
 for fi in range(3):
     ys = [fold_results[i][fi][2] if fi < len(fold_results[i]) else np.nan
           for i in range(len(MASS_BINS))]
-    ax.plot(bin_ctrs, ys, "o", ms=4, alpha=0.4, color="0.5")
+    ax.plot(bin_ctrs, ys, "o", ms=5, alpha=0.5, color=MUTED)
 ax.set_yscale("log")
 ax.set_xlabel(r"$\log M_*/M_\odot$")
 ax.set_ylabel(r"$r_{12.7\mu m} / r_{6.2\mu m}$  (neutral-PAH / ionized-PAH band ratio)")
 ax.set_title("PAH band-ratio shift vs mass, with fold-ensemble errors\n"
               "(small grey points: the 3 individual folds behind the mean)")
 ax.axhline(1.0, color="k", lw=0.7, ls="--", alpha=0.4)
-ax.legend(fontsize=9); ax.grid(alpha=0.15, which="both")
+ax.legend(); ax.grid(alpha=0.15, which="both")
 plt.tight_layout()
 fig.savefig("pah_money_bandratio_vs_mass.png", dpi=150, bbox_inches="tight")
 plt.show()
@@ -502,23 +513,23 @@ for i in range(len(MASS_BINS) - 1):
 )
 
 code(
-    r'''fig, ax = plt.subplots(figsize=(7, 5))
-ax.errorbar(bin_ctrs, pooled_flux, yerr=errs, fmt="o--", ms=7, color="0.6", capsize=4,
+    r'''fig, ax = plt.subplots(figsize=(7.5, 5.5))
+ax.errorbar(bin_ctrs, pooled_flux, yerr=errs, fmt="o--", ms=8, lw=1.8, color=MUTED, capsize=4,
             label="flux-amplitude ratios (Sec 2, window-envelope contaminated)")
-ax.errorbar(bin_ctrs, pooled_env, yerr=errs_env, fmt="o-", ms=9, color="C3",
-            capsize=5, elinewidth=1.5,
+ax.errorbar(bin_ctrs, pooled_env, yerr=errs_env, fmt="o-", ms=10, lw=2.2, color=CAT_RED,
+            capsize=5, elinewidth=2,
             label="envelope-aware pooled fit (intrinsic template ratios)")
 for fi in range(3):
     ys = [fold_results_env[i][fi][2] if fi < len(fold_results_env[i]) else np.nan
           for i in range(len(MASS_BINS))]
-    ax.plot(bin_ctrs, ys, "o", ms=4, alpha=0.4, color="C3", mfc="none")
+    ax.plot(bin_ctrs, ys, "o", ms=5, alpha=0.5, color=CAT_RED, mfc="none")
 ax.set_yscale("log")
 ax.set_xlabel(r"$\log M_*/M_\odot$")
 ax.set_ylabel(r"$r_{12.7\mu m} / r_{6.2\mu m}$  (neutral-PAH / ionized-PAH)")
 ax.set_title("PAH band-ratio shift vs mass: envelope-aware calibration\n"
              "(trend preserved; absolute values shift by the common window-envelope factor)")
 ax.axhline(1.0, color="k", lw=0.7, ls="--", alpha=0.4)
-ax.legend(fontsize=8.5)
+ax.legend()
 ax.grid(alpha=0.15, which="both")
 plt.tight_layout()
 fig.savefig("pah_money_bandratio_vs_mass_envaware.png", dpi=150, bbox_inches="tight")
@@ -922,45 +933,45 @@ code(
 mgrid = np.linspace(bin_ctrs.min() - 0.1, bin_ctrs.max() + 0.1, 60)
 ratio_piv = 10.0 ** (slope_pool * PIVOT + intercept_pool)
 
-fig, ax = plt.subplots(figsize=(7.5, 5.5))
+fig, ax = plt.subplots(figsize=(8, 6))
 
 def band(lo, hi, color, label):
     lo_line = ratio_piv * 10.0 ** (lo * (mgrid - PIVOT)) * 100
     hi_line = ratio_piv * 10.0 ** (hi * (mgrid - PIVOT)) * 100
     ax.fill_between(mgrid, lo_line, hi_line, color=color, alpha=0.18, lw=0)
-    ax.plot(mgrid, lo_line, color=color, lw=1.0, alpha=0.55)
-    ax.plot(mgrid, hi_line, color=color, lw=1.0, alpha=0.55, label=label)
+    ax.plot(mgrid, lo_line, color=color, lw=1.2, alpha=0.65)
+    ax.plot(mgrid, hi_line, color=color, lw=1.2, alpha=0.65, label=label)
 
-band(A_LO, A_HI, "C0",
+band(A_LO, A_HI, CAT_BLUE,
      f"Narayanan+26 branch A: density/shattering chain [{A_LO:+.2f}, {A_HI:+.2f}]")
-band(B_LO, B_HI, "C1",
+band(B_LO, B_HI, CAT_GREEN,
      f"Narayanan+26 branch B: enrichment/PZR chain [{B_LO:+.2f}, {B_HI:+.2f}]")
 
 s = FOLD_SUMMARY["alpha free"]
 ax.errorbar(bin_ctrs, lir_pool["ratio"] * 100,
             yerr=np.maximum(s["ratio_std"], 1e-9) * 100,
-            fmt="o", ms=9, capsize=4, color="C3", zorder=5,
+            fmt="o", ms=10, lw=2.2, capsize=4, color=CAT_RED, zorder=5,
             label=(f"measured (pooled, $\\alpha_w$={ALPHA_WIEN_POOL:.2f}; "
                    "errors = fold scatter)"))
-ax.plot(mgrid, 10 ** (slope_pool * mgrid + intercept_pool) * 100, "-", color="C3",
-        lw=1.8, alpha=0.9)
+ax.plot(mgrid, 10 ** (slope_pool * mgrid + intercept_pool) * 100, "-", color=CAT_RED,
+        lw=2.2, alpha=0.9)
 ax.annotate(f"measured slope = {s['slope_mean']:+.3f} $\\pm$ {s['slope_err']:.3f} dex/dex",
-            xy=(0.03, 0.95), xycoords="axes fraction", fontsize=10,
-            color="C3", va="top")
+            xy=(0.03, 0.95), xycoords="axes fraction", fontsize=11,
+            color=CAT_RED, va="top", weight="medium")
 
 # z~0 anchor -- directional context only (all-band PAH vs our partial template)
-ax.axhspan(10.0, 13.0, color="0.55", alpha=0.13, lw=0)
+ax.axhspan(10.0, 13.0, color=MUTED, alpha=0.13, lw=0)
 ax.annotate("z$\\approx$0 SINGS total-PAH/$L_{\\rm TIR}$ (Smith+07; all PAH bands --\n"
             "not directly comparable to our partial template)",
-            xy=(0.03, 0.80), xycoords="axes fraction", fontsize=8,
-            color="0.35", va="top")
+            xy=(0.03, 0.80), xycoords="axes fraction", fontsize=10,
+            color=MUTED, va="top")
 
 ax.set_xlabel(r"$\log\, M_*/M_\odot$")
 ax.set_ylabel(r"$L_{\rm PAH}/L_{\rm IR}$  [%]")
 ax.set_yscale("log")
 ax.set_title("PAH-to-IR ratio vs stellar mass at cosmic noon:\n"
              "measurement vs the two mass-axis channels of the shattering model")
-ax.legend(fontsize=8.5, loc="lower right")
+ax.legend(loc="lower right")
 ax.grid(alpha=0.15, which="both")
 plt.tight_layout()
 fig.savefig("pah_money_narayanan_confrontation.png", dpi=150, bbox_inches="tight")
@@ -1295,6 +1306,189 @@ ax.grid(alpha=0.15)
 ax.legend(fontsize=8.5, loc="lower left")
 plt.tight_layout()
 fig.savefig("pah_money_slice_slopes_vs_branches.png", dpi=150, bbox_inches="tight")
+plt.show()
+'''
+)
+
+md(
+    r"""### 3e · Template-systematic stress test (branch-9 Objective 1)
+
+§3c/§3d convert each z-slice's single-window amplitude to a total L_PAH
+using **one pooled per-mass-bin template** (`R_BINS`, `AW_POOL`), applied
+unchanged to all 3 folds. That template is itself a measurement (it's the
+§2b band-ratio result), so reusing it for every fold makes the §3c/§3d fold
+errors (±0.004 on the slice slopes) common-mode: the folds disagree on the
+amplitude fit, but never on the conversion factor, so the quoted scatter
+structurally cannot see the template's own uncertainty.
+
+**The stress test**: refit `AW_FOLD[f]` and `R_BINS_FOLD[f]` separately on
+each fold's own data (same calls as the pooled derivation, just on
+`fold_dfs_sm[f]` instead of `df_pool_sm`), then recompute each fold's slice
+slopes **self-consistently** — each fold converted with its own template,
+not the shared one. If the crossing pattern (and specifically the z~3 sign)
+is real rather than an artifact of the pooled-template choice, the sign
+should survive across this self-consistent ensemble; the fold-to-fold
+spread of these self-consistent slopes is the honest template-propagated
+error the §3d figure is missing.
+
+This is the same kind of swap that turned the Sec-3c global-template
+(flat/declining) result into the per-mass-bin-template (crossing) result —
+so the prior for "this could still move" is not small."""
+)
+
+code(
+    r'''# Self-consistent per-fold templates: each fold supplies its OWN
+# (alpha_wien, r-vectors) for the window -> total conversion, instead of
+# reusing AW_POOL / R_BINS (fit on df_pool_sm) for every fold as Sec 3c does.
+AW_FOLD, R_BINS_FOLD = [], []
+for fi, dff in enumerate(fold_dfs_sm):
+    res_env_f = _emodel.fit_with_alpha(
+        dff, evolving=True, evolve_amp=False, evolve_ratios=False,
+        baseline_cols=_acols, alpha_prior=(2.0, 0.3), alpha_bounds=(1.0, 5.0),
+        feature_envelope="baseline")
+    aw_f = float(res_env_f["alpha_wien"])
+    r_bins_f = []
+    for i in range(len(MASS_BINS)):
+        sub = dff[dff["prop_bin_id"] == i].copy()
+        sub["prop_bin_id"] = 0
+        ri = _kmodel.fit_evolving(sub, evolve_amp=False, evolve_ratios=False,
+                                  baseline_cols={"MIPS_24": "f24_cold"},
+                                  feature_envelope="baseline")
+        r_bins_f.append(np.asarray(ri["r"]))
+    AW_FOLD.append(aw_f)
+    R_BINS_FOLD.append(r_bins_f)
+    print(f"fold {fi}: alpha_wien={aw_f:.2f}  "
+          + "  ".join(f"bin{i} r={np.round(r,3)}" for i, r in enumerate(r_bins_f)))
+
+zr_folds_sc = np.stack([
+    zslice_ratios(dff, R_BINS_FOLD[f], AW_FOLD[f], wins)
+    for f, dff in enumerate(fold_dfs_sm)
+])
+
+slice_slopes_sc = np.array([
+    [_mass_slope(zr_folds_sc[f][:, k]) for k in range(len(Z_SLICES))]
+    for f in range(len(fold_dfs_sm))
+])
+n_ok_sc = np.sum(np.isfinite(slice_slopes_sc), axis=0)
+sc_mean = np.nanmean(slice_slopes_sc, axis=0)
+sc_std = np.nanstd(slice_slopes_sc, axis=0, ddof=1)
+sc_serr = sc_std / np.sqrt(np.maximum(n_ok_sc, 1))
+
+print(f"\n{'slice':<8}{'pooled-template':>20}{'self-consistent':>20}{'sign':>8}")
+for k, (zlo, zhi, lab) in enumerate(Z_SLICES):
+    same_sign = np.isfinite(sc_mean[k]) and np.sign(sc_mean[k]) == np.sign(slice_slopes[k])
+    print(f"{lab:<8}{slice_slopes[k]:+10.3f}+/-{slice_serrs[k]:<7.3f}"
+          f"{sc_mean[k]:+10.3f}+/-{sc_serr[k]:<7.3f}"
+          f"{'SURVIVES' if same_sign else 'FLIPS':>10}"
+          f"   (folds: " + " ".join(f"{v:+.3f}" for v in slice_slopes_sc[:, k]) + ")")
+'''
+)
+
+code(
+    r'''fig, ax = plt.subplots(figsize=(7.5, 5.2))
+for k, (zlo, zhi, _) in enumerate(Z_SLICES):
+    alo, ahi = bandA_slice[k]
+    ax.fill_between([zlo, zhi], [alo, alo], [ahi, ahi], color="C0", alpha=0.20,
+                    lw=0, label="Narayanan+26 branch A (density/shattering)" if k == 0 else None)
+ax.axhspan(B_LO, B_HI, color="C1", alpha=0.13, lw=0,
+           label="Narayanan+26 branch B (enrichment/PZR)")
+ax.errorbar(zmids - 0.04, slice_slopes, yerr=slice_serrs, fmt="s", ms=8, capsize=4,
+            color="0.4", zorder=4, label="pooled template, fold errors (Sec 3d)")
+ax.errorbar(zmids + 0.04, sc_mean, yerr=sc_serr, fmt="o", ms=9, capsize=4,
+            color="C3", zorder=5, label="self-consistent per-fold templates (Sec 3e)")
+ax.axhline(0.0, color="k", lw=0.6, alpha=0.5)
+ax.set_xlabel("redshift")
+ax.set_ylabel(r"$d\,\log(L_{\rm PAH}/L_{\rm IR})\, /\, d\,\log M_*$  [dex/dex]")
+ax.set_title("Template-systematic stress test: does the slice slope\n"
+             "survive when each fold uses its own template?")
+ax.grid(alpha=0.15)
+ax.legend(fontsize=8.5, loc="lower left")
+plt.tight_layout()
+fig.savefig("pah_money_template_stress_test.png", dpi=150, bbox_inches="tight")
+plt.show()
+'''
+)
+
+md(
+    r"""### 3f · Template degeneracy diagnostic — exact covariance, not a propagation guess
+
+§3e propagates template uncertainty by brute force (refit each fold, look at
+the scatter) — that tells you THAT bin0's template is unstable but not WHY,
+and 3 folds is too few points to trust a std. Here's the direct version.
+
+Each `R_BINS[i]` comes from `_kmodel.fit_evolving` called on **one mass bin
+alone** (`prop_bin_id` reset to 0, so `n_m = 1`). The "shared ratio across
+mass bins" alternating-WLS scheme has nothing to alternate against with only
+one bin — it converges to exactly the same optimum as a single joint WLS
+solve in the **group amplitudes** `A_g = alpha · r_g` (`A_0 = alpha` since
+`r_0 ≡ 1`): `f_obs = C · f_cold_norm + A_0 K_0 + A_1 K_1 + A_2 K_2`. That
+means the full parameter covariance is available in closed form from the WLS
+normal equations — no MCMC, no perturbation grid, just `pinv(DᵀWD)` — and
+its correlation matrix answers the question directly: near-diagonal means
+the fit cleanly separates continuum from each feature group and the groups
+from each other; an off-diagonal entry near ±1 means two parameters trade
+off against each other and the data can't tell them apart (the classic
+continuum/feature or feature/feature degeneracy).
+
+**Caveat**: weights here are diagonal (`1/f_err²`), the same as everywhere
+else in this notebook — real shared-source correlation between staggered
+dither runs is not in this covariance, so these correlations are a FLOOR on
+the true degeneracy, not a ceiling. If a pair looks degenerate even under
+diagonal weights, it is certainly no better once shared-source covariance is
+included."""
+)
+
+code(
+    r'''param_labels = ["C (cont.)"] + [f"A({lbl})" for lbl in group_labels]
+corr_mats, theta_all, snr_all = [], [], []
+for i, (m_lo, m_hi, col, lbl) in enumerate(MASS_BINS):
+    sub = df_pool_sm[df_pool_sm["prop_bin_id"] == i].copy()
+    sub["prop_bin_id"] = 0
+    prep_i = _kmodel._prepare(sub, None, None, None, None, None,
+                              baseline_cols={"MIPS_24": "f24_cold"})
+    data_i, valid_i, _ = _kmodel._evolving_data(
+        prep_i, {"MIPS_24": "f24_cold"}, "speagle2014",
+        feature_envelope="baseline")
+    d = data_i[0]
+    D = np.column_stack([d["f_cold_norm"]] + [d["K"][:, g] for g in range(len(FEATURE_GROUPS))])
+    w = d["w"]
+    H = D.T @ (w[:, None] * D)
+    cov = np.linalg.pinv(H)
+    theta = np.linalg.solve(H, D.T @ (w * d["f_obs"]))
+    sd = np.sqrt(np.maximum(np.diag(cov), 0.0))
+    corr = cov / np.outer(np.where(sd > 0, sd, np.nan), np.where(sd > 0, sd, np.nan))
+    corr_mats.append(corr)
+    theta_all.append(theta)
+    snr_all.append(theta / np.where(sd > 0, sd, np.nan))
+    print(f"\n{lbl}  (n={len(d['f_obs'])} points)")
+    print("  theta (C, A_g...):", np.round(theta, 3))
+    print("  SNR              :", np.round(snr_all[-1], 2))
+    print("  correlation matrix:")
+    for pl, row in zip(param_labels, corr):
+        print(f"    {pl:<12}" + " ".join(f"{v:+.2f}" for v in row))
+'''
+)
+
+code(
+    r'''fig, axes = plt.subplots(1, len(MASS_BINS), figsize=(4.2 * len(MASS_BINS), 4.4), sharey=True)
+for i, (ax, corr, (m_lo, m_hi, col, lbl)) in enumerate(zip(axes, corr_mats, MASS_BINS)):
+    im = ax.imshow(corr, vmin=-1, vmax=1, cmap="RdBu_r")
+    ax.set_xticks(range(len(param_labels)))
+    ax.set_xticklabels(param_labels, rotation=45, ha="right", fontsize=8)
+    if i == 0:
+        ax.set_yticks(range(len(param_labels)))
+        ax.set_yticklabels(param_labels, fontsize=8)
+    else:
+        ax.set_yticks([])
+    for r in range(len(param_labels)):
+        for c in range(len(param_labels)):
+            ax.text(c, r, f"{corr[r, c]:+.2f}", ha="center", va="center", fontsize=7,
+                    color="white" if abs(corr[r, c]) > 0.6 else "black")
+    ax.set_title(lbl, fontsize=9)
+fig.colorbar(im, ax=list(axes), shrink=0.8, label="correlation coefficient")
+fig.suptitle("Template parameter correlation matrix per mass bin (pooled fit)\n"
+             "near-diagonal = solid; |corr| -> 1 off-diagonal = degenerate", y=1.06)
+fig.savefig("pah_money_template_degeneracy.png", dpi=150, bbox_inches="tight")
 plt.show()
 '''
 )

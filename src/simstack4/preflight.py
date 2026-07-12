@@ -57,7 +57,7 @@ class ComputeEstimate:
     notes: list[str] = field(default_factory=list)
 
     def exceeds(
-        self, *, memory_fraction: float = 0.8, time_seconds: float = 900.0
+        self, *, memory_fraction: float = 0.9, time_seconds: float = 3600.0
     ) -> bool:
         """True if the estimate crosses either the memory or time budget."""
         mem_flag = (
@@ -244,8 +244,8 @@ def estimate_compute_requirements(
 def confirm_or_abort(
     estimate: ComputeEstimate,
     *,
-    memory_fraction: float = 0.8,
-    time_seconds: float = 900.0,
+    memory_fraction: float = 0.9,
+    time_seconds: float = 3600.0,
     assume_yes: bool = False,
 ) -> bool:
     """

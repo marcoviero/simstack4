@@ -1018,6 +1018,8 @@ print(f"real:  eta_A = {real_fits['evolve amp, envelope']['eta_amp']:+.3f}, "
 code(
     r"""# ── Per-fold consistency (disjoint galaxies -> independent checks) ─────────
 fold_rows = []
+fold_dffs = {}     # stashed for the partial-regression figure below
+fold_evfits = {}   # (same fit, not refit -- just kept around)
 for fi, w in enumerate(WRAPPERS):
     dff = build_pah_spectrum_df([w], MASS_BINS, split_filter=[0], min_tier="C")
     if len(dff) < 8:
@@ -1030,6 +1032,8 @@ for fi, w in enumerate(WRAPPERS):
                                  feature_envelope="baseline")
     ev = model_real.fit_evolving(dff, evolve_ratios=False,
                                  feature_envelope="baseline", eta_prior_sigma=1.0)
+    fold_dffs[fi] = dff
+    fold_evfits[fi] = ev
     fold_rows.append({
         "fold": fi, "n_pts": st["dof"] + 2 * len(st["valid"]) + (G_R - 1),
         "chi2_red static": round(st["chi2_red"], 2),
@@ -1042,6 +1046,83 @@ print(fold_tab.to_string(index=False))
 etas = fold_tab["eta_A"].to_numpy()
 print(f"\nfold-ensemble eta_A = {etas.mean():+.3f} +/- "
       f"{etas.std(ddof=1)/np.sqrt(len(etas)):.3f} (mean +/- scatter/sqrt(3))")
+"""
+)
+
+# ----------------------------------------------------------------------------
+md(
+    r"""### 7a. The headline number, visualized: a partial-regression plot
+
++0.844 +/- 0.026 is a slope from a fit -- this makes the trend it's describing
+visible directly. Per fitted point (mass bin, dither bin, band), divide out
+the fitted continuum (`C_m*f_cold_norm`) and the STATIC fingerprint
+(`alpha_m * (K @ r)`, no sSFR modulation): what's left is an empirical
+estimate of the model's `10**(eta_A * shat)` factor, plotted against the
+centered log sSFR `shat` directly. No z-axis here -- the bandpass-sweep
+dependence has been divided out along with the continuum, isolating exactly
+the sSFR dependence eta_A quantifies. Points are noisy (this is the
+scatter-limited regime the branch-7 summary documents), but the same
+positive slope recurs in all three independent folds."""
+)
+
+code(
+    r"""FOLD_COLORS = ["#2a78d6", "#1baf7a", "#e34948"]  # validated categorical (dataviz skill)
+fig, ax = plt.subplots(figsize=(8.5, 5.8))
+
+fold_points = {}
+for fi, dff in fold_dffs.items():
+    ev = fold_evfits[fi]
+    baseline_cols = model_real._resolve_baseline_cols(dff, None, None)
+    prep = model_real._prepare(dff, cov=None, scheme=None, dndz=None,
+                               sigma_z0=None, f_cat=None,
+                               baseline_cols=baseline_cols, ssfr_col="log_ssfr")
+    data, valid, s_pivot = model_real._evolving_data(
+        prep, baseline_cols, ssfr_relation="speagle2014",
+        feature_envelope="baseline", ssfr_fallback="main_sequence")
+    shat_pts, ratio_pts = [], []
+    for i in valid:
+        d = data[i]
+        m = d["m"]
+        raw_kernel = d["K"] @ ev["r"]                    # static fingerprint, no eta modulation
+        resid = d["f_obs"] - ev["C_m"][m] * d["f_cold_norm"]
+        denom = ev["alpha"][m] * raw_kernel
+        # keep only points where the PAH kernel carries real signal (avoid
+        # noise blowing up where the fingerprint response is near zero)
+        ok = np.abs(denom) > 0.15 * np.abs(ev["alpha"][m] * raw_kernel).max()
+        ratio = resid[ok] / denom[ok]
+        pos = ratio > 0                                  # log undefined for noise-negative points
+        shat_pts.append(d["shat"][ok][pos])
+        ratio_pts.append(ratio[pos])
+    fold_points[fi] = (np.concatenate(shat_pts), np.concatenate(ratio_pts))
+
+s_min = min(s.min() for s, _ in fold_points.values())
+s_max = max(s.max() for s, _ in fold_points.values())
+pad = 0.05 * (s_max - s_min)
+sgrid = np.linspace(s_min - pad, s_max + pad, 40)
+
+for fi, (shat_pts, ratio_pts) in fold_points.items():
+    ev = fold_evfits[fi]
+    ax.scatter(shat_pts, ratio_pts, s=16, alpha=0.4, color=FOLD_COLORS[fi],
+               label=f"fold {fi}  (n={len(shat_pts)})")
+    ax.plot(sgrid, 10.0 ** (ev["eta_amp"] * sgrid), color=FOLD_COLORS[fi], lw=1.4, alpha=0.75)
+
+eta_mean = etas.mean()
+eta_err = etas.std(ddof=1) / np.sqrt(len(etas))
+ax.plot(sgrid, 10.0 ** (eta_mean * sgrid), color="k", lw=2.6,
+        label=f"fold-ensemble mean: eta_A = {eta_mean:+.3f} +/- {eta_err:.3f}")
+ax.fill_between(sgrid, 10.0 ** ((eta_mean - eta_err) * sgrid),
+                10.0 ** ((eta_mean + eta_err) * sgrid), color="k", alpha=0.12, lw=0)
+ax.axhline(1.0, color="0.6", lw=0.8, ls=":")
+ax.set_yscale("log")
+ax.set_xlabel(r"centered log sSFR,  $\hat{s} = \log(\mathrm{sSFR}) - \log(\mathrm{sSFR})_{\rm pivot}$")
+ax.set_ylabel(r"recovered PAH amplitude / $\alpha_m$" "\n(continuum + static fingerprint divided out)")
+ax.set_title("The evolution result, isolated: PAH strength rises with sSFR within each mass bin\n"
+             "(points/thin lines: each of the 3 disjoint folds; bold black: fold-ensemble mean)")
+ax.legend(fontsize=9)
+ax.grid(alpha=0.2, which="both")
+plt.tight_layout()
+fig.savefig("pah_money_eta_A_partial_regression.png", dpi=150, bbox_inches="tight")
+plt.show()
 """
 )
 
