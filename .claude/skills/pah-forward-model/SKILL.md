@@ -124,6 +124,8 @@ Publication strategy and talk figure set: `docs/pah-forward-model-3-brief.md`.
 | `notebooks/build_pah_spectrum_notebook.py` | → `2026-06-11-pah-forward-model-sanity.ipynb` (problem 2: GLS deconvolution) |
 | `notebooks/build_pah_evolving_mcmc_notebook.py` | → `2026-07-02-pah-evolving-template-mcmc-simulation.ipynb` (evolving-truth injection → MCMC flexibility ladder L1–L4 → f24(z) shaded feature-group decomposition; 2026-07-02) |
 | `notebooks/build_pah_money_plots_notebook.py` | → `2026-07-03-pah-money-plots.ipynb` (money plots with POOLED centrals + fold errors; §2b intrinsic band ratios; §2c sSFR-coloured + standard decompositions; §3c z-sliced L_PAH/L_IR crossing pattern — per-mass-bin templates REQUIRED, a global template flattens it; §3d slice-slope sweep vs branch bands) |
+| `notebooks/build_pah_money_plots_2026-07-10_notebook.py` | → `2026-07-10-pah-money-plots.ipynb` (clean rebuild + combined-stack third estimator; §4 verdict: crossing survives, all-z slope retired, bin0 band ratio quote from combined stack) |
+| `notebooks/build_two_arms_tests_2026-07-11_notebook.py` | → `2026-07-11-two-arms-tests.ipynb` (D1–D6 C1-vs-C2 discriminating tests; D1/D5 kill the metallicity arm ±5–7σ, D2 kills pure gas-tracing, D6 shows no equilibrium arm pair fits → threshold/nonlinear response required; D3 SNR-limited, D4 directional) |
 | `notebooks/2026-06-12-load-json-fit-seds-redshift-stellar-mass-PAH-dithered-dz015.ipynb` | Real-data analysis: 3-bin and 4-bin mass runs → `combine_pah_spectra` → `PAHModel.fit_forward_model_multibin` → α(M*), τ_sil, null test |
 | `notebooks/2026-06-14-load-json-fit-seds-redshift-stellar-mass-sigma_sfr-PAH-dithered-dz015.ipynb` | σ_SFR cross-cut: 2 mass × 3 σ_SFR bins; group_col="sigma_sfr" (alias for log_sigma_sfr) |
 | `notebooks/2026-06-15-pah-3bin-vs-4bin-mass-comparison.ipynb` | Accordion vs uniform z-bin comparison; same 4-bin mass scheme both schemes |
@@ -132,7 +134,8 @@ Publication strategy and talk figure set: `docs/pah-forward-model-3-brief.md`.
 | `docs/pah-forward-model-2-summary.md` | Full measurement summary including all runs, coefficient derivation, forward path |
 | `docs/pah-forward-model-7-summary.md` | Branch-7 summary: band-ratio mechanism signal (envelope-aware calibration), Narayanan confrontation, evolution-required result, machinery delivered |
 | `docs/pah-forward-model-8-brief.md` | Branch 8: talk figures → pivoted to figure corrections (pooled centrals, §3c/§3d); styling tasks still open |
-| `docs/pah-forward-model-9-brief.md` | Branch 9: stress tests + literature confrontation (template systematic first) |
+| `docs/pah-forward-model-9-brief.md` | Branch 9: stress tests + literature confrontation (template systematic first); 2026-07-11 addendum: two-arms interpretation tests |
+| `docs/pah-interpretation-candidates.md` | Ranked interpretations (C1 vs C2) for the crossing + band ratio, D1–D6 test programme WITH first-execution results, tiered reading list, venue call (ApJL); PAHSPECS read → crossing novelty confirmed |
 | `docs/pah-forward-model-3-brief.md` | Branch 3 goals: publication figures |
 | `docs/pah-forward-model-4-brief.md` | Branch 4 goals: shared-slope baseline + K-fold catalog splitting |
 | `docs/pah-forward-model-5-brief.md` | Branch 5 goals: error rescaling, robustness, talk figures, T_dust correction |

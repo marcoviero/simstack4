@@ -127,11 +127,20 @@ text, not a page-by-page read; core statements cross-checked between abstract an
   (→ opposite pull); needs an explicit derivation via Fig 9 + Tacconi+18 scaling relations
   before claiming support or tension.
 
-**arXiv:2606.18244** (2026) — *PAHSPECS: Spatially Resolved PAH Spectroscopy at Cosmic
-Noon with JWST MIRI MRS*
-[arXiv](https://arxiv.org/abs/2606.18244)
-Direct PAH spectroscopy at z~1–3 with JWST MIRI. Potential direct comparison or tension
-with our stacking result. Check for α(M*) values or PAH EW vs stellar mass at z~1–2.
+**PAHSPECS I & II (2026)** — arXiv:2606.18230 (integrated) + arXiv:2606.18244 (resolved).
+**Read directly 2026-07-11** (abstract-level extraction of both).
+Five z≈1.1 star-forming galaxies (ASPECS/HUDF, JWST MIRI MRS, CAFE decomposition; one AGN,
+ASPECS-15). **No mass slopes, no L_PAH/L_IR(M*), nothing above z~1.3 — no threat to the
+crossing pattern's novelty.** Findings relevant to us:
+- Integrated (18230): vs local LIRGs, *higher* 6.2/7.7 and *lower* 11.3/7.7 — an ionized
+  PAH mix weighted to smaller grains in massive cosmic-noon SFGs. Same direction as our
+  12.7/6.2 decline with M* (supports the charge interpretation, B1).
+- Resolved (18244): PAHs become larger/more neutral with galactocentric radius; within
+  galaxies, harder UV **raises** 11.3/7.7 (photo-destruction of small/ionized PAHs) —
+  the small-grain-destruction channel pulls the ratio the *opposite* way from the charge
+  channel. The two PAHSPECS papers thus bracket both arrows; our galaxy-integrated trend
+  lands on the charge side.
+- 7.7 µm stays a robust SFR tracer at z~1.1 — consistent with our well-behaved z~1 slice.
 
 ---
 
