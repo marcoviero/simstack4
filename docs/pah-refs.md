@@ -182,3 +182,48 @@ A&A 609, A30.
 [ADS](https://ui.adsabs.harvard.edu/abs/2018A&A...609A..30S/abstract)
 T_dust(z) = 32.9 + 4.6(z−2) linear relation. Used as the Schreiber temperature prior
 in `greybody.py`. Sets the FIR peak anchor that f₂₄/f_peak normalises against.
+
+## Line-intensity mapping (LIM) — [CII]/CO forecasting (branch forecast-lim-via-pah-1, 2026-07-12)
+
+**Chiang et al. (2026)** *Cosmic CO and [CII] backgrounds and the fuelling of star
+formation over 12 Gyr*
+Nature Astronomy; arXiv:2602.02658.
+[arXiv](https://arxiv.org/abs/2602.02658)
+First MEASUREMENT of the mean cosmic [CII] (3σ) and CO (7σ, full ladder) line backgrounds,
+0<z<4.2, via tomographic clustering of diffuse broadband intensities with reference galaxies
+— the same statistical philosophy as our dithered stacking. Measured [CII] comoving
+luminosity density fit: ρ_CII(z) ≈ 5.9×10³⁸ (1+z)^3.2 / [1+((1+z)/2.9)^6.6] erg s⁻¹ Mpc⁻³;
+Ω_H2(z) ≈ 1.9×10⁻⁴ (1+z)^2.3 / [1+((1+z)/2.8)^6.5] (≈2× that resolved in galaxy surveys);
+t_dep ≈ 3(1+z)⁻¹ Gyr. Used as the real ⟨I_CII⟩(z) anchor in the LIM notebook; our
+De-Looze-anchored logM*>9.9 forecast lands at ~1/3 of it (the massive-galaxy contribution).
+
+**De Looze et al. (2014)** A&A 568, A62 — L_CII–SFR calibration, whole-sample
+**log L_CII = 7.06 + log SFR**. Computed [CII] model curve in the LIM notebook. ALPINE
+(Schaerer+2020, A&A 643, A3) finds slope 0.96 / offset −0.03 dex vs this → effectively the
+same line.
+
+**Lagache et al. (2018)** A&A 609, A130 — z-evolving SAM L_CII–SFR:
+**log L_CII = (1.4 − 0.07 z) log SFR + (7.1 − 0.07 z)**, σ = 0.5 dex. Computed [CII] model
+curve (steeper, evolves; near Chiang at low z).
+
+**Li et al. (2016)** ApJ 817, 169 — COMAP CO(1-0) forecast model. SFR = δ_MF·10⁻¹⁰·L_IR
+(Kennicutt, δ_MF=1); **log L_IR = 1.37 log L'_CO − 1.74** (Carilli & Walter 2013); L_CO =
+4.9e-5 L'_CO. Computed CO model curve.
+
+**mmIME** Keating et al. (2020) ApJ 901, 141 — CO shot-noise **detection**
+P_shot = 2.0(+1.1/−1.2)×10³ μK²(Mpc/h)³ (higher-J summed). **COMAP ES-V** Chung et al. (2022)
+ApJ 933, 186 — CO(1-0) z~3 upper limit ⟨T_b⟩² < 50 μK²; also carries a **fiducial CO model**
+(UM+COLDz+COPSS: UniverseMachine halo–CO with COLDz/COPSS priors) — add as a model curve
+(digitize from the paper), not just the limit.
+
+**Chung, Viero, Church & Wechsler (2020)** ApJ 892, 51; arXiv:1812.08135 — [CII] LIM forecast,
+primarily z~4–8 (UniverseMachine galaxy–halo × SFR–[CII] correlation). A comparison [CII] model
+to add (grazes our z~1–4 only at z~4); digitize its L_CII prescription / intensity. Co-author MV.
+
+**Bridge calibrations** (PAH ↔ line). **[CII]: use L_CII/TOTAL-PAH ≈ 0.05, NOT 0.1.** The
+Croxall+12 / Sutter+19 "L_CII/L_PAH ≈ 0.1" is L_CII/PAH-*subset* (their PAH ≈ the 7.7 µm
+complex, ≈49% of total PAH per Smith+07). The total-PAH bridge, from the same local galaxies,
+is (L_CII/L_TIR)/(L_PAH/L_TIR) = 0.48%/10% ≈ 0.05 — see **Herrera-Camus et al. (2015)** ApJ 800,
+1 (KINGFISH L_CII/L_TIR = 0.48±0.21%) and **Smith et al. (2007)** ApJ 656, 770 (L_PAH/L_TIR ≈
+10%; 7.7 complex ≈ 49% of total PAH). Applying 0.1 to a total-PAH template double-counts by ~2×.
+**CO:** Cortzen+19 & arXiv:2409.05710 for L_PAH–L'_CO; MS L_IR/L'_CO ≈ 70 (Sargent+14).

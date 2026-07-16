@@ -131,18 +131,21 @@ Assemble the conversions with their scatter and, critically, decide the anchor o
       Label it illustrative (single field, cosmic variance, uncalibrated fold errors — same
       caveat the branch-9 letter carries).
 
-## Objective 3 — confront the model-based forecasts (the payoff)
+## Objective 3 — confront real measurements (the payoff)
 
-- [ ] **Overlay standard recipes.** [CII]: De Looze+14 / Lagache+18 / Schaerer+20 L_CII–SFR ×
-      an SFR function. CO: L′_CO–L_IR (or L_CO–SFR) × SLED. Same n(M*, z) so only the
-      luminosity assignment differs — this isolates the L-assignment physics.
-- [ ] **Isolate the crossing pattern's effect.** Rerun the PAH-anchored forecast with (a) the
-      measured evolving/non-monotonic mass slope vs (b) a single fixed mass slope. The
-      difference in ⟨I(z)⟩ and in the clustering/shot split is the headline result: *what a
-      fixed-slope model gets wrong, and in which direction, at which z*.
+- [ ] **[CII] vs the Chiang+2026 measurement.** Chiang measures the cosmic [CII] luminosity
+      density to z=4.2 by tomographic clustering with reference galaxies (our method's cousin) —
+      a real anchor, not a model. Compare our ⟨I_CII(z)⟩ to it, plus the De Looze × SFRD
+      reference. Note: the absolute amplitude is systematics-limited (bridge ratio + partial→total
+      PAH, factor ~3), so it is not the result — see the next bullet.
+- [ ] **Isolate the crossing pattern's effect — on the power spectrum, not the mean.** ⟨I(z)⟩ is
+      luminosity-weighted with an effective mass at the crossing pivot, so the crossing barely
+      moves it; the leverage is on the **shot-noise power** P_shot ∝ Σ n L² (high-mass weighted),
+      which the crossing lifts tens of percent while the clustering term is ~fixed. That is the
+      headline: *what a fixed-slope P(k) forecast gets wrong*. Compare the CO(1-0) P(k) to the
+      mmIME detection and COMAP upper limit to place it against current sensitivity.
 - [ ] **Effective line bias.** The non-monotonic mass weighting changes which halos dominate;
-      quote the shift in the luminosity-weighted mean halo mass (hence b_line) vs the standard
-      recipe. This is the quantity LIM clustering forecasts are most sensitive to.
+      quote the shift in b_eff / the luminosity-weighted mean mass vs a fixed-slope recipe.
 
 ## Objective 4 — the 24 µm bias deliverable for LIM forecasters
 
@@ -156,12 +159,14 @@ Assemble the conversions with their scatter and, critically, decide the anchor o
 ## Deliverable
 
 One forecast notebook (tracked build script per repo convention) producing: the bridge figure
-(Obj 0), the PAH-anchored ⟨I_CII(z)⟩ / ⟨I_CO(z)⟩ + shot-noise curves (Obj 2), the
-confrontation overlay with the crossing-pattern isolation (Obj 3), and the 24 µm-bias
-correction table (Obj 4). Plus a slide-ready **"three takeaways for LIM forecasters"**:
-(1) the faint-population line evolution is now *measured*, not just modeled; (2) it is
-non-monotonic in mass and reshapes the effective line bias; (3) here is the 24 µm PAH
-correction.
+(Obj 0), the PAH-anchored ⟨I_CII(z)⟩ / ⟨I_CO(z)⟩ + power-spectrum curves (Obj 2), the
+comparison to the Chiang measurement and the CO P(k) vs mmIME/COMAP with the crossing-pattern
+isolation (Obj 3), and the 24 µm-bias correction table (Obj 4). Plus a slide-ready **"three
+takeaways for LIM forecasters"**: (1) the mean-intensity forecast is robust to the crossing,
+but the **shot-noise / power-spectrum** is not — it shifts tens of percent (below current
+sensitivity, a next-gen target); (2) our absolute amplitude is systematics-limited by the
+PAH→line bridge, so the robust deliverable is the mass/z *structure*, not the amplitude;
+(3) here is the 24 µm PAH correction.
 
 ---
 
@@ -195,3 +200,43 @@ correction.
 
 New references belong in `docs/pah-refs.md` under a new "LIM / line-forecasting" section
 (currently absent — this branch adds it).
+
+---
+
+## Progress log (through 2026-07-15)
+
+Notebook `notebooks/build_lim_via_pah_2026-07-12_notebook.py` → `2026-07-12-lim-via-pah.ipynb`
+(27 cells, runs clean). Sections §0 bridge, §1 ladder, §2 build, §3 [CII] I+P(k), §3b CO I+P(k),
+§3c crossing shot-noise, §4 24µm bias, §5 takeaways, §6 amplitude & the right Chiang comparison,
+§7 real catalog n(M*,z), §7b low-mass PAH turnover. CII-focused; CO present but secondary.
+
+**Method settled.**
+- Absolute [CII]: L_CII = (L_PAH/L_IR ≈ 10%, Smith+07 total PAH) × (L_CII/**total**-PAH ≈ 0.05,
+  Herrera-Camus+15 / Smith+07 — the 7.7 complex is ~49% of total, so the Croxall/Sutter
+  L_CII/L(7.7) ≈ 0.1 ↔ 0.05 on total) × L_IR. → L_CII/L_IR ≈ 0.5% local vs Chiang cosmic 0.33%.
+- Comparison curves are real data or computed from cited relations only (NO fabrications):
+  De Looze+14 & Lagache+18 ([CII] models), Li+2016 (CO); **Chiang+2026** (measured cosmic [CII]/CO,
+  arXiv:2602.02658, the key anchor); mmIME + COMAP ES-V (CO P(k) data).
+- Intensity is a surface brightness — no survey area needed for the parameterized SMF; area
+  enters only when using real catalog counts (§7).
+
+**Key results.**
+- Robust, tuning-free result = the mass/z **structure** (the crossing): +34–48% shot-noise
+  shift at z~0.5–1 (§3c), and a −20%→+90% (z~1→3) shift of the full-integral mean ⟨I_CII⟩ vs a
+  canonical no-structure PAH model (§3a). Below current LIM sensitivity → next-gen target.
+- Absolute amplitude is consistent with Chiang: full-integral vs full-integral ~1.5× (the
+  local-vs-cosmic offset), systematics-limited (factor ~2). The apparent 2–3× "excess" was a
+  bridge-ratio definition mismatch (0.1 = L_CII/7.7-subset; matched total-PAH = 0.05). Full
+  systematics audit in `docs/forecast-lim-via-pah-1-systematics.md`.
+- Real COSMOS2020 catalog n(M*,z) (§7): star-forming counts from the stack JSON `n_sources`
+  (split_0), Ω = 1.27 deg², volume via `CosmologyCalculator`; validates the SMF forecast (SFRD
+  and ⟨I_CII⟩ agree). Measured to logM=9.
+- Low-mass PAH turnover (§7b): the 9.0–9.9 stack shows no 24µm PAH excess (S/N-marginal),
+  ruling out the low-mass boost; applying the turnover removes the z~3 overshoot (2.74→1.55×
+  Chiang). Caveat: L_CII from PAH breaks at low Z ([CII] rises while PAH falls).
+
+**Open / next.** (a) SFR-based low-mass [CII] cross-check (PAH→[CII] breaks at low Z);
+(b) digitize Chung+2020 [CII] & COMAP-fiducial CO model curves (halo-LF-based; do not fabricate);
+(c) wire measured L_IR (vs MS) from the stacks; (d) CO version of the catalog-n / turnover work;
+(e) tighten partial→total PAH + bridge scatter. Full running detail in memory
+`forecast-lim-via-pah-1-status`.
