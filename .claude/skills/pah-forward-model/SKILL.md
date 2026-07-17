@@ -82,6 +82,15 @@ K_ib,g  = Σ_k p_i(z_k) · T_g,b(z_k)
 not the dz=0.10 simulation baseline. Δz=0.15 gave ~140 Tier B sources/bin; dz=0.10 gave ~75
 (mostly Tier C), confirming coarser bins are better for this catalog depth.
 
+**This 4-run number is the PRE-K-fold convention** (single pooled catalog, no splitting).
+Once K-fold source partitioning exists (branch 4 onward, `prepare_cosmos2020_catalog.py`),
+**match n_stagger to K, not 4** — branch 4 explicitly built a 3-run-equivalent scheme to
+pair with K=3 ("3 runs × K=3 catalogs = 9 total stacking jobs"), and branch 10 confirmed
+this the hard way: 4 staggered z-bin sets against K=3 catalogs is not a coherent pairing.
+Staggering is sub-additive at the kernel floor anyway (see simulation findings above), so
+4→3 costs little. Any new dithered TOML built against a `_split{k}ofK.parquet` catalog
+should use `n_stagger=K`.
+
 **Results — Run 2 (2026-06-12, 197 Tier B points, 3 mass bins, λ_rest = 5.4–16.0 μm)**:
 
 | log M*/M☉ | α (PAH amplitude) | σ_α | SNR |
@@ -131,6 +140,7 @@ Publication strategy and talk figure set: `docs/pah-forward-model-3-brief.md`.
 | `notebooks/2026-06-15-pah-3bin-vs-4bin-mass-comparison.ipynb` | Accordion vs uniform z-bin comparison; same 4-bin mass scheme both schemes |
 | `config/cosmos25_PAH_dithered.toml` | All dither schemes as commented reference blocks; set active `bins =` to desired run |
 | `config/cosmos25_PAH_dithered_3d.toml` | σ_SFR config (2 mass × 3 σ_SFR bins) |
+| `config/cosmos20_PAH_dithered_3pop.toml` / `_3pop_3cats.toml` | Branch-10: adds `[catalog.classification.binning.starburst]` (SFG-MS/SFG-SB/QT via `population_class`×mass×starburst, NOT a new `population_class` code); z=8 staggered bins, n_stagger=3 (matches K=3); 5-mass-bin scheme active, 4-mass-bin kept as a fully-paired commented alternative (each mass scheme has its OWN z-bin block — do not mix) |
 | `docs/pah-forward-model-2-summary.md` | Full measurement summary including all runs, coefficient derivation, forward path |
 | `docs/pah-forward-model-7-summary.md` | Branch-7 summary: band-ratio mechanism signal (envelope-aware calibration), Narayanan confrontation, evolution-required result, machinery delivered |
 | `docs/pah-forward-model-8-brief.md` | Branch 8: talk figures → pivoted to figure corrections (pooled centrals, §3c/§3d); styling tasks still open |
@@ -139,7 +149,8 @@ Publication strategy and talk figure set: `docs/pah-forward-model-3-brief.md`.
 | `docs/pah-forward-model-3-brief.md` | Branch 3 goals: publication figures |
 | `docs/pah-forward-model-4-brief.md` | Branch 4 goals: shared-slope baseline + K-fold catalog splitting |
 | `docs/pah-forward-model-5-brief.md` | Branch 5 goals: error rescaling, robustness, talk figures, T_dust correction |
-| `src/simstack4/scripts/prepare_cosmos2020_catalog.py` | K-fold COSMOS2020 parquet generator; `uv run prepare-cosmos2020-catalog` |
+| `docs/pah-forward-model-10-brief.md` / `-summary.md` | Branch 10: starburst-as-binning-dimension (not a population_class code — mirrors `prepare_cosmos2025_catalog.py`); SFR zero-point recentering (Elbaz+2018 cut vs Schreiber+2015, catalog-specific offset); the ~280-population budget origin; n_stagger=K convention |
+| `src/simstack4/scripts/prepare_cosmos2020_catalog.py` | K-fold COSMOS2020 parquet generator; `uv run prepare-cosmos2020-catalog`. `--stem cosmos2020_PAH_3pop` adds `starburst`/`log_delta_ms` columns (recentered Elbaz+2018 cut, on by default; `--no-starburst` to skip) — a downstream binning dimension, not a new `population_class` code. `star_col` default is `"lp_type"` (branch 10 fixed a bug where the old default `"type"` never matched any real column, so the star/galaxy cut silently never fired in any catalog built before this) |
 
 ## How to run
 
@@ -225,3 +236,24 @@ Quick lookup:
 - [ ] **Robustness suite**: baseline method variation, ±0.1 dex bin edge shifts, jackknife over runs.
 - [ ] **12.7 μm r₂ constraint**: more runs at z~0.7–1.1 would pin 12.7/6.2 ratio.
 - [ ] **AGN contamination**: is (T_w, β_w) single continuum sufficient at high σ_SFR?
+
+**Answered in pah-forward-model-10:**
+- ✓ Starburst representation: binning dimension (`population_class`×mass×starburst),
+  not a new `population_class` code — mirrors `prepare_cosmos2025_catalog.py`.
+- ✓ SFR zero-point: COSMOS2020's LePhare `lp_SFR_best` runs ~0.21 dex above
+  Schreiber+2015; recenter to the catalog's own SF-population median before applying
+  an Elbaz+2018-style threshold (17.4% starburst fraction after recentering, vs 30%
+  literal).
+- ✓ n_stagger convention for K-fold work: match K (3 for the current K=3 catalogs), not
+  the pre-K-fold 4-run number.
+- ✓ Population-count budget: `PopulationManager` crosses every binning dimension with
+  every `population_class` value, so the ~280 ceiling (current production sits at
+  exactly 280/288) is a real constraint that must be checked against real data whenever
+  a new binning dimension or mass bin is added — see `docs/pah-forward-model-10-brief.md`.
+
+**Open, for a future branch:**
+- [ ] No real stacking (maps) has been run yet on the new z=8 3pop configs — only
+  population counts are verified. Whether the z~5.2–8 tail (where 3.3 µm falls) is
+  usable is unknown.
+- [ ] `PAHModel(include_minor_features=True)` needs wiring into an analysis notebook
+  to actually fit the 3.3 µm feature against real data.

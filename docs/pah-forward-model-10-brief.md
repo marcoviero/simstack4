@@ -148,43 +148,61 @@ scheme: with the branch's first z-bin attempt (core dz≤0.35/tail dz≤0.70, tu
 bins), the K-fold config landed at 280–327 populations across the 4 staggered runs — over
 budget the moment the 5th mass bin came back.
 
+### n_stagger=3, not 4 — matching the K=3 catalogs
+
+The branch's first pass used `n_stagger=4`, carried over from the pah-forward-model skill
+doc's "actual stacking scheme used: dz=0.15, 4 dither runs." That number predates K-fold
+source partitioning (branch 4) — it describes the *pooled*, unsplit-catalog scheme.
+`pah-forward-model-4-brief.md` explicitly built a **3-run equivalent** of that 4-run
+scheme specifically to pair with K=3 catalogs ("3 runs × K=3 catalogs = 9 total stacking
+jobs"), and the user caught the branch-10 configs repeating the older, pre-K-fold number:
+"4 set of zbins and 3-fold catalogs is not compatible." Fixed by re-deriving with
+`n_stagger=3` throughout. Cost is small — staggering is sub-additive at the kernel floor
+(branch-2 finding), so the dropped 4th offset buys little resolution anyway.
+
 ### Final scheme
 
 Two-region `staggered_pah_zbins` call spliced at z=3.0 (core: z=0.5–3.0, tail: z=3.0–8.0),
 run separately per region so each keeps its own edges pinned at the splice point across
-all 4 staggered offsets, then concatenated:
+all 3 staggered offsets (n_stagger=3), then concatenated:
 
 | Region | min_sources | max_dz | Why |
 |---|---|---|---|
 | core (0.5–3.0) | 500 | 0.50 | R~5-7; more resolution cost than the historical dz=0.15/R~10-20, unavoidable once starburst + the 5th mass bin roughly triple the population count at fixed z binning |
 | tail (3.0–8.0) | 400 | 1.00 | sparse regime; the z~5.2–8 window where 3.3 µm actually falls is upper-limit/marginal-SNR territory, not detection-grade |
 
-Verified against all 3 real K-fold split parquets and the pooled parquet, all 4 staggered
-runs: **202–249** populations (K-fold) / **122–148** (pooled) — comfortably under 280.
+Verified against all 3 real K-fold split parquets and the pooled parquet, all 3 staggered
+runs: **202–247** populations (K-fold) / **122–148** (pooled) — comfortably under 280.
 Cross-checked independently via `SimstackWrapper(read_maps=False, read_catalog=True)`
 catalog-only loads against the actual TOML files (122 pooled / 204 K-fold split0, run 0),
 which matched the hand-count exactly.
 
-The previous 4-mass-bin z-bin scheme (dz≤0.35 core / 0.70 tail) is kept as a commented
-alternative in both TOML files, alongside the 4-bin mass edges — not deleted, since it's
-only invalid in combination with the 5-bin mass scheme, not wrong on its own.
+The previous 4-mass-bin z-bin scheme (dz≤0.35 core / 0.70 tail, also re-derived at
+n_stagger=3, 215–252 populations / 133–153 pooled) is kept as a **fully staggered**
+commented alternative in both TOML files (all 3 runs, not just run 0), paired explicitly
+with the 4-bin mass edges and labeled so the two schemes' z-bin/mass-bin blocks can't be
+mixed — a 5-bin-derived z-grid against 4-bin masses wastes the freed budget headroom.
+Spot-verified by temporarily activating the 4-bin pair end-to-end (220 populations for
+K-fold split0, run 0 — matches the hand-count exactly).
 
 ---
 
 ## Outcome (2026-07-17) — committed, not yet merged, stacking not yet run
 
-Commit `ab51335` on `pah-forward-model-10`. Delivered: `prepare_cosmos2020_catalog.py`
-starburst flagging + `lp_type` fix; `cosmos2020_PAH_3pop_catalog.parquet` +
+Commit `ab51335` + follow-up on `pah-forward-model-10` (n_stagger 4→3 fix, full 4-bin
+alternate staggering, this doc). Delivered: `prepare_cosmos2020_catalog.py` starburst
+flagging + `lp_type` fix; `cosmos2020_PAH_3pop_catalog.parquet` +
 `_split{0,1,2}of3.parquet`; `config/cosmos20_PAH_dithered_3pop.toml` +
-`_3pop_3cats.toml` with the starburst binning dimension and z=8 staggered bins (one
-active run + 3 commented per file, matching the existing convention). Full test suite
-(270 passed, 1 slow-marked deselected) and catalog-load smoke tests both pass.
+`_3pop_3cats.toml` with the starburst binning dimension and z=8 staggered bins at
+n_stagger=3 (one active run + 2 commented per mass scheme, both mass schemes fully
+staggered). Full test suite (270 passed, 1 slow-marked deselected) and catalog-load
+smoke tests both pass.
 
 **Not done / next branch:**
 - No actual stacking (real maps) run yet on any of the new configs — population *counts*
   are verified, stacked *fluxes* are not. The z~5.2–8 tail's usability (Tier A/B/C
   breakdown, whether 3.3 µm is even marginally detectable) is unknown until a real run.
-- Only run-0 (offset 0) of the 4 staggered z-bin sets is active in each TOML; runs 1–3
+- Only run-0 (offset 0) of the 3 staggered z-bin sets is active in each TOML; runs 1–2
   are commented but not yet exercised.
 - `PAHModel(include_minor_features=True)` (which actually turns on the 3.3 µm feature in
   the fitting machinery) hasn't been wired into an analysis notebook against this new

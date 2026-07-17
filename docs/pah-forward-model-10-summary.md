@@ -57,8 +57,17 @@ crosses every bin-dimension combination with every `population_class` value via
 historical dz≤0.15 core resolution, and the 5-mass-bin scheme the user restored, all
 simultaneously is not possible under that budget — the core region had to widen to
 dz≤0.50 (tail dz≤1.00 past z=3.0), verified against the real K-fold catalogs at
-202–249 populations across all 4 staggered dither runs (vs. 280–327 with the tighter
+202–247 populations across all 3 staggered dither runs (vs. 280–327 with the tighter
 dz≤0.35 scheme once the 5th mass bin was restored).
+
+**5. n_stagger=3, not 4 — the dither count must match K.** The first pass used
+`n_stagger=4`, carried over from the pah-forward-model skill doc's pre-K-fold
+"4 dither runs" convention. `pah-forward-model-4-brief.md` established `n_stagger=K`
+("3 runs × K=3 catalogs = 9 stacking jobs") once K-fold splitting exists — the user
+caught the mismatch ("4 set of zbins and 3-fold catalogs is not compatible") and it's
+fixed throughout: both TOML files, both mass-bin schemes (the 4-mass-bin alternate is
+now fully staggered too — all 3 runs, not just 1 — and explicitly paired/labeled so its
+z-bins can't be mixed with the active 5-bin scheme's).
 
 ---
 
@@ -69,8 +78,8 @@ dz≤0.35 scheme once the 5th mass bin was restored).
 | `prepare_cosmos2020_catalog.py` | `_flag_starbursts()`; `starburst`/`log_delta_ms` output columns; `--no-starburst`/`--sfr-col`/`--sfr-linear`/`--starburst-threshold` CLI; `star_col` default `"type"`→`"lp_type"` |
 | `$CATSPATH/cosmos/cosmos2020_PAH_3pop_catalog.parquet` | pooled, z≤8.0, 480,414 sources |
 | `$CATSPATH/cosmos/cosmos2020_PAH_3pop_split{0,1,2}of3.parquet` | K-fold, z≤8.0 |
-| `config/cosmos20_PAH_dithered_3pop.toml` | pooled TOML; starburst binning dim; z=8 staggered bins (122–148 populations) |
-| `config/cosmos20_PAH_dithered_3pop_3cats.toml` | K-fold TOML; same, pointed at `split0of3.parquet` (202–249 populations) |
+| `config/cosmos20_PAH_dithered_3pop.toml` | pooled TOML; starburst binning dim; z=8 staggered bins, n_stagger=3 (122–148 populations, 5-bin mass) |
+| `config/cosmos20_PAH_dithered_3pop_3cats.toml` | K-fold TOML; same, pointed at `split0of3.parquet` (202–247 populations, 5-bin mass) |
 
 Reproduction:
 ```bash
