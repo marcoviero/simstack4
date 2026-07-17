@@ -18,12 +18,30 @@ Usage
     prepare-cosmos2020-catalog --catalog cosmos2020_FARMER.fits --splits 2
     prepare-cosmos2020-catalog --catalog cosmos2020_FARMER.csv --splits 1  # single, no splitting
     prepare-cosmos2020-catalog --catalog ... --split-type labels           # use existing population_class col
+    prepare-cosmos2020-catalog --catalog ... --splits 3 --stem cosmos2020_PAH_3pop  # + starburst columns
 
 Population classes in output parquets
 --------------------------------------
     0  sfg_signal  : SFGs in this split's signal partition (1/K of SFGs)
     1  sfg_nuisance: SFGs in the other (K-1) partitions  (deblending layer)
     2  qt          : quiescent — identical in every split
+
+Starburst labeling (optional, on by default)
+---------------------------------------------
+Mirrors `prepare_cosmos2025_catalog.py` / `prepare_cosmos_catalog.flag_starbursts`:
+starbursts are NOT a separate `population_class` code (that would K-fold-split an
+already-rare subsample three ways on top of the mass/z grid). Instead a `starburst`
+(0/1) and `log_delta_ms` (log10(SFR/SFR_MS)) column are added to the output parquet
+for use as a downstream `[catalog.classification.binning.starburst]` dimension —
+`population_class` × `starburst` × mass × z then gives the "3 populations" (SFG-MS,
+SFG-SB, QT) via simstack4's generic itertools.product binning.
+
+SFR/SFR_MS > `--starburst-threshold` (default 3.0, Elbaz+2018) against a
+Schreiber+2015 Eq. 9 main-sequence SFR, RECENTERED to this catalog's own median
+SF-population offset from the literature relation before applying the threshold
+(same self-calibration principle as `pah_spectrum.py`'s `s_pivot`) — COSMOS2020's
+LePhare SFRs run ~0.2 dex above the literature Schreiber+2015 ridge, and without
+recentering the literal cut flags ~30% of SFGs instead of a rare tail.
 
 Matching TOML stanza for the output parquets
 --------------------------------------------
@@ -33,7 +51,7 @@ Matching TOML stanza for the output parquets
 
     [catalog.classification]
     split_type = "labels"
-    bin_property_columns = ["lp_mass_med", "lp_SFR_med", "lp_sSFR_med"]
+    bin_property_columns = ["lp_mass_med", "lp_SFR_best", "lp_sSFR_med", "starburst", "log_delta_ms"]
 
     [catalog.classification.split_params]
     id = "population_class"
@@ -49,6 +67,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from .prepare_cosmos_catalog import _schreiber_ms_sfr
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +182,78 @@ def _classify_nuvrj(
 
 
 # ---------------------------------------------------------------------------
+# Starburst flagging (downstream binning column, not a population_class code)
+# ---------------------------------------------------------------------------
+
+def _flag_starbursts(
+    df: pd.DataFrame,
+    sf_mask: np.ndarray,
+    sfr_col: str,
+    mass_col: str,
+    z_col: str,
+    sfr_is_log: bool = True,
+    threshold: float = 3.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Identify starbursts: SFR / SFR_MS > threshold (Elbaz+2018 definition),
+    against a Schreiber+2015 Eq. 9 main-sequence SFR (`_schreiber_ms_sfr`,
+    imported from prepare_cosmos_catalog.py — same function, same threshold
+    convention as prepare_cosmos2025_catalog.py's COSMOSWeb pipeline).
+
+    The comparison is done in log10(SFR/SFR_MS) space, RECENTERED by the
+    median offset among star-forming (sf_mask) sources before applying the
+    threshold — literature main-sequence relations are calibrated against a
+    specific SFR indicator/IMF/SED code and rarely land exactly on another
+    catalog's zero point. Mirrors the `s_pivot` self-calibration already used
+    in `pah_spectrum.py`.
+
+    Only sf_mask sources are eligible to be flagged (quiescent galaxies are
+    never starbursts by construction). Sources with missing/invalid SFR are
+    flagged as non-starburst.
+
+    Returns
+    -------
+    is_starburst : int array (0/1)
+    log_delta_ms : float array, log10(SFR/SFR_MS) after recentering (NaN where
+        SFR is missing/invalid)
+    """
+    n = len(df)
+    log_delta_ms = np.full(n, np.nan)
+    is_sb = np.zeros(n, dtype=int)
+
+    if sfr_col not in df.columns:
+        print(f"  Starburst flag: SKIPPED ('{sfr_col}' not found)")
+        return is_sb, log_delta_ms
+
+    log_sfr = (
+        df[sfr_col].values.astype(float)
+        if sfr_is_log
+        else np.log10(np.clip(df[sfr_col].values.astype(float), 1e-20, None))
+    )
+    sfr_ms = _schreiber_ms_sfr(df[mass_col].values.astype(float), df[z_col].values.astype(float))
+    valid = np.isfinite(log_sfr) & np.isfinite(sfr_ms) & (sfr_ms > 0)
+
+    raw_delta = np.full(n, np.nan)
+    raw_delta[valid] = log_sfr[valid] - np.log10(sfr_ms[valid])
+
+    recenter_mask = valid & sf_mask
+    offset = float(np.nanmedian(raw_delta[recenter_mask])) if recenter_mask.any() else 0.0
+
+    log_delta_ms[valid] = raw_delta[valid] - offset
+    eligible = valid & sf_mask
+    is_sb[eligible] = (log_delta_ms[eligible] >= np.log10(threshold)).astype(int)
+
+    n_sb = int(is_sb.sum())
+    n_sf = int(sf_mask.sum())
+    print(
+        f"  Starburst flag: {n_sb:,} / {n_sf:,} SFGs "
+        f"(SFR/SFR_MS > {threshold}, recentered by {offset:+.3f} dex to this "
+        f"catalog's own SF ridge; {n_sb / max(n_sf, 1):.1%} of SFGs)"
+    )
+    return is_sb, log_delta_ms
+
+
+# ---------------------------------------------------------------------------
 # K-fold split assignment
 # ---------------------------------------------------------------------------
 
@@ -244,11 +336,15 @@ def build_cosmos2020_catalogs(
     z_min: float = 0.1,
     z_max: float = 6.0,
     mass_min: float = 8.0,
-    star_col: str | None = "type",
+    star_col: str | None = "lp_type",
     star_galaxy_value: int = 0,
     seed: int = 42,
     output_dir: Path | None = None,
     stem: str | None = None,
+    flag_starburst: bool = True,
+    sfr_col: str = "lp_SFR_best",
+    sfr_is_log: bool = True,
+    starburst_threshold: float = 3.0,
 ) -> list[Path]:
     """
     Build K COSMOS2020 parquet catalogs for K-fold PAH stacking analysis.
@@ -270,15 +366,25 @@ def build_cosmos2020_catalogs(
     z_min, z_max, mass_min : float
         Quality cut thresholds.
     star_col : str or None
-        Column for star/galaxy separation. Set to None to skip.
+        Column for star/galaxy separation. Set to None to skip. Default "lp_type"
+        (the real COSMOS2020 FARMER column; NOT "type", which never matches).
     star_galaxy_value : int
-        Value of star_col that indicates a galaxy (default 0 for COSMOS2020 "type").
+        Value of star_col that indicates a galaxy (default 0).
     seed : int
         Random seed for reproducible K-fold assignment.
     output_dir : Path or None
         Directory for output parquets. Defaults to catalog_path.parent.
     stem : str or None
         Base name for output files. Defaults to catalog_path.stem.
+    flag_starburst : bool
+        Add `starburst` (0/1) and `log_delta_ms` columns (see module docstring).
+        Set False to skip entirely.
+    sfr_col : str
+        SFR column for starburst flagging (default "lp_SFR_best", log10(SFR)).
+    sfr_is_log : bool
+        Whether sfr_col is log10(SFR) (default True).
+    starburst_threshold : float
+        SFR/SFR_MS threshold, Elbaz+2018 definition (default 3.0).
 
     Returns
     -------
@@ -348,6 +454,16 @@ def build_cosmos2020_catalogs(
     n_qt  = (pop_class == 2).sum()
     print(f"  Total: {n_sfg:,} SFGs, {n_qt:,} QTs, {len(df):,} sources")
 
+    # ── 3a. Starburst flagging (downstream binning column) ─────────────────
+    if flag_starburst:
+        print(f"\n[3a] Starburst flagging")
+        is_sb, log_delta_ms = _flag_starbursts(
+            df, pop_class == 0, sfr_col, mass_col, z_col,
+            sfr_is_log=sfr_is_log, threshold=starburst_threshold,
+        )
+        df["starburst"] = is_sb
+        df["log_delta_ms"] = log_delta_ms
+
     # ── 4. K-fold split assignment ─────────────────────────────────────────
     if n_splits > 1:
         print(f"\n[4] K-fold split assignment (K={n_splits}, seed={seed})")
@@ -392,12 +508,21 @@ def build_cosmos2020_catalogs(
     print(f'  dec = "{dec_col}"')
     print("  [catalog.classification]")
     print('  split_type = "labels"')
+    if flag_starburst:
+        print(
+            '  bin_property_columns = '
+            f'["{mass_col}", "{sfr_col}", "starburst", "log_delta_ms"]'
+        )
     print("  [catalog.classification.split_params]")
     print('  id = "population_class"')
     print(f"  [catalog.classification.binning.redshift]")
     print(f'  id = "{z_col}"')
     print(f"  [catalog.classification.binning.stellar_mass]")
     print(f'  id = "{mass_col}"')
+    if flag_starburst:
+        print(f"  [catalog.classification.binning.starburst]")
+        print(f'  id = "starburst"')
+        print(f"  bins = [-0.5, 0.5, 1.5]")
 
     return out_paths
 
@@ -484,8 +609,8 @@ Examples:
         help="Minimum log10(M*/Msun) (default: 8.0)",
     )
     parser.add_argument(
-        "--star-col", default="type", metavar="COL",
-        help="Star/galaxy column (default: 'type'; set to '' to skip)",
+        "--star-col", default="lp_type", metavar="COL",
+        help="Star/galaxy column (default: 'lp_type'; set to '' to skip)",
     )
     parser.add_argument(
         "--galaxy-value", type=int, default=0, metavar="INT",
@@ -494,6 +619,22 @@ Examples:
     parser.add_argument(
         "--seed", type=int, default=42, metavar="INT",
         help="Random seed for K-fold assignment (default: 42)",
+    )
+    parser.add_argument(
+        "--no-starburst", action="store_true",
+        help="Skip starburst flagging (no 'starburst'/'log_delta_ms' columns)",
+    )
+    parser.add_argument(
+        "--sfr-col", default="lp_SFR_best", metavar="COL",
+        help="SFR column for starburst flagging (default: lp_SFR_best, log10(SFR))",
+    )
+    parser.add_argument(
+        "--sfr-linear", action="store_true",
+        help="--sfr-col is linear SFR, not log10(SFR) (default: log10)",
+    )
+    parser.add_argument(
+        "--starburst-threshold", type=float, default=3.0, metavar="FLOAT",
+        help="SFR/SFR_MS threshold for starburst flag, Elbaz+2018 (default: 3.0)",
     )
     args = parser.parse_args()
 
@@ -515,6 +656,10 @@ Examples:
         seed=args.seed,
         output_dir=Path(args.output_dir) if args.output_dir else None,
         stem=args.stem,
+        flag_starburst=not args.no_starburst,
+        sfr_col=args.sfr_col,
+        sfr_is_log=not args.sfr_linear,
+        starburst_threshold=args.starburst_threshold,
     )
 
 
