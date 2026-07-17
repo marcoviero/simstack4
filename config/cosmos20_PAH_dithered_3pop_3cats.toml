@@ -1,0 +1,196 @@
+# Simstack4 Configuration File
+# This replaces the INI format from simstack3 with more user-friendly TOML
+#
+# 3pop / K-fold variant of cosmos20_PAH_dithered_3cats.toml: adds a
+# `starburst` binning dimension (population_class x stellar_mass x starburst
+# via generic itertools.product binning — see prepare_cosmos2020_catalog.py)
+# and extends z-bins to z=8 to reach rest-frame 3.3 um (the aromatic C-H
+# stretch, PAH_FEATURES_MINOR in pah_model.py) at the sparse high-z end.
+#
+# z-bins below are re-derived from analyze_pah.staggered_pah_zbins (via
+# DitherScheme.adaptive under the hood) against the REAL cosmos2020_PAH_3pop
+# split0/1/2of3.parquet catalogs, in two regimes spliced at z=3.0:
+#   core (0.5-3.0): min_sources=500, max_dz=0.50 (R~5-7, more cost than the
+#     historical dz=0.15/R~10-20 scheme — unavoidable once starburst AND the
+#     5th mass bin (9.0-9.9 added back in) roughly triple the population
+#     count at fixed z binning)
+#   tail (3.0-8.0): min_sources=400, max_dz=1.00 (sparse regime; the z~5.2-8
+#     end where 3.3um lives is upper-limit/marginal-SNR territory, not
+#     detection-grade — see docs brief)
+# n_stagger=3, matching the K=3 catalog splits (3 dither runs x 3 K-fold
+# splits = 9 jobs total, the same convention pah-forward-model-4-brief.md
+# established — NOT the 4-run scheme from earlier PAH branches, which
+# predates K-fold splitting and was never meant to pair with it; staggering
+# is sub-additive at the kernel floor anyway per pah-forward-model-2, so
+# 4->3 costs little).
+# Verified against all 3 real K-fold split files: total nonempty populations
+# (z x mass[5 bins] x starburst x {signal,nuisance,qt}) stays under the ~280
+# budget for all 3 staggered runs (202-247).
+#
+# The 4-mass-bin scheme uses a DIFFERENT, paired z-bin set (dz~0.35 core /
+# 0.70 tail, 215-252 populations) further below — if you switch
+# [catalog.classification.binning.stellar_mass] to the 4-bin option, you
+# MUST also switch to the "FOR THE 4-mass-bin SCHEME" z-bins block, not mix
+# the two (a 5-bin-derived z-grid against 4-bin masses wastes the freed
+# budget headroom, and the two active-block edges are not swappable 1:1).
+
+[binning]
+stack_all_z_at_once = true    # Stack all redshifts together (optimal but memory intensive)
+add_foreground = true         # Add foreground layer of all 1's
+crop_circles = true           # Draw circles around sources and flatten
+
+[error_estimator]
+write_simmaps = false         # Write simulated images at each wavelength
+randomize = false             # For null-testing: shuffle (x,y) when building layers
+
+[error_estimator.bootstrap]
+enabled = true                # Use bootstrap method for error estimation
+method="per_bin"             # "per_bin"
+iterations = 5            # Number of bootstrap iterations
+initial_seed = 1              # Seed for random shuffling (ensures consistency across bands)
+split_fraction = 0.5
+
+# Top-level simple settings
+cosmology = "Planck18"        # Options: "Planck15", "Planck18"
+
+[output]
+folder = "$PICKLESPATH/simstack/stacked_flux_densities"  # Environment variables supported
+shortname = "cosmos20"      # Name for output folder
+
+[catalog]
+path = "$CATSPATH/cosmos"     # Path to catalog directory
+file = "cosmos2020_PAH_3pop_split0of3.parquet"  # Catalog filename — swap split{0,1,2}of3 for the 3 K-fold runs
+
+[catalog.astrometry]
+ra = "ALPHA_J2000"                     # Column name for right ascension
+dec = "DELTA_J2000"                   # Column name for declination
+
+[catalog.classification]
+split_type = "labels"
+bin_property_columns = ["lp_mass_med", "lp_SFR_best", "lp_sSFR_med", "starburst", "log_delta_ms"]
+
+[catalog.classification.split_params]
+id = "population_class"
+# 0 = sfg_signal, 1 = sfg_nuisance, 2 = qt
+
+[catalog.classification.binning.redshift]
+id = "lp_zBEST"                 # Column name for redshift
+label = "Redshift"
+
+# --- z-bins FOR THE 5-mass-bin scheme (active; pair with the 5-bin mass
+#     config below) — n_stagger=3, core dz<=0.50 / tail dz<=1.00 ---
+
+# Run 0 — offset 0.000 — 10 bins (core dz~0.50 to z=3.0, tail dz~1.0 to z=8.0)
+bins = [0.50, 1.00, 1.50, 2.00, 2.50, 3.00, 4.00, 5.00, 6.00, 7.00, 8.00]
+
+# Run 1 — offset 0.333*dz — 12 bins
+#bins = [0.50, 0.667, 1.167, 1.667, 2.167, 2.667, 3.00, 3.333, 4.333, 5.333,
+#        6.333, 7.333, 8.00]
+
+# Run 2 — offset 0.667*dz — 12 bins
+#bins = [0.50, 0.833, 1.333, 1.833, 2.333, 2.833, 3.00, 3.667, 4.667, 5.667,
+#        6.667, 7.667, 8.00]
+
+# --- z-bins FOR THE 4-mass-bin scheme (pair with the 4-bin mass config
+#     below, NOT the active 5-bin config above) — n_stagger=3, core
+#     dz<=0.35 / tail dz<=0.70. 215-252 populations against the 4-mass-bin
+#     scheme; do not run these edges against the 5-bin mass config (wastes
+#     the freed budget headroom) or vice versa. ---
+
+# Run 0 — offset 0.000 — 14 bins
+#bins = [0.50, 0.85, 1.20, 1.55, 1.90, 2.25, 2.60, 3.00, 3.70, 4.40,
+#        5.10, 5.80, 6.50, 7.20, 8.00]
+
+# Run 1 — offset 0.333*dz — 16 bins
+#bins = [0.50, 0.617, 0.967, 1.317, 1.667, 2.017, 2.367, 2.733, 3.00, 3.233,
+#        3.933, 4.633, 5.333, 6.033, 6.733, 7.467, 8.00]
+
+# Run 2 — offset 0.667*dz — 16 bins
+#bins = [0.50, 0.733, 1.083, 1.433, 1.783, 2.133, 2.483, 2.867, 3.00, 3.467,
+#        4.167, 4.867, 5.567, 6.267, 6.967, 7.733, 8.00]
+
+[catalog.classification.binning.stellar_mass]
+id = "lp_mass_med"                  # Column name for stellar mass
+bins = [9.0, 9.9, 10.6, 10.8, 11.0, 12.0]   # 5 bins (active) — pair with the 5-mass-bin z-bins above
+#bins = [9.9, 10.6, 10.8, 11.0, 12.0]        # 4 bins (previous production scheme, no 9.0-9.9 bin) — pair with the "FOR THE 4-mass-bin scheme" z-bins above
+
+[catalog.classification.binning.starburst]
+id = "starburst"                    # 0/1 flag from prepare_cosmos2020_catalog.py (recentered SFR/SFR_MS>3, Elbaz+2018)
+bins = [-0.5, 0.5, 1.5]
+
+# Map configurations - each section defines a new map
+[maps.mips_24]
+wavelength = 24.0             # Wavelength in microns
+color_correction = 1.24       # Color correction factor
+path_map = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_sci_10.cutout.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/mips_24_GO3_unc_10.cutout.fits"
+
+[maps.mips_24.beam]
+fwhm = 5.51                   # FWHM in arcsec
+area_sr = 1.328e-09          # Solid angle (1.0 if already in Jy/beam)
+
+[maps.mips_70]
+wavelength = 70.0             # Wavelength in microns
+color_correction = 1.33       # Color correction factor
+path_map = "$MAPSPATH/cosmos/mips/scosmos_mips_70_sci_v3.fits"
+path_noise = "$MAPSPATH/cosmos/mips/scosmos_mips_70_unc_v3.fits"
+
+[maps.mips_70.beam]
+fwhm = 18.0                   # FWHM in arcsec
+area_sr = 1.296e-08          # Solid angle (1.0 if already in Jy/beam)
+
+[maps.pacs_green]
+wavelength = 100.0
+color_correction = 1.0
+path_map = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS100_20160805_img_avg.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS100_20160805_img_avg_noise.fits"
+
+[maps.pacs_green.beam]
+fwhm = 7.49
+area_sr = 2.033e-09
+
+[maps.pacs_red]
+wavelength = 160.0
+color_correction = 1.0
+path_map = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS160_20160728_img_avg.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/COSMOS_PACS160_20160728_img_avg_noise.fits"
+
+[maps.pacs_red.beam]
+fwhm = 11.33
+area_sr = 4.658e-09
+
+[maps.spire_psw]
+wavelength = 250.0
+color_correction = 1.018
+path_map = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PSW.signal.cutout.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PSW.noise.cutout.fits"
+
+[maps.spire_psw.beam]
+fwhm = 17.62
+
+[maps.spire_pmw]
+wavelength = 350.0
+color_correction = 0.9914
+path_map = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PMW.signal.cutout.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PMW.noise.cutout.fits"
+
+[maps.spire_pmw.beam]
+fwhm = 24.42
+
+[maps.spire_plw]
+wavelength = 500.0
+color_correction = 0.9565
+path_map = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PLW.signal.cutout.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/cosmos-uvista-hipe12_itermap_10_iterations_6.0_arcsec_pixels_PLW.noise.cutout.fits"
+
+[maps.spire_plw.beam]
+fwhm = 35.69
+
+[maps.scuba]
+wavelength = 850.0
+color_correction = 1e-3
+path_map = "$MAPSPATH/cosmos/cutouts/S2CLS_COSMOS_NMF_DR1_new_header.cutout.signal.fits"
+path_noise = "$MAPSPATH/cosmos/cutouts/S2CLS_COSMOS_NMF_DR1_new_header.cutout.noise.fits"
+
+[maps.scuba.beam]
+fwhm = 12.1
