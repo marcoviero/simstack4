@@ -45,6 +45,14 @@ _c_um_hz = 2.998e14  # speed of light [µm·Hz]
 # reference lists pah_model.PAH_FEATURES (+ 16.4/17.0 from
 # PAH_FEATURES_MINOR, included by default because MIPS 70 probes
 # rest-frame 15–47 µm over z = 0.5–3.5).
+#
+# 3.3 µm (index 7) is appended OUT OF WAVELENGTH ORDER on purpose: features
+# are always referenced by explicit list index (feature_groups=[[i], ...]),
+# never assumed wavelength-sorted, so appending keeps indices 0–6 — and every
+# group definition, test, and greybody coefficient keyed to them — unchanged.
+# It only becomes reachable once MIPS 24 samples rest-frame < 3.3 µm, i.e.
+# z >= 24/3.3 - 1 ≈ 6.3, which the z→8 dithered binning now provides (marginal
+# SNR at that end). It is NOT in DEFAULT_GROUPS; opt in via feature_groups.
 PAHFeature = tuple[float, float, float]
 
 DEFAULT_FEATURES: list[PAHFeature] = [
@@ -55,6 +63,7 @@ DEFAULT_FEATURES: list[PAHFeature] = [
     (12.7, 0.5187, 0.45),  # C-H out-of-plane bend
     (16.4, 0.10, 0.20),  # C-H/C-C bend
     (17.0, 0.08, 0.30),  # C-C-C bend
+    (3.3, 0.08, 0.05),  # C-H stretch (index 7; sampled only at z >= ~6.3)
 ]
 
 # 7.7+8.6 and 16.4+17.0 are kernel-blended (the rest-frame kernel width
@@ -153,8 +162,17 @@ def build_design_matrix(
     pz = np.asarray(pz_matrix, dtype=float)
     n_groups = len(DEFAULT_GROUPS if feature_groups is None else feature_groups)
     K = np.zeros((pz.shape[0], len(bands), n_groups))
-    for b, band in enumerate(bands):
-        K[:, b, :] = pz @ feature_band_curves(z_grid, band, features, feature_groups)
+    # A degenerate photo-z bin (empty z-grid support → a non-finite pz row)
+    # makes this matmul emit over/invalid/divide FP warnings and yields NaN for
+    # that bin only; such bins are filtered downstream (finite-flux/baseline
+    # checks), so silence the benign flags rather than spam the log. Operands
+    # are O(1) (probabilities × peak-normalized curves) so a real overflow is
+    # not possible here.
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        for b, band in enumerate(bands):
+            K[:, b, :] = pz @ feature_band_curves(
+                z_grid, band, features, feature_groups
+            )
     return K
 
 
@@ -168,8 +186,11 @@ def warm_continuum_kernel(
     """Continuum kernel W[i, b] = Σ_k p_i(z_k) W_b(z_k). Returns (n_bins, n_bands)."""
     pz = np.asarray(pz_matrix, dtype=float)
     W = np.zeros((pz.shape[0], len(bands)))
-    for b, band in enumerate(bands):
-        W[:, b] = pz @ warm_band_curve(z_grid, band, T_w, beta_w)
+    # See build_design_matrix: silence benign FP flags from non-finite pz rows
+    # of degenerate bins (filtered downstream); operands are O(1).
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        for b, band in enumerate(bands):
+            W[:, b] = pz @ warm_band_curve(z_grid, band, T_w, beta_w)
     return W
 
 
@@ -267,6 +288,51 @@ def solve_linear_amplitudes(
         residuals=resid,
         mask=mask,
     )
+
+
+def _ratio_block_solve(
+    M: NDArray[np.float64],
+    y: NDArray[np.float64],
+    w: NDArray[np.float64],
+    tol_rel: float = 1e-8,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """WLS solve for the shared feature-ratio block, dropping columns whose
+    weighted power is negligible.
+
+    A feature group never sampled by this data subset (e.g. the 3.3 µm C-H
+    stretch at z < ~6.3, where the MIPS-24 rest-frame window sits far redward
+    of 3.3 µm and the Gaussian kernel underflows to a denormal ~1e-243) is
+    structurally unconstrained. It is NOT an exact zero, so ``np.linalg.solve``
+    does not raise and the usual pinv fallback never fires — instead the ratio
+    rails to ±1e130. Here we detect such a column by its near-zero diagonal of
+    the normal matrix and pin its ratio to 0 (no contribution assumed where the
+    data cannot see the feature), solving the reduced well-posed system for the
+    rest. Columns that ARE sampled solve exactly as before, so existing fits
+    whose every feature is sampled over their z-range are unchanged.
+
+    Returns (r_cols, var_cols), each length ``M.shape[1]``; dropped columns get
+    r = 0 and variance = inf (flagged unconstrained).
+    """
+    ncol = M.shape[1]
+    H = M.T @ (w[:, None] * M)
+    rhs = M.T @ (w * y)
+    diag = np.diag(H).astype(float).copy()
+    dmax = float(np.max(diag)) if diag.size else 0.0
+    keep = diag > tol_rel * dmax if dmax > 0.0 else np.zeros(ncol, dtype=bool)
+    r_cols = np.zeros(ncol)
+    var_cols = np.full(ncol, np.inf)
+    if keep.any():
+        Hk = H[np.ix_(keep, keep)]
+        rhsk = rhs[keep]
+        try:
+            sol = np.linalg.solve(Hk, rhsk)
+            covk = np.linalg.pinv(Hk)
+        except np.linalg.LinAlgError:
+            covk = np.linalg.pinv(Hk)
+            sol = covk @ rhsk
+        r_cols[keep] = sol
+        var_cols[keep] = np.maximum(np.diag(covk), 0.0)
+    return r_cols, var_cols
 
 
 # ---------------------------------------------------------------------------
@@ -797,7 +863,7 @@ class PAHSpectrumModel:
                     ys.append(y)
                     ws.append(d["w"])
                 M, y, w = np.vstack(Ms), np.concatenate(ys), np.concatenate(ws)
-                r[1:], _ = _wls(M, y, w)
+                r[1:], _ = _ratio_block_solve(M, y, w)
                 r[0] = 1.0
             if np.max(np.abs(r - r_prev)) < tol:
                 break
@@ -829,8 +895,16 @@ class PAHSpectrumModel:
                 Ms.append(alpha[i] * d["K"][:, 1:])
                 ws.append(d["w"])
             M, w = np.vstack(Ms), np.concatenate(ws)
-            cov_r = np.linalg.pinv(M.T @ (w[:, None] * M))
-            r_err[1:] = np.sqrt(np.maximum(np.diag(cov_r), 0.0))
+            ys_e = np.concatenate(
+                [
+                    data[i]["f_obs"]
+                    - C_m[i] * data[i]["f_cold_norm"]
+                    - alpha[i] * data[i]["K"][:, 0]
+                    for i in valid
+                ]
+            )
+            _, var_r = _ratio_block_solve(M, ys_e, w)
+            r_err[1:] = np.where(np.isfinite(var_r), np.sqrt(var_r), np.nan)
 
         dof = max(1, ndata - (2 * len(valid) + (G - 1)))
         # PAH/continuum ratio per (bin, group): A[m,g] = A_pah[m] * r[g]
@@ -938,6 +1012,7 @@ class PAHSpectrumModel:
                     return ms
                 ls = np.asarray(ls, dtype=float)
                 return np.where(np.isfinite(ls), ls, ms)
+
         elif ssfr_fallback is None:
 
             def _resolve_ssfr(b):
@@ -951,6 +1026,7 @@ class PAHSpectrumModel:
                         "itself must exist."
                     )
                 return np.asarray(ls, dtype=float)
+
         else:
             raise ValueError(
                 f"Unknown ssfr_fallback={ssfr_fallback!r}; use 'main_sequence' or None"
@@ -1192,7 +1268,7 @@ class PAHSpectrumModel:
                         ys.append(y)
                         ws.append(d["w"])
                     M, y, w = np.vstack(Ms), np.concatenate(ys), np.concatenate(ws)
-                    r[1:], _ = _wls(M, y, w)
+                    r[1:], _ = _ratio_block_solve(M, y, w)
                     r[0] = 1.0
                 if np.max(np.abs(r - r_prev)) < tol:
                     break
@@ -1249,13 +1325,17 @@ class PAHSpectrumModel:
             ndata += len(d["f_obs"])
         r_err = np.zeros(G)
         if G > 1:
-            Ms, ws = [], []
+            Ms, ys_e, ws = [], [], []
             for i in valid:
+                d = data[i]
                 Ms.append(alpha[i] * Kmod[i][:, 1:])
-                ws.append(data[i]["w"])
-            M, w = np.vstack(Ms), np.concatenate(ws)
-            cov_r = np.linalg.pinv(M.T @ (w[:, None] * M))
-            r_err[1:] = np.sqrt(np.maximum(np.diag(cov_r), 0.0))
+                ys_e.append(
+                    d["f_obs"] - C_m[i] * d["f_cold_norm"] - alpha[i] * Kmod[i][:, 0]
+                )
+                ws.append(d["w"])
+            M, y_e, w = np.vstack(Ms), np.concatenate(ys_e), np.concatenate(ws)
+            _, var_r = _ratio_block_solve(M, y_e, w)
+            r_err[1:] = np.where(np.isfinite(var_r), np.sqrt(var_r), np.nan)
 
         # Formal slope errors from the diagonal curvature of profiled chi².
         eta_amp_err = np.nan
