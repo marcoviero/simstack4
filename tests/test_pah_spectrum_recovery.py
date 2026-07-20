@@ -31,6 +31,7 @@ from simstack4.pah_spectrum import (
     DEFAULT_GROUPS,
     build_design_matrix,
     feature_band_curves,
+    feature_profile_area,
     group_weights,
     solve_linear_amplitudes,
     warm_band_curve,
@@ -109,6 +110,76 @@ class TestDesignMatrix:
         w = warm_band_curve(z_grid, "MIPS_24", T_w=60.0, beta_w=1.5)
         assert np.all(np.diff(w) < 0)
         assert w[0] > 100.0 * w[-1]
+
+
+class TestDrudeProfile:
+    """profile="drude" (PAHFIT/Smith+2007 line shape) vs the Gaussian default."""
+
+    def test_default_profile_is_unchanged_gaussian(self):
+        z_grid = np.linspace(0.5, 3.5, 80)
+        a = feature_band_curves(z_grid, "MIPS_24")
+        b = feature_band_curves(z_grid, "MIPS_24", profile="gaussian")
+        np.testing.assert_array_equal(a, b)
+
+    def test_unknown_profile_raises(self):
+        with pytest.raises(ValueError, match="profile"):
+            feature_band_curves(np.array([1.0]), "MIPS_24", profile="lorentz")
+
+    def test_drude_area_ratio(self):
+        # Drude/Gaussian area at fixed peak+FWHM ≈ (π/2)/1.0645 ≈ 1.46
+        for j in (0, 1, 4):  # 6.2, 7.7, 12.7
+            a_g = feature_profile_area(DEFAULT_FEATURES[j], "gaussian")
+            a_d = feature_profile_area(DEFAULT_FEATURES[j], "drude")
+            fwhm = DEFAULT_FEATURES[j][2]
+            assert a_g == pytest.approx(1.0645 * fwhm, rel=0.01)
+            assert a_d / a_g == pytest.approx(1.46, rel=0.03)
+
+    def test_drude_inband_peak_and_wing_floor(self):
+        """Band integration does not wash the wings out: the in-band peak
+        rises ×1.1–1.5 and a wing floor persists where the Gaussian is dead
+        (the 2026-07-19 quantification these numbers come from)."""
+        z_grid = np.linspace(0.2, 6.0, 400)
+        g = feature_band_curves(z_grid, "MIPS_24", feature_groups=[[1, 2]])[:, 0]
+        d = feature_band_curves(
+            z_grid, "MIPS_24", feature_groups=[[1, 2]], profile="drude"
+        )[:, 0]
+        assert 1.1 < d.max() / g.max() < 1.5
+        wing = g < 0.01 * g.max()
+        assert wing.any()
+        assert d[wing].max() > 0.05 * d.max()
+
+    def test_model_threads_profile_into_kernel(self):
+        """PAHSpectrumModel(profile=...) must reach the design matrix."""
+        import pandas as pd
+
+        from simstack4.pah_spectrum import PAHSpectrumModel
+
+        rows = []
+        edges = np.round(np.arange(1.4, 2.6 + 1e-9, 0.15), 4)
+        for zlo, zhi in zip(edges[:-1], edges[1:], strict=False):
+            rows.append(
+                {
+                    "run_id": 0,
+                    "z_lo": float(zlo),
+                    "z_hi": float(zhi),
+                    "z_mid": 0.5 * (zlo + zhi),
+                    "prop_bin_id": 0,
+                    "log_M_star": 10.5,
+                    "MIPS_24": 1.0,
+                    "MIPS_24_err": 0.1,
+                }
+            )
+        df = pd.DataFrame(rows)
+        kw = {"feature_groups": [[1, 2]], "bands": ("MIPS_24",), "sigma_z0": 0.01}
+        K_g = PAHSpectrumModel(**kw)._prepare(
+            df, None, None, None, None, None
+        )["bins"][0]["K"]
+        K_d = PAHSpectrumModel(**kw, profile="drude")._prepare(
+            df, None, None, None, None, None
+        )["bins"][0]["K"]
+        # 7.7+8.6 is in-band over this z range: Drude kernel strictly larger.
+        assert np.all(K_d >= K_g)
+        assert K_d.max() / K_g.max() > 1.1
 
 
 class TestLinearSolve:

@@ -96,17 +96,67 @@ def group_weights(
     return weights
 
 
+def _profile_spectrum(
+    lam_rest: NDArray[np.float64],
+    center: float,
+    fwhm: float,
+    profile: str,
+) -> NDArray[np.float64]:
+    """Unit-peak feature profile evaluated at rest wavelengths.
+
+    ``"gaussian"`` is the historic shape; ``"drude"`` is the PAHFIT /
+    Smith+2007 convention — same peak and FWHM, but Lorentzian-like
+    power-law wings that carry ~46% more integrated area. The wings do NOT
+    wash out under MIPS band integration: in-band template peaks rise
+    ×1.2–1.4 (group-dependent) and an ~8–10%-of-peak pseudo-continuum floor
+    persists at redshifts where the Gaussian is already zero (quantified
+    2026-07-19; the floor is flux the Gaussian model silently assigns to
+    the cold baseline).
+    """
+    if profile == "gaussian":
+        sigma = fwhm / 2.355
+        return np.exp(-0.5 * ((lam_rest - center) / sigma) ** 2)
+    if profile == "drude":
+        gam = fwhm / center
+        with np.errstate(divide="ignore", invalid="ignore"):
+            x = lam_rest / center - center / lam_rest
+        return gam**2 / (x**2 + gam**2)
+    raise ValueError(f"Unknown feature profile {profile!r}; use 'gaussian' or 'drude'")
+
+
+def feature_profile_area(
+    feature: PAHFeature,
+    profile: str = "gaussian",
+) -> float:
+    """Integrated area [µm] under a unit-peak feature profile.
+
+    The λ-space area of one feature at peak 1 — the factor that converts a
+    fitted peak amplitude into an integrated feature flux/luminosity.
+    Gaussian: ``1.0645·FWHM``. Drude: ``≈(π/2)·FWHM`` (×1.46 the Gaussian;
+    Drude-integrated values are the convention of every PAHFIT-based
+    literature quantity, so luminosity comparisons must use matching
+    profiles). Computed numerically on a wide grid so both profiles go
+    through identical machinery.
+    """
+    center, _, fwhm = feature
+    lam = np.geomspace(center / 20.0, center * 50.0, 200_000)
+    return float(np.trapezoid(_profile_spectrum(lam, center, fwhm, profile), lam))
+
+
 def feature_band_curves(
     z_grid: NDArray[np.float64],
     band: str,
     features: list[PAHFeature] | None = None,
     feature_groups: list[list[int]] | None = None,
+    profile: str = "gaussian",
 ) -> NDArray[np.float64]:
     """Bandpass-integrated feature-group templates T_g,b(z).
 
     Returns (n_z, G): the mean in-band response to a unit-peak feature
     group at each redshift. This is the sharp-z building block of the
     design matrix; photo-z smearing is applied afterwards via p_i(z).
+    ``profile`` selects the line shape (see :func:`_profile_spectrum`);
+    the default preserves the historic Gaussian behavior exactly.
     """
     features = DEFAULT_FEATURES if features is None else features
     feature_groups = DEFAULT_GROUPS if feature_groups is None else feature_groups
@@ -121,8 +171,7 @@ def feature_band_curves(
         spec = np.zeros_like(lam_rest)
         for j, wj in zip(grp, w, strict=False):
             center, _, fwhm = features[j]
-            sigma = fwhm / 2.355
-            spec += wj * np.exp(-0.5 * ((lam_rest - center) / sigma) ** 2)
+            spec += wj * _profile_spectrum(lam_rest, center, fwhm, profile)
         curves[:, g] = np.trapezoid(spec * bp.resp_fine, bp.lam_fine, axis=1) / bp.norm
     return curves
 
@@ -152,6 +201,7 @@ def build_design_matrix(
     bands: tuple[str, ...] = DEFAULT_BANDS,
     features: list[PAHFeature] | None = None,
     feature_groups: list[list[int]] | None = None,
+    profile: str = "gaussian",
 ) -> NDArray[np.float64]:
     """Feature kernel matrix K[i, b, g] = Σ_k p_i(z_k) T_g,b(z_k).
 
@@ -171,7 +221,7 @@ def build_design_matrix(
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
         for b, band in enumerate(bands):
             K[:, b, :] = pz @ feature_band_curves(
-                z_grid, band, features, feature_groups
+                z_grid, band, features, feature_groups, profile=profile
             )
     return K
 
@@ -431,12 +481,14 @@ class PAHSpectrumModel:
         log_a0_bounds: tuple[float, float] = (-3.0, 1.0),
         pivot_log_mass: float = 10.5,
         pivot_log_sigma_sfr: float = 0.0,
+        profile: str = "gaussian",
     ):
         self.features = DEFAULT_FEATURES if features is None else features
         self.feature_groups = (
             DEFAULT_GROUPS if feature_groups is None else feature_groups
         )
         self.bands = bands
+        self.profile = profile
         self.T_w_prior = T_w_prior
         self.T_w_bounds = T_w_bounds
         self.beta_w = beta_w
@@ -481,7 +533,12 @@ class PAHSpectrumModel:
 
         pz, z_grid = compute_pz_matrix(scheme, dndz, sigma_z0=sigma_z0, f_cat=f_cat)
         K = build_design_matrix(
-            pz, z_grid, self.bands, self.features, self.feature_groups
+            pz,
+            z_grid,
+            self.bands,
+            self.features,
+            self.feature_groups,
+            profile=self.profile,
         )
         # warm-continuum kernel tabulated over T_GRID for fast interpolation
         W_grid = np.stack(
