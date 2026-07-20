@@ -160,3 +160,168 @@ def test_smoothed_ms_baseline_too_few_training_rows_noop():
     # <4 training rows → baseline unchanged but raw column still recorded.
     np.testing.assert_array_equal(out["f24_cold"].to_numpy(), df["f24_cold"].to_numpy())
     assert "f24_cold_raw" in out.columns
+
+
+# ---------------------------------------------------------------------------
+# PAHFIT-style hot-dust ladder (fixed-T MBB rungs, non-negative amplitudes)
+# ---------------------------------------------------------------------------
+
+
+def _hot_synthetic(model_hot, hot_frac=0.0, seed=3):
+    """Synthetic df through the model's own kernels, optionally + hot MBB.
+
+    ``hot_frac``: peak in-band hot flux of the injected 200 K rung as a
+    multiple of the bin's continuum level C_true.
+    """
+    rng = np.random.default_rng(seed)
+    mass_centers = [10.25, 10.65, 11.0]
+    z_edges = np.round(np.arange(0.5, 3.5 + 1e-9, 0.15), 4)
+    df = _tomographic_skeleton(mass_centers, z_edges)
+    df["f24_cold"] = 0.03 / (1.0 + df["z_mid"]) ** 2
+
+    A_pah_true = np.array([0.8, 1.6, 2.6])
+    r_true = np.array([1.0, 1.7, 4.0])
+    C_true = np.array([0.02, 0.03, 0.05])
+
+    prep = model_hot._prepare(df, None, None, None, None, None, baseline_col="f24_cold")
+    from simstack4.pah_spectrum import _hot_columns
+
+    hot_true = np.zeros((3, 2))
+    for i, b in enumerate(prep["bins"]):
+        sub_idx = df.index[df["prop_bin_id"] == b["m"]]
+        K_rows = b["K"][:, 0, :]
+        fc = b["f_cold"]
+        med = float(np.median(fc))
+        flux = C_true[i] * fc / med + A_pah_true[i] * C_true[i] * (K_rows @ r_true)
+        if hot_frac:
+            Hn = _hot_columns(b["H"][:, 0, :])
+            hot_true[i, 1] = hot_frac * C_true[i]  # inject on the 200 K rung
+            flux = flux + Hn @ hot_true[i]
+        err = 0.03 * flux + 1e-5
+        df.loc[sub_idx, "MIPS_24"] = flux + rng.normal(0.0, err)
+        df.loc[sub_idx, "MIPS_24_err"] = err
+    return df, A_pah_true, r_true, hot_true
+
+
+def test_hot_ladder_null_leaves_pah_recovery_intact():
+    """No injected hot flux → rung amplitudes ~0 and PAH recovery unchanged."""
+    kw = {"feature_groups": FEATURE_GROUPS, "bands": ("MIPS_24",), "sigma_z0": 0.01}
+    model_hot = PAHSpectrumModel(**kw, hot_ladder=(120.0, 200.0))
+    df, A_true, r_true, _ = _hot_synthetic(model_hot, hot_frac=0.0)
+
+    res = model_hot.fit_shared(df, baseline_col="f24_cold")
+    assert res is not None
+    assert res["hot_T"] == (120.0, 200.0)
+    hot = np.asarray(res["hot_amp"])
+    assert hot.shape == (3, 2)
+    # Non-negativity honored; null injection → small vs the continuum level.
+    assert np.all(hot[np.isfinite(hot)] >= -1e-12)
+    assert np.nanmax(hot) < 0.3 * 0.02
+    np.testing.assert_allclose(res["A_pah"], A_true, rtol=0.3)
+    np.testing.assert_allclose(res["r"][1:], r_true[1:], rtol=0.35)
+
+
+def test_hot_ladder_absorbs_injected_hot_component():
+    """Injected 200 K flux lands in the ladder, not in the PAH amplitudes."""
+    kw = {"feature_groups": FEATURE_GROUPS, "bands": ("MIPS_24",), "sigma_z0": 0.01}
+    model_hot = PAHSpectrumModel(**kw, hot_ladder=(120.0, 200.0))
+    df, A_true, r_true, hot_true = _hot_synthetic(model_hot, hot_frac=1.5)
+
+    res_hot = model_hot.fit_shared(df, baseline_col="f24_cold")
+    res_no = PAHSpectrumModel(**kw).fit_shared(df, baseline_col="f24_cold")
+    assert res_hot is not None and res_no is not None
+
+    # With the ladder: PAH amplitudes recovered, total hot flux recovered
+    # (rung split is degenerate between neighboring temperatures — compare
+    # the summed ladder flux, not per-rung amplitudes).
+    np.testing.assert_allclose(res_hot["A_pah"], A_true, rtol=0.35)
+    tot_rec = np.asarray(res_hot["hot_amp"]).sum(axis=1)
+    tot_true = hot_true.sum(axis=1)
+    np.testing.assert_allclose(tot_rec, tot_true, rtol=0.5)
+
+    # Without it the injected hot flux biases the fit high somewhere: the
+    # ladder fit must be a strictly better description of the data.
+    assert res_hot["chi2"] < res_no["chi2"]
+    bias_no = np.max(np.abs(np.asarray(res_no["A_pah"]) / A_true - 1.0))
+    bias_hot = np.max(np.abs(np.asarray(res_hot["A_pah"]) / A_true - 1.0))
+    assert bias_hot < bias_no
+
+
+def test_hot_ladder_guard_on_unwired_paths():
+    model_hot = PAHSpectrumModel(
+        feature_groups=FEATURE_GROUPS, bands=("MIPS_24",), hot_ladder=(200.0,)
+    )
+    df = _tomographic_skeleton([10.5], np.round(np.arange(0.5, 2.0, 0.15), 4))
+    df["f24_cold"] = 1e-3
+    with pytest.raises(NotImplementedError):
+        model_hot.fit_lstsq(df)
+    with pytest.raises(NotImplementedError):
+        model_hot.fit_evolving_mcmc(df, baseline_col="f24_cold")
+
+
+def test_hot_ladder_evolving_path_consistent():
+    """fit_evolving (slopes off) with the ladder matches the fit_shared story."""
+    kw = {"feature_groups": FEATURE_GROUPS, "bands": ("MIPS_24",), "sigma_z0": 0.01}
+    model_hot = PAHSpectrumModel(**kw, hot_ladder=(120.0, 200.0))
+    df, A_true, r_true, hot_true = _hot_synthetic(model_hot, hot_frac=1.5)
+
+    res = model_hot.fit_evolving(
+        df, baseline_col="f24_cold", evolve_amp=False, evolve_ratios=False
+    )
+    assert res is not None
+    np.testing.assert_allclose(res["A_pah"], A_true, rtol=0.35)
+    tot_rec = np.asarray(res["hot_amp"]).sum(axis=1)
+    np.testing.assert_allclose(tot_rec, hot_true.sum(axis=1), rtol=0.5)
+
+
+def test_hot_ladder_under_baseline_envelope():
+    """Envelope-consistent injection: features AND rungs dim with the source
+    (feature_envelope="baseline"); ladder amplitudes still land on truth."""
+    rng = np.random.default_rng(7)
+    kw = {"feature_groups": FEATURE_GROUPS, "bands": ("MIPS_24",), "sigma_z0": 0.01}
+    model_hot = PAHSpectrumModel(**kw, hot_ladder=(120.0, 200.0))
+
+    mass_centers = [10.25, 10.65, 11.0]
+    z_edges = np.round(np.arange(0.5, 3.5 + 1e-9, 0.15), 4)
+    df = _tomographic_skeleton(mass_centers, z_edges)
+    df["f24_cold"] = 0.03 / (1.0 + df["z_mid"]) ** 2
+
+    A_pah_true = np.array([0.8, 1.6, 2.6])
+    r_true = np.array([1.0, 1.7, 4.0])
+    C_true = np.array([0.02, 0.03, 0.05])
+    from simstack4.pah_spectrum import _hot_columns
+
+    prep = model_hot._prepare(df, None, None, None, None, None, baseline_col="f24_cold")
+    hot_true = np.zeros((3, 2))
+    hot_peak_true = np.zeros(3)
+    for i, b in enumerate(prep["bins"]):
+        sub_idx = df.index[df["prop_bin_id"] == b["m"]]
+        fc = b["f_cold"]
+        med = float(np.median(fc))
+        env = fc / med
+        K_rows = b["K"][:, 0, :] * env[:, None]  # features dim with source
+        Hn = _hot_columns(b["H"][:, 0, :]) * env[:, None]  # so do the rungs
+        hot_true[i, 1] = 1.5 * C_true[i]
+        hot_flux = Hn @ hot_true[i]
+        hot_peak_true[i] = float(hot_flux.max())
+        flux = (
+            C_true[i] * env + A_pah_true[i] * C_true[i] * (K_rows @ r_true) + hot_flux
+        )
+        err = 0.03 * flux + 1e-5
+        df.loc[sub_idx, "MIPS_24"] = flux + rng.normal(0.0, err)
+        df.loc[sub_idx, "MIPS_24_err"] = err
+
+    res = model_hot.fit_evolving(
+        df,
+        baseline_col="f24_cold",
+        evolve_amp=False,
+        evolve_ratios=False,
+        feature_envelope="baseline",
+    )
+    assert res is not None
+    np.testing.assert_allclose(res["A_pah"], A_pah_true, rtol=0.35)
+    # The fit normalizes rung columns AFTER the envelope, so its summed
+    # amplitude is the bin's PEAK fitted hot flux — compare against the
+    # peak injected hot flux (convention-free), not the raw rung values.
+    tot_rec = np.asarray(res["hot_amp"]).sum(axis=1)
+    np.testing.assert_allclose(tot_rec, hot_peak_true, rtol=0.5)

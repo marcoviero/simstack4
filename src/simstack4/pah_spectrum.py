@@ -390,6 +390,54 @@ def _ratio_block_solve(
 # ---------------------------------------------------------------------------
 
 
+def _hot_columns(H_rows: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Column-normalize a bin's hot-ladder kernel rows to unit maximum.
+
+    The fitted rung amplitude is then directly that rung's peak in-band
+    flux contribution across the bin's fitted points (same units as the
+    band fluxes). Rungs with no in-band response keep a zero column and
+    their amplitude is meaningless (flagged by a zero column, huge error).
+    """
+    H = np.asarray(H_rows, dtype=float).copy()
+    scale = H.max(axis=0)
+    pos = scale > 0
+    H[:, pos] = H[:, pos] / scale[pos]
+    return H
+
+
+def _amp_hot_solve(
+    D: NDArray[np.float64],
+    y: NDArray[np.float64],
+    w: NDArray[np.float64],
+    n_hot: int,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """WLS with the LAST ``n_hot`` coefficients constrained non-negative.
+
+    Fast path is the plain normal-equation solve; only when a hot amplitude
+    comes out negative is the bounded problem re-solved (scipy lsq_linear,
+    the PAHFIT convention: emission components cannot be negative). The
+    returned covariance is always the unconstrained one — approximate
+    (an upper bound on the variance) for amplitudes pinned at zero.
+    """
+    H = D.T @ (w[:, None] * D)
+    rhs = D.T @ (w * y)
+    try:
+        theta = np.linalg.solve(H, rhs)
+        cov = np.linalg.pinv(H)
+    except np.linalg.LinAlgError:
+        cov = np.linalg.pinv(H)
+        theta = cov @ rhs
+    if n_hot and np.any(theta[-n_hot:] < -1e-12):
+        from scipy.optimize import lsq_linear
+
+        sw = np.sqrt(w)
+        n_par = D.shape[1]
+        lb = np.concatenate([np.full(n_par - n_hot, -np.inf), np.zeros(n_hot)])
+        res = lsq_linear(sw[:, None] * D, sw * y, bounds=(lb, np.full(n_par, np.inf)))
+        theta = res.x
+    return theta, cov
+
+
 @dataclass
 class PAHSpectrumResult:
     """Output of PAHSpectrumModel.fit_lstsq / fit_mcmc.
@@ -482,6 +530,8 @@ class PAHSpectrumModel:
         pivot_log_mass: float = 10.5,
         pivot_log_sigma_sfr: float = 0.0,
         profile: str = "gaussian",
+        hot_ladder: tuple[float, ...] | None = None,
+        hot_beta: float = 2.0,
     ):
         self.features = DEFAULT_FEATURES if features is None else features
         self.feature_groups = (
@@ -489,6 +539,15 @@ class PAHSpectrumModel:
         )
         self.bands = bands
         self.profile = profile
+        # PAHFIT-style hot-dust ladder: fixed rest-frame MBB temperatures [K]
+        # entering fit_shared/fit_evolving as extra non-negative LINEAR
+        # columns. Temperature is never a fit parameter — "how hot" becomes
+        # an amplitude ratio between rungs, so the fit stays linear and the
+        # T↔amplitude degeneracy that rails nonlinear hot fits (and railed
+        # the free Wien alpha to ~3) cannot occur. E.g. hot_ladder=(135, 300).
+        self.hot_ladder = tuple(hot_ladder) if hot_ladder else None
+        self.hot_beta = hot_beta
+        self.n_hot = len(self.hot_ladder) if self.hot_ladder else 0
         self.T_w_prior = T_w_prior
         self.T_w_bounds = T_w_bounds
         self.beta_w = beta_w
@@ -547,6 +606,19 @@ class PAHSpectrumModel:
                 for t in self.T_GRID
             ]
         )  # (n_T, n_scheme_bins, n_bands)
+
+        # Hot-ladder kernels (fixed T, shape only — amplitudes are fit).
+        H_all = None
+        if self.hot_ladder:
+            H_all = np.stack(
+                [
+                    warm_continuum_kernel(
+                        pz, z_grid, self.bands, T_w=t, beta_w=self.hot_beta
+                    )
+                    for t in self.hot_ladder
+                ],
+                axis=-1,
+            )  # (n_scheme_bins, n_bands, n_hot)
 
         # Lookup: (run_id, z_lo) → row index in the scheme's pz matrix.
         # Different property bins may cover different subsets of z-bins (due to
@@ -652,6 +724,7 @@ class PAHSpectrumModel:
                     "Kw": Kw,
                     "Ww_grid": Ww_grid,
                     "K": K_m,
+                    "H": H_all[sidx] if H_all is not None else None,
                     "sidx": sidx,
                     "props": props,
                     "n_valid": int(mask.sum()),
@@ -695,6 +768,10 @@ class PAHSpectrumModel:
         total chi² + T_w prior over the scalar T_w (golden-section via
         scipy). With fix_T_w the linear solve runs once.
         """
+        if self.hot_ladder:
+            raise NotImplementedError(
+                "hot_ladder is only wired into fit_shared/fit_evolving"
+            )
         from scipy.optimize import minimize_scalar
 
         prep = self._prepare(df, cov, scheme, dndz, sigma_z0, f_cat)
@@ -844,8 +921,16 @@ class PAHSpectrumModel:
         With ``smooth_baseline=True`` the baseline is first stabilized via
         :func:`smoothed_ms_baseline` (needs ``T_dust``/``log_amp``/``beta``).
 
+        With a model-level ``hot_ladder`` (PAHFIT-style fixed-temperature MBB
+        rungs) the per-bin model gains ``+ Σ_t h_{m,t} · H_t(z)`` with
+        non-negative rung amplitudes ``h`` — the hot/AGN continuum absorbed
+        linearly instead of leaking into the Wien slope or the PAH term.
+
         Returns a dict: ``alpha, alpha_err, C_m, C_m_err, r, r_err, A_pah,
-        A_pah_err, A, labels, chi2, dof, chi2_red, n_iter, valid``.
+        A_pah_err, A, labels, chi2, dof, chi2_red, n_iter, valid`` (+
+        ``hot_T, hot_amp, hot_amp_err`` when a hot ladder is configured;
+        ``hot_amp[m, t]`` is rung t's peak in-band flux contribution over
+        bin m's fitted points, in the band's flux units).
         """
         if smooth_baseline:
             df = smoothed_ms_baseline(df, baseline_col=baseline_col)
@@ -883,10 +968,16 @@ class PAHSpectrumModel:
                     "w": 1.0 / f_err[ok] ** 2,
                     "f_cold_norm": f_cold[ok] / med,
                     "K": K_g[ok],
+                    "H": (
+                        _hot_columns(b["H"][:, bidx, :][ok])
+                        if b["H"] is not None
+                        else None
+                    ),
                 }
             )
         valid = [i for i, d in enumerate(data) if d is not None]
         n_m = len(bins)
+        n_hot = self.n_hot
         if not valid:
             return None
 
@@ -899,23 +990,39 @@ class PAHSpectrumModel:
                 Hi = np.linalg.pinv(H)
                 return Hi @ rhs, Hi
 
+        def _design(d, r):
+            D = np.column_stack([d["f_cold_norm"], d["K"] @ r])
+            if n_hot:
+                D = np.column_stack([D, d["H"]])
+            return D
+
+        def _hot_flux(i):
+            return data[i]["H"] @ hot[i] if n_hot else 0.0
+
         r = np.ones(G)
         C_m = np.full(n_m, np.nan)
         alpha = np.full(n_m, np.nan)
+        hot = np.full((n_m, n_hot), np.nan) if n_hot else None
         n_done = 0
         while n_done < n_iter:
             n_done += 1
             r_prev = r.copy()
             for i in valid:
                 d = data[i]
-                D = np.column_stack([d["f_cold_norm"], d["K"] @ r])
-                theta, _ = _wls(D, d["f_obs"], d["w"])
+                theta, _ = _amp_hot_solve(_design(d, r), d["f_obs"], d["w"], n_hot)
                 C_m[i], alpha[i] = float(theta[0]), float(theta[1])
+                if n_hot:
+                    hot[i] = theta[2:]
             if G > 1:
                 Ms, ys, ws = [], [], []
                 for i in valid:
                     d = data[i]
-                    y = d["f_obs"] - C_m[i] * d["f_cold_norm"] - alpha[i] * d["K"][:, 0]
+                    y = (
+                        d["f_obs"]
+                        - C_m[i] * d["f_cold_norm"]
+                        - alpha[i] * d["K"][:, 0]
+                        - _hot_flux(i)
+                    )
                     Ms.append(alpha[i] * d["K"][:, 1:])
                     ys.append(y)
                     ws.append(d["w"])
@@ -929,19 +1036,24 @@ class PAHSpectrumModel:
         C_m_err = np.full(n_m, np.nan)
         A_pah = np.full(n_m, np.nan)
         A_pah_err = np.full(n_m, np.nan)
+        hot_err = np.full((n_m, n_hot), np.nan) if n_hot else None
         chi2 = 0.0
         ndata = 0
         for i in valid:
             d = data[i]
-            D = np.column_stack([d["f_cold_norm"], d["K"] @ r])
+            D = _design(d, r)
             _, cov_i = _wls(D, d["f_obs"], d["w"])
             C_m_err[i] = np.sqrt(max(cov_i[0, 0], 0.0))
             alpha_err[i] = np.sqrt(max(cov_i[1, 1], 0.0))
+            if n_hot:
+                hot_err[i] = np.sqrt(np.clip(np.diag(cov_i)[2:], 0.0, None))
             if C_m[i] != 0:
                 A_pah[i] = alpha[i] / C_m[i]
-                g = np.array([-alpha[i] / C_m[i] ** 2, 1.0 / C_m[i]])
+                g = np.zeros(D.shape[1])
+                g[:2] = [-alpha[i] / C_m[i] ** 2, 1.0 / C_m[i]]
                 A_pah_err[i] = np.sqrt(max(g @ cov_i @ g, 0.0))
-            resid = d["f_obs"] - D @ np.array([C_m[i], alpha[i]])
+            theta_i = np.concatenate([[C_m[i], alpha[i]], hot[i] if n_hot else []])
+            resid = d["f_obs"] - D @ theta_i
             chi2 += float(np.sum(resid**2 * d["w"]))
             ndata += len(d["f_obs"])
         r_err = np.zeros(G)
@@ -957,16 +1069,17 @@ class PAHSpectrumModel:
                     data[i]["f_obs"]
                     - C_m[i] * data[i]["f_cold_norm"]
                     - alpha[i] * data[i]["K"][:, 0]
+                    - _hot_flux(i)
                     for i in valid
                 ]
             )
             _, var_r = _ratio_block_solve(M, ys_e, w)
             r_err[1:] = np.where(np.isfinite(var_r), np.sqrt(var_r), np.nan)
 
-        dof = max(1, ndata - (2 * len(valid) + (G - 1)))
+        dof = max(1, ndata - ((2 + n_hot) * len(valid) + (G - 1)))
         # PAH/continuum ratio per (bin, group): A[m,g] = A_pah[m] * r[g]
         A = A_pah[:, None] * r[None, :]
-        return {
+        out = {
             "alpha": alpha,
             "alpha_err": alpha_err,
             "C_m": C_m,
@@ -983,6 +1096,11 @@ class PAHSpectrumModel:
             "n_iter": n_done,
             "valid": valid,
         }
+        if n_hot:
+            out["hot_T"] = self.hot_ladder
+            out["hot_amp"] = hot
+            out["hot_amp_err"] = hot_err
+        return out
 
     # -- evolving shared-ratio fit (sSFR-anchored amplitude + ratio drift) --
 
@@ -1118,19 +1236,10 @@ class PAHSpectrumModel:
         data = []
         for b in bins:
             ls = _resolve_ssfr(b)
-            parts = {
-                k: []
-                for k in (
-                    "f_obs",
-                    "f_err",
-                    "w",
-                    "f_cold_norm",
-                    "K",
-                    "shat",
-                    "z_mid",
-                    "band",
-                )
-            }
+            keys = ["f_obs", "f_err", "w", "f_cold_norm", "K", "shat", "z_mid", "band"]
+            if self.hot_ladder:
+                keys.append("H")
+            parts = {k: [] for k in keys}
             med_ref = None
             fcold_ref = None  # reference band's baseline, row-aligned
             for band in baseline_cols:
@@ -1157,6 +1266,15 @@ class PAHSpectrumModel:
                 if feature_envelope == "baseline":
                     K_rows = K_rows * (fcold_ref[ok] / med_ref)[:, None]
                 parts["K"].append(K_rows)
+                if self.hot_ladder:
+                    # The hot component is source luminosity too: under the
+                    # observed-flux envelope it must dim with the population
+                    # like the features do, or a constant-amplitude rung
+                    # would be mis-specified across a wide-z bin.
+                    H_rows = b["H"][:, bidx, :][ok]
+                    if feature_envelope == "baseline":
+                        H_rows = H_rows * (fcold_ref[ok] / med_ref)[:, None]
+                    parts["H"].append(H_rows)
                 parts["shat"].append(ls[ok] - s_pivot)
                 parts["z_mid"].append(np.asarray(b["z_mid"], dtype=float)[ok])
                 parts["band"].append(np.full(int(ok.sum()), band, dtype=object))
@@ -1164,9 +1282,11 @@ class PAHSpectrumModel:
                 data.append(None)
                 continue
             d = {
-                k: (np.vstack(v) if k == "K" else np.concatenate(v))
+                k: (np.vstack(v) if k in ("K", "H") else np.concatenate(v))
                 for k, v in parts.items()
             }
+            if self.hot_ladder:
+                d["H"] = _hot_columns(d["H"])
             d["m"] = b["m"]
             d["log_M_star"] = b["props"]["log_M_star"]
             data.append(d)
@@ -1243,7 +1363,10 @@ class PAHSpectrumModel:
 
         Returns ``fit_shared``'s keys plus ``eta_amp``, ``eta_amp_err``,
         ``eta_ratio`` (length G, ``η_0 ≡ 0``), ``eta_ratio_err``, ``s_pivot`` and
-        ``bands``.
+        ``bands``. With a model-level ``hot_ladder`` the per-bin model gains
+        non-negative fixed-temperature hot-MBB rungs (``hot_T``/``hot_amp``/
+        ``hot_amp_err`` in the result; under ``feature_envelope="baseline"``
+        the rungs dim with the source like the features).
         """
         from scipy.optimize import minimize
 
@@ -1300,18 +1423,25 @@ class PAHSpectrumModel:
             # e: (G,) per-group exponent; returns (n_pts, G) modulated kernel.
             return (10.0 ** np.outer(d["shat"], e)) * d["K"]
 
+        n_hot = self.n_hot
+
         def solve_inner(e, iters):
             r = np.ones(G)
             C_m = np.full(n_m, np.nan)
             alpha = np.full(n_m, np.nan)
+            hot = np.full((n_m, n_hot), np.nan) if n_hot else None
             Kmod = {i: modulated(data[i], e) for i in valid}
             for _ in range(iters):
                 r_prev = r.copy()
                 for i in valid:
                     d = data[i]
                     D = np.column_stack([d["f_cold_norm"], Kmod[i] @ r])
-                    theta, _ = _wls(D, d["f_obs"], d["w"])
+                    if n_hot:
+                        D = np.column_stack([D, d["H"]])
+                    theta, _ = _amp_hot_solve(D, d["f_obs"], d["w"], n_hot)
                     C_m[i], alpha[i] = float(theta[0]), float(theta[1])
+                    if n_hot:
+                        hot[i] = theta[2:]
                 if G > 1:
                     Ms, ys, ws = [], [], []
                     for i in valid:
@@ -1321,6 +1451,8 @@ class PAHSpectrumModel:
                             - C_m[i] * d["f_cold_norm"]
                             - alpha[i] * Kmod[i][:, 0]
                         )
+                        if n_hot:
+                            y = y - d["H"] @ hot[i]
                         Ms.append(alpha[i] * Kmod[i][:, 1:])
                         ys.append(y)
                         ws.append(d["w"])
@@ -1333,8 +1465,10 @@ class PAHSpectrumModel:
             for i in valid:
                 d = data[i]
                 model = C_m[i] * d["f_cold_norm"] + alpha[i] * (Kmod[i] @ r)
+                if n_hot:
+                    model = model + d["H"] @ hot[i]
                 chi2 += float(np.sum((d["f_obs"] - model) ** 2 * d["w"]))
-            return C_m, alpha, r, Kmod, chi2
+            return C_m, alpha, r, Kmod, chi2, hot
 
         def chi2_of(theta):
             eta_amp, eta_ratio = unpack(theta)
@@ -1361,23 +1495,29 @@ class PAHSpectrumModel:
 
         eta_amp, eta_ratio = unpack(theta_best)
         e_best = eta_amp + eta_ratio
-        C_m, alpha, r, Kmod, chi2 = solve_inner(e_best, n_iter)
+        C_m, alpha, r, Kmod, chi2, hot = solve_inner(e_best, n_iter)
 
         # Per-bin formal errors (delta method on alpha/C_m), as in fit_shared.
         alpha_err = np.full(n_m, np.nan)
         C_m_err = np.full(n_m, np.nan)
         A_pah = np.full(n_m, np.nan)
         A_pah_err = np.full(n_m, np.nan)
+        hot_err = np.full((n_m, n_hot), np.nan) if n_hot else None
         ndata = 0
         for i in valid:
             d = data[i]
             D = np.column_stack([d["f_cold_norm"], Kmod[i] @ r])
+            if n_hot:
+                D = np.column_stack([D, d["H"]])
             _, cov_i = _wls(D, d["f_obs"], d["w"])
             C_m_err[i] = np.sqrt(max(cov_i[0, 0], 0.0))
             alpha_err[i] = np.sqrt(max(cov_i[1, 1], 0.0))
+            if n_hot:
+                hot_err[i] = np.sqrt(np.clip(np.diag(cov_i)[2:], 0.0, None))
             if C_m[i] != 0:
                 A_pah[i] = alpha[i] / C_m[i]
-                g = np.array([-alpha[i] / C_m[i] ** 2, 1.0 / C_m[i]])
+                g = np.zeros(D.shape[1])
+                g[:2] = [-alpha[i] / C_m[i] ** 2, 1.0 / C_m[i]]
                 A_pah_err[i] = np.sqrt(max(g @ cov_i @ g, 0.0))
             ndata += len(d["f_obs"])
         r_err = np.zeros(G)
@@ -1386,9 +1526,10 @@ class PAHSpectrumModel:
             for i in valid:
                 d = data[i]
                 Ms.append(alpha[i] * Kmod[i][:, 1:])
-                ys_e.append(
-                    d["f_obs"] - C_m[i] * d["f_cold_norm"] - alpha[i] * Kmod[i][:, 0]
-                )
+                y_i = d["f_obs"] - C_m[i] * d["f_cold_norm"] - alpha[i] * Kmod[i][:, 0]
+                if n_hot:
+                    y_i = y_i - d["H"] @ hot[i]
+                ys_e.append(y_i)
                 ws.append(d["w"])
             M, y_e, w = np.vstack(Ms), np.concatenate(ys_e), np.concatenate(ws)
             _, var_r = _ratio_block_solve(M, y_e, w)
@@ -1412,9 +1553,9 @@ class PAHSpectrumModel:
                     g_idx = 1 + (j - n_amp)
                     eta_ratio_err[g_idx] = sig
 
-        dof = max(1, ndata - (2 * len(valid) + (G - 1) + n_theta))
+        dof = max(1, ndata - ((2 + n_hot) * len(valid) + (G - 1) + n_theta))
         A = A_pah[:, None] * r[None, :]
-        return {
+        out = {
             "alpha": alpha,
             "alpha_err": alpha_err,
             "C_m": C_m,
@@ -1436,6 +1577,11 @@ class PAHSpectrumModel:
             "chi2_red": chi2 / dof,
             "valid": valid,
         }
+        if n_hot:
+            out["hot_T"] = self.hot_ladder
+            out["hot_amp"] = hot
+            out["hot_amp_err"] = hot_err
+        return out
 
     # -- MCMC over the evolving-template parameters ------------------------
 
@@ -1499,6 +1645,10 @@ class PAHSpectrumModel:
         ``alpha``/``C_m``/``A_pah`` summaries from a chain subsample, and the
         per-point ``data`` needed by :func:`evolving_flux_decomposition`.
         """
+        if self.hot_ladder:
+            raise NotImplementedError(
+                "hot_ladder is only wired into fit_shared/fit_evolving"
+            )
         import emcee
 
         baseline_cols = self._resolve_baseline_cols(df, baseline_cols, baseline_col)
@@ -1858,6 +2008,10 @@ class PAHSpectrumModel:
         C_m are profiled analytically at every step (linear given A), so
         the chain stays low-dimensional — the DustEvolutionModel pattern.
         """
+        if self.hot_ladder:
+            raise NotImplementedError(
+                "hot_ladder is only wired into fit_shared/fit_evolving"
+            )
         import emcee
 
         prep = self._prepare(df, cov, scheme, dndz, sigma_z0, f_cat)
