@@ -215,10 +215,22 @@ class TestDesignMatrix:
         assert K_split.shape[-1] == 7
 
     def test_curves_zero_outside_band(self):
-        """A feature that never enters the band gives a null column."""
+        """A feature that never enters the band gives a null column.
+
+        Only exactly true for the Gaussian: the Drude default has power-law
+        wings, so its column is small-but-finite out of band (which is the
+        point of the profile — see TestDrudeProfile). Both are asserted.
+        """
         z_grid = np.linspace(0.5, 1.0, 20)  # 6.2 µm needs z ≈ 2.2–4.2 for MIPS 24
-        T = feature_band_curves(z_grid, "MIPS_24", feature_groups=[[0]])
-        assert np.all(T < 1e-6)
+        T_g = feature_band_curves(
+            z_grid, "MIPS_24", feature_groups=[[0]], profile="gaussian"
+        )
+        assert np.all(T_g < 1e-6)
+        T_d = feature_band_curves(z_grid, "MIPS_24", feature_groups=[[0]])
+        in_band = feature_band_curves(
+            np.array([2.85]), "MIPS_24", feature_groups=[[0]]
+        ).max()
+        assert np.all(T_d < 0.05 * in_band)  # wings present, but well sub-dominant
 
     def test_warm_curve_fades_with_z_at_24(self):
         """At 24 µm, higher z probes bluer rest wavelengths — deeper into
@@ -230,13 +242,45 @@ class TestDesignMatrix:
 
 
 class TestDrudeProfile:
-    """profile="drude" (PAHFIT/Smith+2007 line shape) vs the Gaussian default."""
+    """profile="drude" is the branch-12 default; gaussian is the systematic."""
 
-    def test_default_profile_is_unchanged_gaussian(self):
+    def test_default_profile_is_drude(self):
+        """Guards the 2026-07-25 flip.
+
+        Gaussian used to be the default "for backward compatibility", which
+        meant every caller that forgot the argument silently got a different
+        line shape from the fit. The notebooks' L_PAH conversion did exactly
+        that for weeks. The default must now match what the fitter uses.
+        """
         z_grid = np.linspace(0.5, 3.5, 80)
         a = feature_band_curves(z_grid, "MIPS_24")
-        b = feature_band_curves(z_grid, "MIPS_24", profile="gaussian")
-        np.testing.assert_array_equal(a, b)
+        d = feature_band_curves(z_grid, "MIPS_24", profile="drude")
+        np.testing.assert_array_equal(a, d)
+        g = feature_band_curves(z_grid, "MIPS_24", profile="gaussian")
+        assert not np.allclose(a, g)
+
+    def test_every_public_entry_point_defaults_to_drude(self):
+        """One forgotten default is all it takes; check them together."""
+        import inspect
+
+        from simstack4 import pah_spectrum as ps
+
+        for fn in (
+            ps.feature_profile_area,
+            ps.feature_band_curves,
+            ps.build_design_matrix,
+            ps.plateau_band_curves,
+            ps.feature_template_luminosity,
+        ):
+            sig = inspect.signature(fn)
+            assert sig.parameters["profile"].default == "drude", fn.__name__
+        assert (
+            inspect.signature(ps.PAHSpectrumModel).parameters["profile"].default
+            == "drude"
+        )
+        from simstack4.pah_dither import TruthSpectrum
+
+        assert TruthSpectrum().profile == "drude"
 
     def test_unknown_profile_raises(self):
         with pytest.raises(ValueError, match="profile"):
@@ -256,7 +300,9 @@ class TestDrudeProfile:
         rises ×1.1–1.5 and a wing floor persists where the Gaussian is dead
         (the 2026-07-19 quantification these numbers come from)."""
         z_grid = np.linspace(0.2, 6.0, 400)
-        g = feature_band_curves(z_grid, "MIPS_24", feature_groups=[[1, 2]])[:, 0]
+        g = feature_band_curves(
+            z_grid, "MIPS_24", feature_groups=[[1, 2]], profile="gaussian"
+        )[:, 0]
         d = feature_band_curves(
             z_grid, "MIPS_24", feature_groups=[[1, 2]], profile="drude"
         )[:, 0]
@@ -288,12 +334,14 @@ class TestDrudeProfile:
             )
         df = pd.DataFrame(rows)
         kw = {"feature_groups": [[1, 2]], "bands": ("MIPS_24",), "sigma_z0": 0.01}
-        K_g = PAHSpectrumModel(**kw)._prepare(df, None, None, None, None, None)["bins"][
-            0
-        ]["K"]
-        K_d = PAHSpectrumModel(**kw, profile="drude")._prepare(
+        K_g = PAHSpectrumModel(**kw, profile="gaussian")._prepare(
             df, None, None, None, None, None
         )["bins"][0]["K"]
+        K_d = PAHSpectrumModel(**kw)._prepare(df, None, None, None, None, None)["bins"][
+            0
+        ][
+            "K"
+        ]  # drude by default
         # 7.7+8.6 is in-band over this z range: Drude kernel strictly larger.
         assert np.all(K_d >= K_g)
         assert K_d.max() / K_g.max() > 1.1

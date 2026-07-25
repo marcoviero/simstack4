@@ -550,9 +550,14 @@ class TestPlateauSilicateWiring:
         ).fit_evolving(df, baseline_col="f24_cold", eta_prior_sigma=1.0)
         assert res is not None
         assert res["tau_sil"] == pytest.approx(0.6, abs=0.1)
-        np.testing.assert_allclose(
-            np.asarray(res["plateau_amp"]).ravel(), 0.003, rtol=0.6
-        )
+        q = np.asarray(res["plateau_amp"]).ravel()
+        # PER-BIN plateau is degenerate with the features (0.85-collinear, and
+        # worse under Drude wings than the Gaussian this was first written
+        # against), so individual bins scatter ~2x. The ENSEMBLE recovers --
+        # which is the same "quote plateau differences, not absolutes" caveat
+        # as test_differential_plateau_amplitude_is_unbiased.
+        assert q.mean() == pytest.approx(0.003, rel=0.4)
+        assert np.all(q > 0.0) and np.all(q < 3.0 * 0.003)
 
     def test_result_keys_absent_when_components_are_off(self):
         df, _ = _inject(**_TRUTH)

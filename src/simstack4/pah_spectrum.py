@@ -315,7 +315,7 @@ def _profile_spectrum(
 
 def feature_profile_area(
     feature: PAHFeature,
-    profile: str = "gaussian",
+    profile: str = "drude",
 ) -> float:
     """Integrated area [µm] under a unit-peak feature profile.
 
@@ -337,7 +337,7 @@ def feature_band_curves(
     band: str,
     features: list[PAHFeature] | None = None,
     feature_groups: list[list[int]] | None = None,
-    profile: str = "gaussian",
+    profile: str = "drude",
     tau_sil: float = 0.0,
 ) -> NDArray[np.float64]:
     """Bandpass-integrated feature-group templates T_g,b(z).
@@ -345,8 +345,13 @@ def feature_band_curves(
     Returns (n_z, G): the mean in-band response to a unit-peak feature
     group at each redshift. This is the sharp-z building block of the
     design matrix; photo-z smearing is applied afterwards via p_i(z).
-    ``profile`` selects the line shape (see :func:`_profile_spectrum`);
-    the default preserves the historic Gaussian behavior exactly.
+    ``profile`` selects the line shape (see :func:`_profile_spectrum`). The
+    default is ``"drude"`` as of branch-12 — it is the physically correct shape
+    and the convention every literature L_PAH uses. It used to default to
+    ``"gaussian"`` for backward compatibility, but that meant any caller who
+    forgot the argument silently got a different line shape from the fit;
+    ``lshape_at_z`` in the notebooks did exactly that. Pass
+    ``profile="gaussian"`` explicitly for the systematic row.
 
     ``tau_sil`` applies 9.7 µm silicate absorption INSIDE the band integral —
     exp(-tau·D97(lambda_rest)) multiplies the feature spectrum before it is
@@ -459,7 +464,7 @@ def build_design_matrix(
     bands: tuple[str, ...] = DEFAULT_BANDS,
     features: list[PAHFeature] | None = None,
     feature_groups: list[list[int]] | None = None,
-    profile: str = "gaussian",
+    profile: str = "drude",
     tau_sil: float = 0.0,
 ) -> NDArray[np.float64]:
     """Feature kernel matrix K[i, b, g] = Σ_k p_i(z_k) T_g,b(z_k).
@@ -827,7 +832,7 @@ class PAHSpectrumModel:
         log_a0_bounds: tuple[float, float] = (-3.0, 1.0),
         pivot_log_mass: float = 10.5,
         pivot_log_sigma_sfr: float = 0.0,
-        profile: str = "gaussian",
+        profile: str = "drude",
         hot_ladder: tuple[float, ...] | None = None,
         hot_beta: float = 2.0,
         plateaus: tuple[tuple[float, float], ...] | None = None,
@@ -3022,6 +3027,75 @@ def evolving_flux_decomposition(result, n_draws=120, seed=0):
 # well-constrained (Tier A/B) bins removes that. PAH-free by construction (the
 # SEDs that produced T/logA exclude 24 µm).
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ---------------------------------------------------------------------------
+# L_PAH conversion
+# ---------------------------------------------------------------------------
+
+# Features that are NOT PAH and must be excluded from L_PAH even when they sit
+# inside a welded feature group. Empty for now; the intended first member is a
+# [Ne II] 12.81 µm line welded into the 11.3+12.7 group, which MIPS cannot
+# resolve from PAH 12.7 (0.11 µm apart at R~2.4) but which is ionized-gas
+# emission, not PAH. Referenced by index, like every other feature list here.
+NON_PAH_FEATURES: frozenset[int] = frozenset()
+
+
+def feature_template_luminosity(
+    z: float,
+    d_lum_mpc: float,
+    r_ratios,
+    *,
+    features: list[PAHFeature] | None = None,
+    feature_groups: list[list[int]] | None = None,
+    profile: str = "drude",
+    exclude: "frozenset[int] | set[int] | tuple[int, ...]" = NON_PAH_FEATURES,
+    lam_range: tuple[float, float] = (3.0, 20.0),
+    n_lam: int = 400,
+) -> float:
+    """Bolometric L_sun of a unit-amplitude, ``r``-weighted feature template.
+
+    ``alpha_m * feature_template_luminosity(...) = L_PAH`` for property bin m,
+    with ``alpha_m`` in the same flux units as the fitted band data.
+
+    This lived as a copy-pasted ``lshape_at_z`` in ~20 notebooks, every one of
+    which defaulted to ``DEFAULT_FEATURES`` and hard-coded a Gaussian — so the
+    luminosity conversion silently used the frozen (mis-calibrated) catalog and
+    the wrong line shape while the fit used neither. Because each property bin
+    has its OWN ``r`` vector, that mismatch does not cancel: it moved the
+    L_PAH mass slope by ~0.05 dex/dex and flipped its sign. It is library code
+    now so the fit and the conversion cannot drift apart again — pass the model's
+    own ``features``/``feature_groups``/``profile``.
+
+    ``exclude`` drops feature indices from the luminosity sum while leaving them
+    in the *template* — the hook for non-PAH lines welded into a PAH group,
+    which must shape the band response but not count toward L_PAH.
+
+    The flux→luminosity normalization is preserved exactly from the notebook
+    implementation so existing L_PAH/L_IR numbers stay on the same scale.
+    """
+    features = FEATURES_CALIBRATED if features is None else features
+    feature_groups = PHYSICAL_GROUPS if feature_groups is None else feature_groups
+    exclude = frozenset(exclude)
+    r_ratios = np.asarray(r_ratios, dtype=float)
+
+    lam = np.logspace(np.log10(lam_range[0]), np.log10(lam_range[1]), n_lam)
+    weights = group_weights(features, feature_groups)
+    shape = np.zeros_like(lam)
+    for g, (grp, w) in enumerate(zip(feature_groups, weights, strict=False)):
+        r_g = float(r_ratios[g]) if g < len(r_ratios) else 0.0
+        for j, wj in zip(grp, w, strict=False):
+            if j in exclude:
+                continue
+            center, _, fwhm = features[j]
+            shape += r_g * wj * _profile_spectrum(lam, center, fwhm, profile)
+
+    nu = _c_um_hz / lam
+    d_lum_m = float(d_lum_mpc) * 3.08568025e22
+    l_watts = (
+        4.0 * np.pi * d_lum_m**2 * 1e-26 * float(-np.trapezoid(shape, nu)) / (1.0 + z)
+    )
+    return l_watts / 3.828e26  # L_sun, same constant as Greybody.L_sun
 
 
 def _baseline_design(z, dM, quad):
