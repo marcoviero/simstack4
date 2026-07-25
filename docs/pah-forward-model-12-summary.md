@@ -286,6 +286,54 @@ the notebook says so rather than presenting it as a match.
 Only `2026-07-24-pah-money-plots-wider-z-bins` (the live one) was rewired and re-run; the
 other eight are superseded records and were left as-is.
 
+## 3d. [Ne II] 12.81 µm — parked as a documented systematic (2026-07-25)
+
+**Decision: not modelled. Bracketed.** The reasoning is worth recording because the obvious
+fix does not address the actual risk.
+
+[Ne II] 12.81 µm is a strong ionized-gas line sitting on the PAH 12.7 feature, unresolved at
+MIPS R≈2.4 (0.11 µm apart). The measured 12.7/11.3 = 0.377 that the weld is calibrated to is
+PAHFIT-decomposed **pure PAH**, with the line separated out — which we cannot do. So the
+welded 11.3+12.7 group carries [Ne II] flux it should not.
+
+**Why a fixed-ratio weld would not help.** A constant contamination fraction cancels *exactly*
+in the band ratio's mass slope — it is pure normalization. Only the sSFR *dependence* biases
+the trend:
+
+| mean [Ne II] fraction of the 11–13 µm group | d log f / d log sSFR | band-ratio mass slope | shift |
+|---|---|---|---|
+| 0.10 / 0.20 / 0.30 | 0.0 | −0.214 → −0.214 | **0.000** |
+| 0.20 | 0.5 | −0.214 → −0.174 | +0.040 |
+| 0.20 | 1.0 | −0.214 → −0.130 | +0.084 |
+| 0.30 | 1.0 | −0.214 → −0.067 | +0.147 |
+
+So welding [Ne II] at a fixed value corrects a normalization nobody quotes and contributes
+**zero** to the quantity at risk.
+
+**What is at risk, and what is not.**
+- **The band-ratio mass trend IS at risk.** sSFR falls with mass (+0.31 dex across our bins at
+  z~1), so if [Ne II]/PAH tracks ionized gas the low-mass bins are contaminated most —
+  inflating the neutral numerator exactly where we measure the highest ratio. The bias runs
+  in the **same direction as the measured decline** (0.73 → 0.46). At f=0.2 with full linear
+  sSFR scaling it accounts for ~40% of the slope.
+- **The crossing is NOT at risk.** 11.3+12.7 is 40% of L_PAH, so the same gradient moves the
+  crossing slopes by only ~0.03 — negligible against +0.379 ± 0.024 / −0.700 ± 0.116.
+- **L_PAH is barely affected**: 4% / 8% / 12% for f = 0.10 / 0.20 / 0.30. It is not the
+  explanation for the 2× Chiang offset (that lives in the bridge).
+
+**To retire this** we need **d log([Ne II]/PAH) / d log sSFR**, not a mean ratio. There is a
+hook: [Ne II]12.81/11.3 is known to vary with stellar-population age (an sSFR proxy). GOALS
+(Inami+2013) has the line fluxes; Smith+2007 the PAH decompositions for comparable samples.
+If the resulting bracket is comparable to the fold error, build the sSFR-dependent version on
+the existing `η` machinery — **not** a fixed weld.
+
+The library hook is in place and unused: `NON_PAH_FEATURES` (empty) and the `exclude`
+argument of `feature_template_luminosity`, so a non-PAH line can be welded into a PAH group
+and kept out of L_PAH whenever that becomes worth doing.
+
+**How to quote the band ratio meanwhile:** fold error, plus a [Ne II] systematic of
++0.04 to +0.08 on the mass slope (one-sided — the contamination can only flatten it).
+
 ## Open / next
 
 - Quantify the trough shape: does a second absorption component (18 µm silicate) or a
