@@ -132,6 +132,53 @@ FEATURES_86_CALIBRATED: list[PAHFeature] = rescale_feature_strength(
     DEFAULT_FEATURES, 2, DEFAULT_FEATURES[1][1] * _R86_FIXED
 )
 
+
+def _strength_for_integrated_ratio(
+    features: list[PAHFeature],
+    i_ref: int,
+    i_tgt: int,
+    ratio: float,
+) -> float:
+    """Strength for feature ``i_tgt`` giving an INTEGRATED flux ratio vs ``i_ref``.
+
+    Catalog strengths are unit-PEAK amplitudes, but the literature quotes
+    INTEGRATED band ratios, and the two differ by the features' FWHM ratio —
+    ×1.9 for 12.7 vs 11.3. Anything calibrated against a published band ratio
+    must go through this rather than be set as a peak.
+
+    A unit-peak profile's area is proportional to its FWHM with a
+    profile-dependent constant that cancels in the ratio (Gaussian
+    ``1.0645·FWHM``; Drude ``≈(π/2)·FWHM``), so this needs only the FWHMs and is
+    profile-independent. The leading-order Drude cancellation is exact to
+    ~0.03% here — :func:`feature_profile_area` gives the numerically exact area
+    and the tests check the round trip against it.
+    """
+    _, a_ref, fwhm_ref = features[i_ref]
+    fwhm_tgt = features[i_tgt][2]
+    return ratio * a_ref * fwhm_ref / fwhm_tgt
+
+
+# Within-group handling of the 11.3+12.7 blend (2026-07-25).
+#
+# The SAME class of error as the 8.6 one above, and larger. DEFAULT_FEATURES
+# gives 12.7 a strength of 0.5187 against 11.3's 0.30 and a 1.9x wider FWHM, so
+# the asserted INTEGRATED 12.7/11.3 is 3.24 — the pair inverted and inflated
+# ~8.6x. Measured value: R_int = (f12.7/f11.2)_int = 0.377 +- 0.020 from 105
+# high-S/N Spitzer/IRS star-forming galaxy spectra (Hernan-Caballero et al.
+# 2020, MNRAS 497, 4614), with ~5% dispersion and explicitly INDEPENDENT of
+# optical depth — i.e. the ratio really is near-constant, which is exactly the
+# assumption a welded [3, 4] group makes. That makes this a far better-founded
+# weld than the 8.6 one (which is a prior, not a measurement — see above).
+#
+# Matters because 11.3+12.7 is the NEUTRAL-side numerator of the canonical
+# ionization band ratio, so a wrong internal split tilts that diagnostic.
+_R127_11P3_INTEG = 0.377  # Hernan-Caballero+2020, integrated 12.7/11.2
+FEATURES_CALIBRATED: list[PAHFeature] = rescale_feature_strength(
+    FEATURES_86_CALIBRATED,
+    4,
+    _strength_for_integrated_ratio(FEATURES_86_CALIBRATED, 3, 4, _R127_11P3_INTEG),
+)
+
 # The welded-at-physical grouping (branch-12 default). Structural difference
 # from DEFAULT_GROUPS: the 7.7+8.6 ionized complex is ONE component with a
 # fixed internal ratio, and it is FIRST so it is the reference group (r_0 ≡ 1)
@@ -790,11 +837,14 @@ class PAHSpectrumModel:
         tau_sil_prior: float | None = None,
         silicate_scope: str = "all",
     ):
-        # Branch-12 defaults: the 7.7+8.6 complex welded at the physical ratio
-        # (FEATURES_86_CALIBRATED) and used as the reference group
+        # Branch-12 defaults: both welded blends set to their physical internal
+        # ratios (FEATURES_CALIBRATED = 8.6/7.7 peak 0.5 + integrated
+        # 12.7/11.3 = 0.377) with 7.7+8.6 as the reference group
         # (PHYSICAL_GROUPS). Pass features=DEFAULT_FEATURES,
-        # feature_groups=DEFAULT_GROUPS to reproduce any pre-branch-12 fit.
-        self.features = FEATURES_86_CALIBRATED if features is None else features
+        # feature_groups=DEFAULT_GROUPS to reproduce any pre-branch-12 fit, or
+        # features=FEATURES_86_CALIBRATED for the 2026-07-24 pass that had only
+        # the 8.6 fix.
+        self.features = FEATURES_CALIBRATED if features is None else features
         self.feature_groups = (
             PHYSICAL_GROUPS if feature_groups is None else feature_groups
         )

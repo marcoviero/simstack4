@@ -30,6 +30,7 @@ from simstack4.pah_spectrum import (
     DEFAULT_FEATURES,
     DEFAULT_GROUPS,
     FEATURES_86_CALIBRATED,
+    FEATURES_CALIBRATED,
     build_design_matrix,
     feature_band_curves,
     feature_profile_area,
@@ -139,6 +140,56 @@ class TestCalibratedFeatureStrengths:
             :, 0
         ]
         assert (k_cal[1] / k_def[1]) > (k_cal[0] / k_def[0])
+
+
+class TestCalibratedIntegratedRatios:
+    """The 2026-07-25 calibration of the 11.3+12.7 blend.
+
+    Literature band ratios are INTEGRATED; catalog strengths are unit-PEAK.
+    Conflating the two is what left 12.7 asserted 8.6x too strong.
+    """
+
+    def _integ(self, feats, i, j, profile="drude"):
+        return (feats[j][1] * feature_profile_area(feats[j], profile)) / (
+            feats[i][1] * feature_profile_area(feats[i], profile)
+        )
+
+    def test_default_catalog_has_12p7_inverted_and_inflated(self):
+        """Guards the motivation: the frozen catalog asserts 12.7 >> 11.3."""
+        assert self._integ(DEFAULT_FEATURES, 3, 4) > 3.0
+
+    def test_calibrated_matches_the_measured_integrated_ratio(self):
+        """Hernan-Caballero+2020: R_int(12.7/11.2) = 0.377 +- 0.020.
+
+        Checked against the NUMERICALLY EXACT area, so this is the round trip
+        on _strength_for_integrated_ratio's FWHM-ratio shortcut.
+        """
+        assert self._integ(FEATURES_CALIBRATED, 3, 4) == pytest.approx(0.377, rel=1e-3)
+
+    def test_integrated_ratio_is_profile_independent(self):
+        """The area/FWHM constant cancels, so gaussian must agree with drude."""
+        d = self._integ(FEATURES_CALIBRATED, 3, 4, "drude")
+        g = self._integ(FEATURES_CALIBRATED, 3, 4, "gaussian")
+        assert d == pytest.approx(g, rel=2e-3)
+
+    def test_peak_ratio_is_NOT_the_integrated_ratio(self):
+        """The trap itself: 12.7 is 1.9x wider, so peak != integrated."""
+        peak = FEATURES_CALIBRATED[4][1] / FEATURES_CALIBRATED[3][1]
+        assert peak == pytest.approx(0.377 * 0.24 / 0.45, rel=1e-3)
+        assert abs(peak - 0.377) > 0.15
+
+    def test_calibrated_keeps_the_8p6_fix_and_changes_only_12p7(self):
+        for j, (cal, prev) in enumerate(
+            zip(FEATURES_CALIBRATED, FEATURES_86_CALIBRATED, strict=True)
+        ):
+            if j == 4:
+                assert cal[0] == prev[0] and cal[2] == prev[2]
+                assert cal[1] < prev[1]
+            else:
+                assert cal == prev
+
+    def test_model_defaults_to_the_fully_calibrated_list(self):
+        assert PAHSpectrumModel().features == FEATURES_CALIBRATED
 
 
 class TestDesignMatrix:
