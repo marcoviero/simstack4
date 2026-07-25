@@ -29,16 +29,29 @@ from simstack4.pah_dither import (
 from simstack4.pah_spectrum import (
     DEFAULT_FEATURES,
     DEFAULT_GROUPS,
+    FEATURES_86_CALIBRATED,
     build_design_matrix,
     feature_band_curves,
     feature_profile_area,
+    get_bandpass,
     group_weights,
+    rescale_feature_strength,
     solve_linear_amplitudes,
     warm_band_curve,
     warm_continuum_kernel,
 )
 
 PARAM_TOL = 0.20
+
+# TruthSpectrum injects with DEFAULT_FEATURES/DEFAULT_GROUPS, while
+# PAHSpectrumModel now defaults to the welded-at-physical configuration
+# (FEATURES_86_CALIBRATED/PHYSICAL_GROUPS). These sim→fit round-trips test the
+# GLS recovery, not the grouping convention, so they pin the fitter to the
+# simulator's template explicitly.
+LEGACY_TEMPLATE = {
+    "features": DEFAULT_FEATURES,
+    "feature_groups": DEFAULT_GROUPS,
+}
 
 
 @pytest.fixture(scope="module")
@@ -73,6 +86,59 @@ class TestGroupWeights:
         feats = [(6.2, 0.0, 0.19), (7.7, 0.0, 0.70)]
         w = group_weights(feats, [[0, 1]])
         assert np.allclose(w[0], 1.0)
+
+
+class TestCalibratedFeatureStrengths:
+    """The 2026-07-23 within-group calibration of the 7.7+8.6 blend."""
+
+    def test_rescale_touches_only_the_named_strength(self):
+        out = rescale_feature_strength(DEFAULT_FEATURES, 2, 0.25)
+        assert out[2] == (DEFAULT_FEATURES[2][0], 0.25, DEFAULT_FEATURES[2][2])
+        for j, feat in enumerate(out):
+            if j != 2:
+                assert feat == DEFAULT_FEATURES[j]
+        # the input list must not be mutated
+        assert DEFAULT_FEATURES[2][1] == pytest.approx(0.6089)
+
+    def test_default_blend_is_8p6_dominated(self):
+        """Guards the motivation: the frozen catalog makes 8.6 the group peak."""
+        w = group_weights(DEFAULT_FEATURES, [[1, 2]])[0]
+        assert w[1] > w[0]  # 8.6 outweighs 7.7 — backwards vs observed spectra
+
+    def test_calibrated_blend_is_7p7_dominated_at_the_fixed_ratio(self):
+        w = group_weights(FEATURES_86_CALIBRATED, [[1, 2]])[0]
+        assert w[0] == pytest.approx(1.0)  # 7.7 is now the group peak
+        assert w[1] == pytest.approx(
+            0.5, abs=1e-3
+        )  # fixed drop-in 8.6/7.7 (not a measurement)
+
+    def test_calibrated_list_differs_from_default_only_at_8p6(self):
+        assert len(FEATURES_86_CALIBRATED) == len(DEFAULT_FEATURES)
+        for j, (cal, dflt) in enumerate(
+            zip(FEATURES_86_CALIBRATED, DEFAULT_FEATURES, strict=True)
+        ):
+            if j == 2:
+                assert cal[0] == dflt[0] and cal[2] == dflt[2]
+                assert cal[1] < dflt[1]
+            else:
+                assert cal == dflt
+
+    def test_calibrated_blend_reweights_the_band_integrated_template(self):
+        """The calibration must re-shape the blend's kernel, not just relabel it.
+
+        group_weights renormalizes to the group's strongest member, so the
+        calibration moves weight from the 8.6 side to the 7.7 side: the
+        band-integrated template must rise where MIPS 24 samples rest 7.7 µm
+        (z≈2.1) relative to where it samples 8.6 µm (z≈1.8).
+        """
+        lam_eff = get_bandpass("MIPS_24").lam_eff
+        z_77, z_86 = lam_eff / 7.7 - 1.0, lam_eff / 8.6 - 1.0
+        z = np.array([z_86, z_77])
+        k_def = feature_band_curves(z, "MIPS_24", DEFAULT_FEATURES, [[1, 2]])[:, 0]
+        k_cal = feature_band_curves(z, "MIPS_24", FEATURES_86_CALIBRATED, [[1, 2]])[
+            :, 0
+        ]
+        assert (k_cal[1] / k_def[1]) > (k_cal[0] / k_def[0])
 
 
 class TestDesignMatrix:
@@ -171,9 +237,9 @@ class TestDrudeProfile:
             )
         df = pd.DataFrame(rows)
         kw = {"feature_groups": [[1, 2]], "bands": ("MIPS_24",), "sigma_z0": 0.01}
-        K_g = PAHSpectrumModel(**kw)._prepare(
-            df, None, None, None, None, None
-        )["bins"][0]["K"]
+        K_g = PAHSpectrumModel(**kw)._prepare(df, None, None, None, None, None)["bins"][
+            0
+        ]["K"]
         K_d = PAHSpectrumModel(**kw, profile="drude")._prepare(
             df, None, None, None, None, None
         )["bins"][0]["K"]
@@ -329,7 +395,7 @@ def mass_sim():
 
 class TestFitLstsq:
     def test_recovers_amplitudes_and_Tw(self, mass_sim):
-        model = PAHSpectrumModel(sigma_z0=0.01)
+        model = PAHSpectrumModel(**LEGACY_TEMPLATE, sigma_z0=0.01)
         res = model.fit_lstsq(
             mass_sim["sim"]["df"],
             cov=mass_sim["sim"]["cov"],
@@ -346,7 +412,7 @@ class TestFitLstsq:
             assert np.all(rel < PARAM_TOL), (i, rel)
 
     def test_fix_T_w_skips_optimization(self, mass_sim):
-        model = PAHSpectrumModel(sigma_z0=0.01)
+        model = PAHSpectrumModel(**LEGACY_TEMPLATE, sigma_z0=0.01)
         res = model.fit_lstsq(
             mass_sim["sim"]["df"],
             cov=mass_sim["sim"]["cov"],
@@ -357,7 +423,7 @@ class TestFitLstsq:
         assert res.theta_err[0] == 0.0
 
     def test_per_bin_results_attached(self, mass_sim):
-        model = PAHSpectrumModel(sigma_z0=0.01)
+        model = PAHSpectrumModel(**LEGACY_TEMPLATE, sigma_z0=0.01)
         res = model.fit_lstsq(
             mass_sim["sim"]["df"],
             cov=mass_sim["sim"]["cov"],
@@ -372,7 +438,7 @@ class TestFitMcmc:
     def test_beta_mass_recovery(self, mass_sim):
         """The pooled evolution slope is recovered within 3σ (and grossly,
         within 0.15 absolute)."""
-        model = PAHSpectrumModel(sigma_z0=0.01)
+        model = PAHSpectrumModel(**LEGACY_TEMPLATE, sigma_z0=0.01)
         res = model.fit_mcmc(
             mass_sim["sim"]["df"],
             cov=mass_sim["sim"]["cov"],
@@ -386,7 +452,7 @@ class TestFitMcmc:
         assert res.acceptance_fraction > 0.15
 
     def test_log_a0_recovery(self, mass_sim):
-        model = PAHSpectrumModel(sigma_z0=0.01)
+        model = PAHSpectrumModel(**LEGACY_TEMPLATE, sigma_z0=0.01)
         res = model.fit_mcmc(
             mass_sim["sim"]["df"],
             cov=mass_sim["sim"]["cov"],
@@ -409,7 +475,7 @@ class TestFitMcmc:
         sim = simulate_dithered_fluxes(
             scheme, truth, n_total=300_000, sigma_z0=0.02, f_cat=0.05, seed=9
         )
-        model = PAHSpectrumModel(sigma_z0=0.02, f_cat=0.05)
+        model = PAHSpectrumModel(**LEGACY_TEMPLATE, sigma_z0=0.02, f_cat=0.05)
         res = model.fit_lstsq(sim["df"], cov=sim["cov"], scheme=scheme)
         pull = (res.A[0][:4] - truth.amplitudes()[:4]) / res.A_err[0][:4]
         assert np.all(np.abs(pull) < 3.5), pull
@@ -417,7 +483,7 @@ class TestFitMcmc:
     def test_full_cov_vs_diagonal_errors(self, mass_sim):
         """Dropping the shared-source correlations changes the GLS weights;
         the full-covariance chi² stays near 1 while errors remain finite."""
-        model = PAHSpectrumModel(sigma_z0=0.01)
+        model = PAHSpectrumModel(**LEGACY_TEMPLATE, sigma_z0=0.01)
         res_full = model.fit_lstsq(
             mass_sim["sim"]["df"],
             cov=mass_sim["sim"]["cov"],
@@ -439,7 +505,7 @@ class TestFitMcmc:
 class TestPseudoSpectrum:
     def test_pseudo_spectrum_schema_and_peak(self, mass_sim):
         """The continuum-normalized excess peaks near the 7.7 µm complex."""
-        model = PAHSpectrumModel(sigma_z0=0.01)
+        model = PAHSpectrumModel(**LEGACY_TEMPLATE, sigma_z0=0.01)
         res = model.fit_lstsq(
             mass_sim["sim"]["df"],
             cov=mass_sim["sim"]["cov"],
