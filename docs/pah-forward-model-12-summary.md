@@ -233,6 +233,59 @@ Added as a fourth group they fit **r = −0.103 ± 0.003**, negative at ~34σ. �
 signature as the rejected plateau. They are sampled (MIPS 24 at z≈0.4, MIPS 70 at z≈3.3, both
 inside the data's 0.35–5.75), so this is not a coverage problem. Keep them out.
 
+## 3c. Gaussians removed (2026-07-25)
+
+Two Gaussian foot-guns, both the same shape: **a default that silently disagreed with the
+fit.**
+
+**The L_PAH conversion.** `lshape_at_z` was a copy-pasted ~15-line block in ~20 notebooks;
+every copy defaulted to `DEFAULT_FEATURES` and hard-coded a Gaussian. So the luminosity
+conversion used the mis-calibrated catalog *and* the wrong line shape while the fit used
+`FEATURES_CALIBRATED` + Drude. Because each mass bin has its own `r` vector this does **not**
+cancel — on the real per-bin vectors it moved the L_PAH mass slope from −0.011 to +0.036,
+flipping the sign. Now `pah_spectrum.feature_template_luminosity`, with no silent template
+defaults, the flux→luminosity normalization preserved exactly, and an `exclude` hook for
+non-PAH lines welded into a PAH group ([Ne II]).
+
+**Four library defaults were `"gaussian"`** — `feature_profile_area`, `feature_band_curves`,
+`build_design_matrix`, `PAHSpectrumModel` — kept for backward compatibility, which is
+precisely how the above went unnoticed. All Drude now; gaussian stays explicit for the
+systematic row. A guard test asserts every public entry point defaults to Drude.
+
+**The simulator was Gaussian too.** `TruthSpectrum.rest_spectrum` hard-coded
+`np.exp(-0.5·…)`, so once the fitter moved to Drude the simulator was *injecting one shape
+and fitting another*. Six sim→fit recovery tests failed the moment the defaults flipped —
+they had been passing because both sides were wrong together. `TruthSpectrum` now has a
+`profile` field, Drude by default.
+
+### Effect on the numbers
+
+L_PAH rose ~34% (Drude areas are ×1.46 the Gaussian). That is the right direction: the pivot
+L_PAH/L_IR is now 12.8%, 11.6%, 7.0% at z = 0.95/1.90/2.95, **bracketing Smith+2007's local
+≈10%**, where the Gaussian version gave 9.3%, 8.5%, 5.1%. The bridge L_CII/L_PAH = 0.048 is
+itself derived from a Drude/PAHFIT L_PAH/L_TIR, so the two are only now on the same
+convention.
+
+Slopes barely moved — the all-z L_PAH/L_IR slope is unchanged at +0.120 ± 0.024, and the
+crossing shifted by a uniform ~+0.023:
+
+| | before | after |
+|---|---|---|
+| crossing z~1 | +0.356 ± 0.024 | **+0.379 ± 0.024** |
+| crossing z~2 | −0.032 ± 0.057 | **−0.009 ± 0.057** |
+| crossing z~3 | −0.724 ± 0.116 | **−0.700 ± 0.116** |
+| F-test | F=39.17, p=0.0002 | F=37.72, p=0.0002 |
+| self-consistent z~1 | +0.363 ± 0.013 | +0.391 ± 0.017 |
+
+**LIM consequence, reported plainly:** our [CII] forecast moved from 1.3–1.8× Chiang to
+**1.7–2.4×**. Agreement got *worse* as the model got more self-consistent. A factor ~2 sits
+inside the bridge (×0.56–1.44) combined with Chiang's ±35%, but we are on the high side and
+the notebook says so rather than presenting it as a match.
+
+**Notebook scope:** nine notebooks dated 2026-07-19 or later carry the `lshape_at_z` bug.
+Only `2026-07-24-pah-money-plots-wider-z-bins` (the live one) was rewired and re-run; the
+other eight are superseded records and were left as-is.
+
 ## Open / next
 
 - Quantify the trough shape: does a second absorption component (18 µm silicate) or a
