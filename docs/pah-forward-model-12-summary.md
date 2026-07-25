@@ -7,8 +7,15 @@ instead of fitting a free amplitude per group, then add the two missing physical
 residual inflating χ².
 
 **Headline: the residual is absorption, not a missing emission plateau.** The plateau
-hypothesis is rejected by the data; silicate is detected at τ ≈ 0.55 and it, not the 8.6 µm
-split, is what had been inflating the within-bin evolution slope η_A.
+hypothesis is rejected by the data; a 9.7 µm silicate screen is required and it, not the
+8.6 µm split, is what had been inflating the within-bin evolution slope η_A.
+
+**Amendment (2026-07-25):** a second welded blend, 11.3+12.7, was found to be miscalibrated
+in the frozen catalog by ×8.6 and has been corrected against a measured value (§3b). The
+crossing — the science result — survives essentially intact. But with the corrected template
+τ_sil rises to ≈1.0, which is ULIRG-like and implausible for main-sequence galaxies, so
+**τ_sil should now be quoted as an upper limit**, not the clean detection the ≈0.55 value
+looked like. See §3b for why.
 
 ## What was built
 
@@ -159,6 +166,72 @@ pull χ²_red toward 1; they do not. The remaining excess is consistent with the
 finding that it is real galaxy-to-galaxy PAH scatter, not baseline error. The negative-plateau
 fit reaching 3.95 says the trough is somewhat deeper or broader than a pure 9.7 µm Drude
 screen — a shape refinement worth a future look, not a fit failure.
+
+## 3b. The 11.3+12.7 weld was miscalibrated too — and fixing it degrades τ_sil
+
+The 8.6 recalibration had a sibling nobody checked. `DEFAULT_FEATURES` gives 12.7 a strength
+of 0.5187 against 11.3's 0.30 **and** a 1.9× wider FWHM, so the asserted **integrated**
+12.7/11.3 was **3.24** — the pair inverted and inflated ×8.6. It was visible as 12.7 towering
+over 7.7 in the fingerprints notebook's opening spectrum.
+
+**The units trap that caused it:** literature band ratios are **integrated**; catalog
+strengths are unit-**peak**; they differ by the FWHM ratio. `_strength_for_integrated_ratio`
+now enforces the conversion so nothing calibrated off a published ratio can repeat it.
+
+**Measured value:** R_int(12.7/11.2) = **0.377 ± 0.020** from 105 high-S/N Spitzer/IRS
+star-forming galaxy spectra (Hernán-Caballero et al. 2020, MNRAS 497, 4614), ~5% dispersion,
+explicitly independent of optical depth — i.e. genuinely near-constant, which is exactly what
+a welded group assumes. Better-founded than the 8.6 weld, which is a prior.
+
+**Welding is confirmed by the data.** Released, the fitted integrated ratio is fold-unstable
+at 0.914 ± 0.737 (folds 0.30 / 0.33 / 2.12); the pooled 0.431 was luck. Same verdict as 8.6.
+
+### What it does to the fit, and why
+
+| fold ensemble | 8.6 only | + 12.7 corrected |
+|---|---|---|
+| τ_sil | 0.551 ± 0.010 | **1.030 ± 0.040** |
+| η_A | +0.031 ± 0.041 | **−0.246 ± 0.030** |
+| A_pah mass slope | +0.356 ± 0.066 | +0.277 ± 0.065 |
+| χ²_red | 4.65 | 4.67 |
+
+Mechanism (measured, not inferred): weakening 12.7 does **not** move the welded template's
+peak — the MIPS kernel is ~5 µm wide, so 11.3 and 12.7 are one blur — but it **reshapes** it.
+The low-z wing at z≈0.73 shrinks and the relative weight at **z=1.5 rises ×2.67**. MIPS 24
+samples the 9.7 µm trough at **z=1.46**. So the corrected template puts more emission exactly
+where the trough is, and the fit deepens the trough to cancel it. The group's absolute
+normalization also drops (×0.60 at 24 µm, ×0.20 at 70 µm), so the fitted r rises to 2.19 to
+compensate.
+
+**Why τ_sil is now an upper limit.** The welded group must carry *all* in-band flux at rest
+~11–13 µm. That window contains more than PAH 11.3 + PAH 12.7 — most importantly **[Ne II]
+12.81 µm**, unresolved at MIPS R≈2.4 but *separated out* by the PAHFIT decomposition behind
+the 0.377. So 0.377 is the correct **pure-PAH** ratio and an **under-estimate of the in-band
+12.7 complex** for broadband tomography; the catalog's 3.24 was crudely standing in for the
+difference. τ_sil ≈ 1.0 (A_V ≈ 18) is therefore partly absorbing unmodelled 11–13 µm
+emission. The posterior says the same thing: corr(log r(11.3+12.7), τ_sil) rose +0.39 → +0.57.
+**Open item:** recalibrate the weld against a *low-resolution* 12.7-complex/11.3 ratio that
+includes [Ne II], which is what our broadband measurement actually sees.
+
+### The science survives
+
+| z-slice crossing | 8.6 only | + 12.7 corrected |
+|---|---|---|
+| z~1 | +0.442 ± 0.035 | **+0.356 ± 0.024** (15σ) |
+| z~2 | +0.027 ± 0.061 | **−0.032 ± 0.057** |
+| z~3 | −0.680 ± 0.117 | **−0.724 ± 0.116** (6σ) |
+| α_wien | 1.917 | **2.063** |
+
+Strongly positive → through zero → strongly negative, unchanged in character; z~1 softens
+~20%, z~3 steepens slightly, and α_wien moves *closer* to the physical 2.0 — a mild
+independent vote for the corrected catalog.
+
+### 16.4+17.0 — re-asked, still excluded
+
+Added as a fourth group they fit **r = −0.103 ± 0.003**, negative at ~34σ. χ²_red drops
+4.67 → 3.67, but by exploiting an unphysical *negative emission* component — the same
+signature as the rejected plateau. They are sampled (MIPS 24 at z≈0.4, MIPS 70 at z≈3.3, both
+inside the data's 0.35–5.75), so this is not a coverage problem. Keep them out.
 
 ## Open / next
 
