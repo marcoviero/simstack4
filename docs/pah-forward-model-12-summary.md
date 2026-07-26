@@ -327,12 +327,54 @@ hook: [Ne II]12.81/11.3 is known to vary with stellar-population age (an sSFR pr
 If the resulting bracket is comparable to the fold error, build the sSFR-dependent version on
 the existing `η` machinery — **not** a fixed weld.
 
+### RETIRED 2026-07-26 — both bracket parameters measured, systematic is ≤0.01 dex/dex
+
+`notebooks/build_neii_systematic.py` measures both quantities from **Smith et al. 2007**
+(ApJ 656, 770; SINGS PAHFIT decompositions, VizieR J/ApJ/656/770), which tabulates the 11.3
+and 12.6 µm PAH complexes *and* the [Ne II] 12.813 µm line in the same apertures, with
+`LIR/LB` as an sSFR proxy. Restricted to the 25 H II nuclei (AGN suppress PAH and boost
+high-ionisation lines) spanning 1.98 dex in the proxy:
+
+| quantity | §3d assumed | **measured** |
+|---|---|---|
+| [Ne II] fraction of the 11–13 µm group | 0.10 / 0.20 / 0.30 | **0.064** (16–84 %: 0.052–0.094) |
+| d log([Ne II]/PAH 11.3) / d log sSFR | 0.0 / 0.5 / 1.0 | **+0.109 ± 0.065** (95 % ≤ +0.301) |
+
+The assumed gradient bracket is excluded: **P(g > 0.5) = 0.001**. Propagating both through
+`d log r_obs/d log M* = d log r_true/d log M* + [u/(1+u)]·g·(d log sSFR/d log M*)` with
+u = f/(1−f) and d log sSFR/d log M* = −0.31:
+
+| f | g | bias |
+|---|---|---|
+| 0.064 (median) | +0.109 (measured) | **−0.0022** |
+| 0.094 (84th pct) | +0.301 (95 % upper) | **−0.0088** |
+
+Even combining the 84th-percentile contamination with the 95 %-upper gradient the bias is
+**−0.009 dex/dex**, ~6× below the fold error (0.052) on a measured slope of −0.341 — versus
+the +0.04 to +0.08 that was being carried. **Stop quoting a [Ne II] systematic on the band
+ratio.** Two of the three residual caveats are conservative: `LIR/LB` compresses relative to
+true sSFR (L_B has a young component), so the true gradient is ≤ the measured one; and SINGS
+apertures are nuclear while [Ne II] is more centrally concentrated than 11.3 µm PAH
+(Pereira-Santaella+2010), so f is over-estimated. The one open caveat is redshift — SINGS is
+z ≈ 0 and our galaxies are z ≈ 1–3 main-sequence at higher sSFR.
+
+**Flagged in passing, not acted on:** Smith+2007 gives PAH **12.6/11.3 = 0.590** (median,
+16–84 % 0.487–0.640) for SINGS H II nuclei, against the **0.377 ± 0.020** from
+Hernán-Caballero+2020 that `FEATURES_CALIBRATED` welds to. Both are integrated ratios, so
+they are directly comparable, and they differ by 1.6×. Different samples (SINGS normal
+galaxies vs 105 SF galaxies) and slightly different feature definitions ("12.6 complex" vs
+"12.7") plausibly explain it — but branch-12 has already learned that this ratio matters
+(correcting it drove τ_sil 0.55 → 1.03), so it deserves a dedicated check rather than a
+footnote.
+
 The library hook is in place and unused: `NON_PAH_FEATURES` (empty) and the `exclude`
 argument of `feature_template_luminosity`, so a non-PAH line can be welded into a PAH group
 and kept out of L_PAH whenever that becomes worth doing.
 
-**How to quote the band ratio meanwhile:** fold error, plus a [Ne II] systematic of
-+0.04 to +0.08 on the mass slope (one-sided — the contamination can only flatten it).
+**How to quote the band ratio:** fold error only — the [Ne II] systematic is measured at
+≤0.01 dex/dex (see RETIRED note above) and is no longer carried. *Superseded text: "fold
+error, plus a [Ne II] systematic of +0.04 to +0.08 on the mass slope (one-sided — the
+contamination can only flatten it)."*
 
 ## Open / next
 
