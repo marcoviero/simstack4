@@ -424,3 +424,103 @@ Measured inputs are **recomputed, not transcribed**: slope and pivot now come ou
 the same `zr_pool` matrix in one script, which is what let them drift apart before.
 Branch-12 values: slope +0.442/+0.027/−0.680, pivot log(L_PAH/L_IR)@10.5 =
 −0.918/−1.161/−1.321 at z = 0.95/1.90/2.95.
+
+---
+
+## 3e. Robustness sweep and the re-stack (2026-07-25, evening)
+
+Four checks on the headline, all executed on real data. Two systematics closed, one
+retracted claim, one new rule.
+
+**1. Hot dust is not detected — it cannot be driving the z~3 slope.**
+`hot_amp` pins at exactly zero in every mass bin, on both datasets, for both the
+branch-11 ladder `(600, 1000) K` and PAHFIT's `(135, 300) K`, in the well-posed
+full-z fit (χ²_red 5.7–8.6, 168 / 79 points). The rest 4–7 µm excess flagged in
+branch-11 is not requested by these stacks, so the hot-dust/AGN continuum is
+eliminated as the explanation for the negative z~3 mass slope.
+
+**Do not run the ladder on a z-window.** Restricted to z = 2.4–3.5 (16–48 points) the
+fit cannot constrain per-bin (C_m, α_m) + shared ratios + two hot amplitudes per bin.
+It returns unphysical amplitudes (A = −128 in one bin) and slopes that swing 1.4
+dex/dex between models whose rungs are *all pinned at zero* — i.e. different local
+minima, not a physical difference. χ²_red ≈ 1.0 there, against ≈ 4.6–8.6 full-range,
+is the diagnostic.
+
+**2. The live fragility is free α, not τ_sil.**
+With `fit_with_alpha` (α floating), adding an *inert* ladder — amplitudes zero,
+contributing nothing to χ² — still moved the full-range mass slope of A by **0.90
+dex/dex including a sign flip** (+0.403 → +0.127 → −0.495), with τ_sil absorbing the
+difference (0.14 → 0.37 → 0.71). Zero-amplitude columns cannot change χ², so this is
+the outer optimizer settling in a different (α, τ_sil) mode. **Never quote a
+full-range mass slope of A from a free-α fit.** α stays fixed at 2.0 (branch-11).
+
+**3. With α fixed, the crossing is robust to τ_sil.**
+Pinning τ_sil at 0 / 0.35 / 0.70 — the full range from "no silicate" to the
+implausible A_V ≈ 18 value — moves each slice slope by ≤ 0.04 and the swing by ≤ 0.08
+dex/dex, against a fold error of 0.12:
+
+| τ_sil | z~1 | z~2 | z~3 | swing |
+|-------|-----|-----|-----|-------|
+| 0.00 | +0.375 ± 0.021 | −0.030 ± 0.055 | −0.732 ± 0.119 | −1.108 |
+| 0.35 | +0.361 ± 0.025 | −0.023 ± 0.057 | −0.703 ± 0.109 | −1.065 |
+| 0.70 | +0.340 ± 0.028 | −0.026 ± 0.057 | −0.688 ± 0.096 | −1.028 |
+
+τ_sil is common-mode across the z-slices, so it cancels in a differential-in-z
+quantity; it does *not* cancel in the absolute full-range slope. Quote the swing as
+**−1.07 ± 0.12 (stat) ± 0.04 (τ_sil syst)**.
+
+**4. New combined stack `20260725_175228` on a Fisher-chosen binning.**
+`config/cosmos20_PAH_graded.toml` (added here), `cosmos2020_FARMER.csv`, 20 z-bins
+`[0.2, 0.35 … 1.4, 1.6 … 2.6, 2.9, 3.2, 3.5, 4.2, 5.0, 6.0]`, mass
+`[9.0, 9.9, 10.6, 10.8, 11.0, 11.5]`, single un-dithered run. Chosen with
+`fisher_for_scheme` at the combined catalog's source count: 33 % more tomographic
+points than the superseded 15-bin run (`cosmos20_PAH_wide.toml`, also added) at 99 %
+of the maximum achievable Fisher SNR and only ~9 % fewer sources per top-mass cell.
+
+It **removed the z~1 estimator disagreement**: old combined +0.235 vs pooled +0.379;
+new combined **+0.378** vs pooled +0.361, with agreement at every slice. That tension
+was a binning artifact, not a catalog difference.
+
+**Fisher caveat, worth stating once.** CRLB says finer is always marginally better —
+uniform Δz = 0.10 scored highest of everything tested — but it does not model tier
+demotion. At Δz = 0.10, 35 % of (z, mass) cells fall below 100 sources. Always pair
+`fisher_for_scheme` with a per-cell source-count table; the binding constraint is the
+top mass bin (11.0–11.5).
+
+**Retracted.** An apparent step in L_PAH/L_IR at log M* ≈ 10.8 in the z~3 slice does
+not survive. It appears in the combined stack (χ² step 9.58 vs line 15.09) but the
+pooled K-fold — 3× the z-sampling, with fold errors — prefers a line decisively
+(χ² line 4.33 vs step 15.43), and its steepest internal step is only 2.3σ. The z~3
+mass trend is a power law of −0.68 to −0.70. There is no measured threshold in
+stellar mass; the threshold argument rests on the sign flip *between epochs* (D6),
+not on structure within the z~3 trend.
+
+### Notebook additions (`2026-07-24-pah-money-plots-wider-z-bins.ipynb`)
+
+- **§1b** — the band ratio is a **z < 2 measurement**. Measured template leverage peaks
+  at z = 0.85 (11.3+12.7), 1.75 (7.7+8.6), 2.95 (6.2); above z = 2 the neutral group
+  retains 2 % of its peak leverage and its collinearity with the reference reaches
+  0.93–0.95. MIPS 70 does not reopen it (neutral power 0.0017× the 24 µm peak, and no
+  reference sampled there). Restricting to z < 2 leaves the trend intact:
+  **−0.341 ± 0.052 (6.5σ)** vs all-z −0.326 ± 0.054 — the all-z number was
+  mislabelled, not wrong. *Rule*: a windowed ratio solve must keep every group column
+  carrying > 2 % of the reference's weighted power; dropping the 6.2 column over the
+  full range drives the top-bin ratio to −0.601 instead of +0.736.
+- **§3h** — lockstep test (D3) in matched windows. Amplitude mass slope
+  +0.336 ± 0.026 (z<2) / −0.355 ± 0.043 (z>2); band ratio −0.341 ± 0.052 (z<2) / not
+  measurable (z>2). At z<2 the two are opposite and equal, **sum −0.005 ± 0.058**, so
+  d log(α·r_neutral)/d log M* ≈ 0: the neutral-band luminosity per unit L_IR is
+  mass-invariant and the whole positive low-z arm is carried by the ionized 7.7+8.6
+  complex. Caveat: α_m and r_g come from the same decomposition, so an
+  anti-correlation is also the signature of an α–r degeneracy; the degeneracy-robust
+  statement is the one about the product. **D3 cannot be closed at cosmic noon with
+  Spitzer** — a concrete JWST/MIRI instrument case.
+- **§3g** — replaces the retired all-z Narayanan confrontation (§2a, now marked
+  DEMOTED). §2a's bands were slope fans *normalized to our own data*, its branch-A
+  sensitivity was calibrated along the redshift axis and applied along mass, and the
+  all-z slope averages across the sign change — so it read as consistent with branch B
+  while D1/D5 reject branch B at 5–7σ. §3g tests the **swing** instead: holding each
+  bracket combination fixed and differencing across z gives branch A ∈ [−0.06, +0.23]
+  and branch B ≡ 0 (both z-independent because scaling-relation exponents barely
+  evolve), against a measured −1.08 ± 0.12 → **8.6σ beyond the most favourable
+  equilibrium channel**.
