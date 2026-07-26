@@ -180,6 +180,59 @@ If C2 dominates, the letter connects directly to the L_IR/T_dust program: q_PAH 
 T_dust become two hands of one ISM-density variable (denser → warmer dust AND fewer
 PAHs), unifying this result with Viero+22 and the DustEvolutionModel σ_SFR axis.
 
+## The disentangling statement (2026-07-16): C1 vs C2, fleshed out per arm
+
+Start-from-scratch framing for the consolidated notebook. Two facts to explain —
+the crossing (+0.36 → 0 → −0.87) and the 12.7/6.2 band-ratio decline with M* — and
+two candidate explanations, **each a two-arm story**:
+
+- **C1 — two mechanisms, shifting balance.** PAH abundance is *chemistry-limited*
+  where metallicity is low (supply arm: the q_PAH(Z) step, Shivaei+24/Whitcomb+24)
+  and *radiation-limited* where star formation is compact and intense (destruction
+  arm: the local (U)LIRG deficit, Díaz-Santos+11). z~1 positive slope = the MZR
+  read through q_PAH(Z); z~3 negative slope = photo-destruction beating a
+  metallicity gradient that points the other way. The crossing is the *balance of
+  two mechanisms* shifting with z.
+- **C2 — one mechanism, ISM density (Narayanan+26 shattering).** q_PAH is set by
+  grain-grain shattering, efficient only in diffuse gas: gas fraction falling with
+  M* pulls the slope positive; density (Σ_SFR) rising with M* pulls it negative.
+  At z~1 (gas-poor) the first lever dominates; by z~3 everything is gas-rich and
+  the massive galaxies are extremely dense, so suppressed *production* wins. The
+  crossing falls out of one variable with no tuning — and is extractable from
+  their simulation outputs.
+
+The hypotheses pair off arm by arm, and each pairing has its own discriminant:
+
+| | C1 says | C2 says | Discriminant |
+|---|---|---|---|
+| **+ arm (z~1)** | metallicity supply: slope = q_PAH(Z(M*)) through the MZR; our bins sit ON the plateau → predicts ~flat | diffuse-gas production: slope follows falling f_gas / shattering efficiency | D1 (plateau bracket), D2 (gas-tracing null), 1c (Shivaei in-window check) |
+| **− arm (z~3)** | photo-destruction: survivors are *processed* → band-ratio mass trend coupled to the amplitude trend; mediator is radiation (T_dust) | suppressed production: molecules removed without processing → mix ~flat while amplitude inverts; mediator is density (σ_SFR) | D3 (fingerprint), D4 (mediator at fixed M*, z), 1a (fitted Σ_crit vs local deficit onset) |
+| **the package** | two mechanisms whose balance must be tuned to cross | crossing emerges from one variable | D6 (arm decomposition), 1b (Narayanan slope extraction — the decider) |
+
+Scoreboard after the D1–D6 first execution, read within this frame:
+
+- **C1's supply arm as published fails quantitatively at both ends** (D1: measured
+  +0.357 is +5.0σ above the step ceiling at z~1; D5: −0.874 is −7.1σ below the
+  track at z~3). If C1 is right, its + arm needs more than the step — 1c tests
+  whether Shivaei+24's own data allow an intra-plateau rise in our mass window.
+- **D6: neither hypothesis reproduces the swing with equilibrium mean-relation
+  arms** — both survive only in threshold/nonlinear form (locally true for the
+  deficit anyway: normal disks show none, compact (U)LIRG cores do).
+- **The − arm is the live C1-vs-C2 contest** (photo-destruction vs suppressed
+  production), currently degenerate in Σ_SFR; D3/D4/1a/1b are the separators.
+  D3 first pass: inconclusive above z=2.4 (SNR); D4 first pass: directional only.
+- **The + arm is the open flank for both**: C1's candidate is dead as published,
+  C2's is underpowered ~10× at face value (D6 coefficients).
+- **1b is the overall decider**: sims reproduce the crossing → C2 sufficient (one
+  mechanism, C1's step emergent within it); sims fail → C1's destruction arm is
+  required on top of production physics (a C1-style hybrid).
+
+Consolidated narrative notebook: `notebooks/2026-07-16-pah-crossing-two-arms.ipynb`
+(build script `notebooks/build_pah_crossing_two_arms_2026-07-16_notebook.py`),
+organized measurement → eliminations → the C1-vs-C2 contest per arm → verdict →
+plan, superseding the test-ordered `2026-07-11-two-arms-tests.ipynb` as the
+reading copy (that notebook remains the D1–D6 execution record).
+
 ## Ranked candidates — 12.7/6.2 decline with M*
 
 **B1. Charge: PAHs in massive galaxies are more ionized.** 6.2 µm is a C–C mode enhanced
@@ -236,3 +289,58 @@ letter. Nature/Science requires a calibrated significance we cannot currently su
 (single field, fold-scatter errors, p=0.005 explicitly uncalibrated) — revisit only if
 the Narayanan confrontation yields a spectacular quantitative match or failure AND a
 second field or bootstrap-over-sources delivers a defensible p-value.
+
+---
+
+## D4 feasibility — measured 2026-07-26 (before building anything)
+
+**The lever exists.** `notebooks/build_d4_lever_check.py` on
+`cosmos25_stacking_20260317_201727` (5 z × 4 mass × 5 σ_SFR): projecting
+(z, log M*) out of both mediators leaves partial corr(T_dust, log σ_SFR | z, logM)
+= **+0.12 to +0.19** — only 1–4 % shared variance. The two are *separable*; the
+worry that they are collinear on the main sequence is not supported. Independent
+T_dust lever 5.1–5.6 K vs a 2.2–2.3 K median error → **S/N ≈ 2.3**.
+
+**Why the first pass was inconclusive — probably cell count, not collinearity.**
+The PAH amplitude comes from the tomographic z-sweep, so it is measured per
+*(mass, σ_SFR)* cell, not per (z, mass, σ_SFR) cell. A 2×3 grid gives **6
+amplitudes**; a 3×3 grid gives 9. A partial correlation over 6–9 points has no
+power. The fix is the z-sliced amplitude machinery the crossing already uses
+(`zslice_ratios`), which lifts this to 18–27 cells.
+
+**COSMOS2020 cannot do D4 at all**: its PAH catalogs carry 11–13 columns and no
+size/Sérsic information, so Σ_SFR = SFR/(2πR_e²) is not computable. COSMOSWeb has
+`radius_sersic` and a ready-made `log_sigma_sfr`. D4 is a COSMOS25 experiment.
+
+**The existing 4 dithered June-15 runs are nearly right but mis-binned.**
+`20260614_203609 / 220935 / 230839 / 20260615_000803` (21 z-bins × 2 mass × 3
+σ_SFR, ¼-bin offsets) give excellent tomography — 75–83 z-points per (mass,σ)
+cell, T_dust median error 1.69 K, 472/489 cells passing physicality+error cuts.
+But their σ_SFR edges `[-2.5, -1.25, 0.5, 2.5]` split the sample **29 / 67 / 4 %**:
+two-thirds in one bin, 4 % in the top bin (median 50 sources/cell). That washes
+out the σ_SFR contrast and drops the lever to **S/N 1.62**.
+
+**Recommended re-stack** (COSMOSWeb, `COSMOSWeb_stacking_catalog_all_sf_qt`,
+84 892 usable in z = 0.2–6, logM = 9–11.5). Terciles lift the binding
+(top-mass × top-σ) cell from 27 → 67 sources; a 4th mass bin collapses it to 13:
+
+```toml
+[catalog.classification.binning.redshift]
+bins = [0.2, 0.35, 0.5, 0.65, 0.8, 0.95, 1.1, 1.25, 1.4,
+        1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.9, 3.2, 3.5, 4.2, 5.0, 6.0]
+[catalog.classification.binning.stellar_mass]
+bins = [9.0, 10.0, 10.7, 11.5]
+[catalog.classification.binning.sigma_sfr]     # catalog terciles — the key fix
+bins = [-9.0, -1.07, -0.32, 9.0]
+```
+
+**Expect a marginal result**: lever S/N ≈ 2.3, ~18–27 correlation cells, ~42 % of
+cells under 100 sources. Worth running — it is the test that separates destruction
+from suppressed production — but plan for "suggestive, not decisive".
+
+**GOTCHA that nearly inverted the verdict.** The fit-quality TIER grades band SNR,
+not whether the SED fit converged. One cell in the 20260317 grid has T_dust = 140 K
+with a **1514 K** error bar and is labelled **Tier A**. Left in, it alone doubles
+the apparent lever (S/N 5.3 vs the true 2.3). Anything consuming T_dust needs an
+explicit physicality + error cut; Tier A/B filtering does not protect against
+railed or unconstrained temperature fits.
