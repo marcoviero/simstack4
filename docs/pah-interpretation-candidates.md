@@ -344,3 +344,47 @@ with a **1514 K** error bar and is labelled **Tier A**. Left in, it alone double
 the apparent lever (S/N 5.3 vs the true 2.3). Anything consuming T_dust needs an
 explicit physicality + error cut; Tier A/B filtering does not protect against
 railed or unconstrained temperature fits.
+
+## D4 first execution on the 20260726 re-stack — NOT answerable, needs dithering
+
+`cosmos25_stacking_20260726_105516` (COSMOSWeb sersic, 20 graded z-bins, mass
+[9.0, 10.0, 10.7, 11.5], σ_SFR at catalog terciles [-9, -0.96, -0.27, 9], SINGLE
+un-dithered run). Nuisance mass bin (9.0–10.0) excluded per convention → 91 rows,
+6 (mass, σ_SFR) cells, 13–16 z-points each.
+
+**The ratio block cannot be fit here.** Free group ratios rail: r(6.2) = −0.83
+overall, r(11.3+12.7) = **+28.6** in one σ bin, r(6.2) = **+6.35** in one mass bin.
+This is *not* a model problem — the identical model on COSMOS2020 gives
+r(6.2) = +0.56 to +1.14, well determined. Nor is it the low-z anchor: cutting
+COSMOS2020 to z ≥ 0.57 (this stack's floor) leaves r(6.2) = +1.04 unchanged. It is
+simply too little data spread over too many cells.
+
+**Fix: fix the shape, fit only the amplitude.** D4 needs α per cell, not the
+template. `notebooks/build_d4_amplitudes.py` bakes the COSMOS2020-measured ratios
+into the feature strengths and welds all features into one group, so r ≡ 1 with
+nothing to fit and each cell contributes only (C_m, α_m). That fit is clean:
+χ²_red = 4.88, τ_sil = 0.45, all six amplitudes positive.
+
+**Result: inconclusive.** partial corr(logA, T_dust | logM, logσ) = −0.694 (C1
+radiation); partial corr(logA, logσ | logM, T_dust) = +0.699 (C2 density). With
+N = 6 and two controls, dof = 2 and the critical |r| is **≈0.95** — neither is
+close. The two partials being near-mirror-images while the raw correlations are
+tiny (−0.069, +0.134) is the signature of two correlated predictors splitting
+noise, and the amplitudes run non-monotonically in σ_SFR in *opposite* directions
+in the two mass bins.
+
+**z-slicing to 18 cells makes it worse, not better.** Window solves get only 3–6
+points: 6 of 16 cells return negative amplitudes and the positives span 0.015 to
+23.8. A partial correlation computed on the 10 positive cells returns "significant"
+(−0.85) but that is **selection on the dependent variable** and must not be quoted.
+
+**What is actually needed: DITHER OFFSETS.** The advice to use a single run was
+wrong for this application. Fisher/CRLB prices the *global* fit and correctly says
+oversampling is near information-neutral there — but it says nothing about whether
+each z-window has enough points to solve. The June-15 runs (4 offsets) had 75–83
+z-points per (mass,σ) cell; this one has 15, so each window gets 3–6. Re-run the
+same bins with **3–4 offsets** (stagger the z edges by ⅓–¼ of the local bin width)
+→ 45–60 z-points per cell, 15–20 per window, dof ≈ 12 and a critical |r| of ~0.55.
+
+**Rule to carry:** when an analysis solves inside sub-windows, Fisher on the global
+fit is the wrong figure of merit. Count points per window.
