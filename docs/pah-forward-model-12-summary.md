@@ -367,6 +367,32 @@ galaxies vs 105 SF galaxies) and slightly different feature definitions ("12.6 c
 (correcting it drove τ_sil 0.55 → 1.03), so it deserves a dedicated check rather than a
 footnote.
 
+**Checked 2026-07-26 — harmless.** Sweeping the welded integrated ratio over
+0.377 / 0.487 / 0.590 / 0.640 (Hernán-Caballero, then the SINGS 16th / median / 84th
+percentiles) and refitting end-to-end:
+
+| r(12.7/11.3) | τ_sil | α_wien | χ²_red | z~1 | z~2 | z~3 | swing |
+|---|---|---|---|---|---|---|---|
+| 0.377 (pooled) | 0.14 | 2.16 | 8.55 | +0.378 | −0.006 | −0.728 | −1.107 |
+| 0.640 (pooled) | 0.13 | 2.18 | 8.22 | +0.362 | +0.004 | −0.735 | −1.097 |
+| 0.377 (combined) | 0.33 | 2.12 | 5.96 | +0.418 | +0.033 | −0.692 | −1.110 |
+| 0.640 (combined) | 0.33 | 2.13 | 5.60 | +0.395 | +0.038 | −0.694 | −1.090 |
+
+**τ_sil does not move** (≤0.01), slice slopes shift by ≤0.023 against fold errors of
+0.024 / 0.057 / 0.116, and the swing moves by ≤0.02 against its 0.12 stat error. The
+contrast with the earlier recalibration is instructive: 3.24 → 0.377 was 8.6× *and*
+inverted which feature dominates the blend, so the template shape changed
+qualitatively; 0.377 → 0.590 is 1.6× with 11.3 still dominant, so it barely deforms.
+
+χ²_red improves monotonically toward the higher ratio in both datasets, i.e. the data
+mildly prefer the SINGS value — but at χ²_red ≈ 6–8 the fit is scatter-dominated and the
+errors do not describe galaxy-to-galaxy PAH scatter, so this cannot be turned into a
+significance. **Keep 0.377 as the default** (Hernán-Caballero+2020 is the better-matched
+sample: 105 star-forming galaxies, extinction-independent, vs 25 SINGS H II nuclei) and
+carry ≤0.02 dex/dex as a template systematic on the crossing. Reproduce with the sweep in
+`notebooks/build_neii_systematic.py`'s companion path (scratch script; the numbers above
+are the record).
+
 The library hook is in place and unused: `NON_PAH_FEATURES` (empty) and the `exclude`
 argument of `feature_template_luminosity`, so a non-PAH line can be welded into a PAH group
 and kept out of L_PAH whenever that becomes worth doing.
