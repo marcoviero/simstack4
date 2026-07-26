@@ -38,7 +38,11 @@ from simstack4.pah_dither import (
     _draw_redshifts,
     make_dndz,
 )
-from simstack4.pah_spectrum import PAHSpectrumModel
+from simstack4.pah_spectrum import (
+    DEFAULT_FEATURES,
+    DEFAULT_GROUPS,
+    PAHSpectrumModel,
+)
 
 BAND_SPECS = {
     "MIPS_24": {"wavelength": 24.0, "beam_fwhm": 6.0, "pixel_scale": 2.0},
@@ -318,7 +322,16 @@ def run_endtoend(
     df = pd.DataFrame(rows)
 
     # --- deconvolve ---------------------------------------------------------
-    model = PAHSpectrumModel(sigma_z0=sigma_z0, f_cat=f_cat)
+    # Pin the fitter to the simulator's template: TruthSpectrum injects with
+    # DEFAULT_FEATURES/DEFAULT_GROUPS, while the model now defaults to the
+    # welded-at-physical configuration. This is an injection-recovery check,
+    # so the two must match.
+    model = PAHSpectrumModel(
+        features=DEFAULT_FEATURES,
+        feature_groups=DEFAULT_GROUPS,
+        sigma_z0=sigma_z0,
+        f_cat=f_cat,
+    )
     result = model.fit_lstsq(df, scheme=scheme, dndz=dndz)
 
     A_true = truth.amplitudes()

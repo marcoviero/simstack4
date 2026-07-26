@@ -71,9 +71,198 @@ DEFAULT_FEATURES: list[PAHFeature] = [
 # group amplitude; 6.2, 11.3 and 12.7 stay separable in principle and
 # get their own groups — the Fisher column correlations say whether a
 # given dither scheme actually separates them.
+#
+# CAUTION (2026-07-23): sharing a group amplitude ASSERTS the members'
+# relative strengths from the ``features`` catalog, and for 7.7+8.6 the
+# frozen values are backwards — see FEATURES_86_CALIBRATED below. Prefer
+# splitting a blend into its own groups whenever the data constrain the
+# ratio; only weld what is genuinely unconstrained.
 DEFAULT_GROUPS: list[list[int]] = [[0], [1, 2], [3], [4], [5, 6]]
 
+
+def rescale_feature_strength(
+    features: list[PAHFeature], index: int, strength: float
+) -> list[PAHFeature]:
+    """Copy of ``features`` with one feature's relative strength replaced.
+
+    Center and FWHM are untouched; only the catalog strength — the number
+    :func:`group_weights` turns into a within-group weight — changes. Use
+    this to build a calibrated feature list instead of mutating the frozen
+    module-level ones.
+    """
+    out = list(features)
+    center, _, fwhm = out[index]
+    out[index] = (center, float(strength), fwhm)
+    return out
+
+
+# Within-group handling of the 7.7+8.6 blend (2026-07-23).
+#
+# DEFAULT_FEATURES gives 8.6 a LARGER catalog strength than 7.7 (0.6089 vs
+# 0.4577), so group_weights normalizes to 8.6 and the welded [1, 2] template
+# is 8.6-dominated — backwards for every observed PAH spectrum, where the 7.7
+# complex is the strongest feature. On the 2026-07-23 COSMOS2020 wide K-fold
+# stacks, releasing this backwards assertion (either fit below) drops
+# chi2_red 5.06 -> 4.48 and the sSFR slope eta_A +0.82 -> +0.12 (the rigid
+# template had been leaking into the evolution term).
+#
+# IMPORTANT: 8.6 is NOT cleanly measured. 7.7 and 8.6 sit 0.9 µm apart, far
+# inside the MIPS-24 rest kernel (~5 µm at z~2), so they are kernel-blended and
+# the SPLIT between them is near-degenerate. Given the freedom, the data push
+# 8.6 SMALL — peak(8.6)/peak(7.7) ≈ 0.13 (shared, drude), per-fold
+# −0.02/0.36/0.15, consistent with ~0 — i.e. they REJECT the 8.6-dominated
+# shape rather than pin a specific ratio. What is well-constrained is the
+# 7.7+8.6 complex as a whole (≈ 7.7-alone). The gaussian per-bin fit gave a
+# larger 0.52, but that is profile-dependent and fold-unstable; do not treat
+# any single number as a measurement.
+#
+# Two ways to stop asserting the wrong number, in order of preference:
+#   1. FIT it (PREFERRED) — give 7.7 and 8.6 their own groups, e.g.
+#      feature_groups=[[1], [0], [2], [3, 4]] (reference becomes 7.7 alone).
+#      The data then choose how much independent 8.6 they want (little).
+#   2. Pass features=FEATURES_86_CALIBRATED to keep the existing [1, 2]
+#      grouping unchanged while the asserted ratio becomes a fixed 0.5 instead
+#      of the backwards ~1.3. This is a drop-in that removes the *sign* of the
+#      error but still asserts a (poorly-known) fixed ratio, and under the
+#      drude profile only partially fixes eta_A; prefer option 1 on real data.
+# DEFAULT_FEATURES itself is left alone: it mirrors the frozen reference list
+# in pah_model, and every result predating this change used it.
+_R86_FIXED = 0.5  # a plausible fixed 8.6/7.7 for the drop-in path; NOT a measurement
+FEATURES_86_CALIBRATED: list[PAHFeature] = rescale_feature_strength(
+    DEFAULT_FEATURES, 2, DEFAULT_FEATURES[1][1] * _R86_FIXED
+)
+
+
+def _strength_for_integrated_ratio(
+    features: list[PAHFeature],
+    i_ref: int,
+    i_tgt: int,
+    ratio: float,
+) -> float:
+    """Strength for feature ``i_tgt`` giving an INTEGRATED flux ratio vs ``i_ref``.
+
+    Catalog strengths are unit-PEAK amplitudes, but the literature quotes
+    INTEGRATED band ratios, and the two differ by the features' FWHM ratio —
+    ×1.9 for 12.7 vs 11.3. Anything calibrated against a published band ratio
+    must go through this rather than be set as a peak.
+
+    A unit-peak profile's area is proportional to its FWHM with a
+    profile-dependent constant that cancels in the ratio (Gaussian
+    ``1.0645·FWHM``; Drude ``≈(π/2)·FWHM``), so this needs only the FWHMs and is
+    profile-independent. The leading-order Drude cancellation is exact to
+    ~0.03% here — :func:`feature_profile_area` gives the numerically exact area
+    and the tests check the round trip against it.
+    """
+    _, a_ref, fwhm_ref = features[i_ref]
+    fwhm_tgt = features[i_tgt][2]
+    return ratio * a_ref * fwhm_ref / fwhm_tgt
+
+
+# Within-group handling of the 11.3+12.7 blend (2026-07-25).
+#
+# The SAME class of error as the 8.6 one above, and larger. DEFAULT_FEATURES
+# gives 12.7 a strength of 0.5187 against 11.3's 0.30 and a 1.9x wider FWHM, so
+# the asserted INTEGRATED 12.7/11.3 is 3.24 — the pair inverted and inflated
+# ~8.6x. Measured value: R_int = (f12.7/f11.2)_int = 0.377 +- 0.020 from 105
+# high-S/N Spitzer/IRS star-forming galaxy spectra (Hernan-Caballero et al.
+# 2020, MNRAS 497, 4614), with ~5% dispersion and explicitly INDEPENDENT of
+# optical depth — i.e. the ratio really is near-constant, which is exactly the
+# assumption a welded [3, 4] group makes. That makes this a far better-founded
+# weld than the 8.6 one (which is a prior, not a measurement — see above).
+#
+# Matters because 11.3+12.7 is the NEUTRAL-side numerator of the canonical
+# ionization band ratio, so a wrong internal split tilts that diagnostic.
+_R127_11P3_INTEG = 0.377  # Hernan-Caballero+2020, integrated 12.7/11.2
+FEATURES_CALIBRATED: list[PAHFeature] = rescale_feature_strength(
+    FEATURES_86_CALIBRATED,
+    4,
+    _strength_for_integrated_ratio(FEATURES_86_CALIBRATED, 3, 4, _R127_11P3_INTEG),
+)
+
+# The welded-at-physical grouping (branch-12 default). Structural difference
+# from DEFAULT_GROUPS: the 7.7+8.6 ionized complex is ONE component with a
+# fixed internal ratio, and it is FIRST so it is the reference group (r_0 ≡ 1)
+# — the anchor that keeps eta_A from floating. 11.3+12.7 are likewise welded
+# (MIPS 24 samples them at z=1.11 and z=0.88, far inside the rest-frame kernel).
+#
+# Why weld rather than free the split: 7.7 and 8.6 sit 0.9 µm apart, deep
+# inside the ~5 µm rest kernel, so their SPLIT is near-degenerate — and that
+# degeneracy is the SAME degree of freedom as the within-bin sSFR slope. Given
+# a free 8.6, the fit drives it small to absorb the 7.7 Drude wing that already
+# covers the 8.6 region, dragging eta_A down with it (eta_A ≈ 0.15 + 0.7·(peak
+# 8.6/7.7), near-linear over the whole sweep). Tying the blend at the physical
+# ratio removes the knob, so eta_A becomes a prior-bounded upper limit instead
+# of an artifact of an unconstrained nuisance parameter. Use with
+# FEATURES_86_CALIBRATED so the asserted ratio is the physical one; the free
+# split (feature_groups=[[1], [0], [2], [3, 4]]) is kept as a quotable
+# systematic, not as the default.
+#
+# 16.4+17.0 (indices 5, 6) are deliberately NOT here, unlike DEFAULT_GROUPS:
+# on the real COSMOS2020 stacks their ratio rails and the features are
+# undetected, so carrying the group only adds an unconstrained direction.
+# 3.3 µm (index 7) is likewise absent — it needs z >~ 6.3. Add either back
+# explicitly if a future scheme actually samples them.
+PHYSICAL_GROUPS: list[list[int]] = [[1, 2], [0], [3, 4]]
+
 DEFAULT_BANDS: tuple[str, ...] = ("MIPS_24", "MIPS_70")
+
+# --- PAH plateau (continuum under the features) ----------------------------
+#
+# PAHFIT decomposes the MIR into narrow features sitting on broad "plateaus"
+# — genuinely distinct components, not baseline error. PAHSpectrumModel had no
+# such term, so the only smooth degree of freedom under the features was the
+# cold baseline's Wien exponent alpha (the (1+z)^(-alpha) splice in
+# greybody_model). That is almost certainly why a free alpha rails to ~3 while
+# 2 is the physical value: with no plateau available, the fit steepens the
+# power law to manufacture flux where MIPS samples rest 4-7 µm at high z. It is
+# also why A_pah is so alpha-sensitive (Delta alpha = ±0.5 -> A_pah ×3-4).
+#
+# The plateau is therefore a DECOMPOSITION of a degree of freedom that already
+# exists and is known to be mis-shaped, not a new free component bolted on.
+# Shape must be a BUMP, not a power law: a smooth rest-lambda power law would
+# be the same functional form as the Wien extrapolation and near-degenerate
+# with both alpha and C_m — the detrend failure mode that killed
+# pah_model.fit_forward_model. A fixed-lambda0/gamma Drude modulates the band
+# flux on Delta z ≈ (gamma/lambda0)(1+z) ≈ 1.5 at z=2: broader than a feature
+# (Delta z ≈ 0.3-0.5), but still curvature that the MS-smoothed baseline —
+# a low-order polynomial in (z, M*) by construction — cannot produce.
+#
+# (lambda0_um, fwhm_um). The 5-10 µm plateau under the 7.7 complex is the
+# default: MIPS 24 samples it over z ≈ 1.2-3.0 (peak z ≈ 1.9), the range with
+# the most points and where the residual anatomy shows the misfit. The 15-20 µm
+# plateau ((17.0, 6.0)) is available but off by default — MIPS 24 reaches it
+# only at z ≈ 0.4.
+DEFAULT_PLATEAUS: tuple[tuple[float, float], ...] = ((8.2, 4.0),)
+
+# --- 9.7 µm silicate absorption --------------------------------------------
+#
+# Drude profile, same centre/width as pah_model's include_silicate path
+# (Draine 2003). MIPS 24 samples rest 9.7 µm at z ≈ 1.46 — between 8.6
+# (z ≈ 1.77) and 11.3 (z ≈ 1.11) — so tau_sil is degenerate NOT with alpha (a
+# tilt, not a dip) but with the 7.7<->11.3 ratio: deepening the trough lets
+# both flanking features grow. That is why the earlier per-fold tau ≈ 0 was
+# confounded (free per-group amplitudes, no plateau) and why welding the
+# features matters here — it leaves tau less to hide behind.
+SILICATE_LAM0 = 9.7
+SILICATE_FWHM = 3.3
+
+
+def silicate_optical_depth(
+    lam_rest: NDArray[np.float64],
+    lam0: float = SILICATE_LAM0,
+    fwhm: float = SILICATE_FWHM,
+) -> NDArray[np.float64]:
+    """Unit-peak 9.7 µm silicate Drude profile; multiply by tau_sil for tau(lambda)."""
+    return _profile_spectrum(lam_rest, lam0, fwhm, "drude")
+
+
+def _silicate_attenuation(
+    lam_rest: NDArray[np.float64], tau_sil: float
+) -> NDArray[np.float64] | float:
+    """exp(-tau·D97(lambda_rest)), or 1.0 when there is no absorption."""
+    if not tau_sil:
+        return 1.0
+    return np.exp(-tau_sil * silicate_optical_depth(lam_rest))
 
 
 def group_weights(
@@ -126,7 +315,7 @@ def _profile_spectrum(
 
 def feature_profile_area(
     feature: PAHFeature,
-    profile: str = "gaussian",
+    profile: str = "drude",
 ) -> float:
     """Integrated area [µm] under a unit-peak feature profile.
 
@@ -148,15 +337,34 @@ def feature_band_curves(
     band: str,
     features: list[PAHFeature] | None = None,
     feature_groups: list[list[int]] | None = None,
-    profile: str = "gaussian",
+    profile: str = "drude",
+    tau_sil: float = 0.0,
 ) -> NDArray[np.float64]:
     """Bandpass-integrated feature-group templates T_g,b(z).
 
     Returns (n_z, G): the mean in-band response to a unit-peak feature
     group at each redshift. This is the sharp-z building block of the
     design matrix; photo-z smearing is applied afterwards via p_i(z).
-    ``profile`` selects the line shape (see :func:`_profile_spectrum`);
-    the default preserves the historic Gaussian behavior exactly.
+    ``profile`` selects the line shape (see :func:`_profile_spectrum`). The
+    default is ``"drude"`` as of branch-12 — it is the physically correct shape
+    and the convention every literature L_PAH uses. It used to default to
+    ``"gaussian"`` for backward compatibility, but that meant any caller who
+    forgot the argument silently got a different line shape from the fit;
+    ``lshape_at_z`` in the notebooks did exactly that. Pass
+    ``profile="gaussian"`` explicitly for the systematic row.
+
+    ``tau_sil`` applies 9.7 µm silicate absorption INSIDE the band integral —
+    exp(-tau·D97(lambda_rest)) multiplies the feature spectrum before it is
+    integrated, so each group gets the effective transmission its own
+    (peaked) spectrum sees. ``pah_model`` instead exponentiates a
+    band-AVERAGED optical depth; by Jensen that under-estimates the
+    transmission, mildly at the depths expected here (0.3% at tau=0.5, 1.1%
+    at tau=1) but growing fast (4.8% at tau=2, 11.6% at tau=3). Doing it
+    inside the integral costs nothing once the kernels are tabulated over
+    tau, so we do. A MONOCHROMATIC screen at lambda_eff would be far worse
+    (~19% at tau=1): MIPS 24 spans rest 7.3-13.1 µm at z ≈ 1.46 and resolves
+    the whole trough. ``tau_sil=0`` short-circuits to the unattenuated
+    integral, byte-identical to the pre-silicate code path.
     """
     features = DEFAULT_FEATURES if features is None else features
     feature_groups = DEFAULT_GROUPS if feature_groups is None else feature_groups
@@ -165,6 +373,7 @@ def feature_band_curves(
 
     # (n_z, n_fine) rest-frame wavelengths probed by the band at each z
     lam_rest = bp.lam_fine[None, :] / (1.0 + np.asarray(z_grid)[:, None])
+    atten = _silicate_attenuation(lam_rest, tau_sil)
 
     curves = np.zeros((len(z_grid), len(feature_groups)))
     for g, (grp, w) in enumerate(zip(feature_groups, weights, strict=False)):
@@ -172,8 +381,62 @@ def feature_band_curves(
         for j, wj in zip(grp, w, strict=False):
             center, _, fwhm = features[j]
             spec += wj * _profile_spectrum(lam_rest, center, fwhm, profile)
-        curves[:, g] = np.trapezoid(spec * bp.resp_fine, bp.lam_fine, axis=1) / bp.norm
+        curves[:, g] = (
+            np.trapezoid(spec * atten * bp.resp_fine, bp.lam_fine, axis=1) / bp.norm
+        )
     return curves
+
+
+def plateau_band_curves(
+    z_grid: NDArray[np.float64],
+    band: str,
+    plateaus: tuple[tuple[float, float], ...] = DEFAULT_PLATEAUS,
+    profile: str = "drude",
+    tau_sil: float = 0.0,
+) -> NDArray[np.float64]:
+    """Bandpass-integrated plateau templates P_p,b(z). Returns (n_z, P).
+
+    Same machinery as :func:`feature_band_curves` but for the broad
+    unit-peak plateau components (see :data:`DEFAULT_PLATEAUS`): one column
+    per (lambda0, fwhm) pair. Drude by default — PAHFIT's plateau convention,
+    and the wings are the point of the component.
+    """
+    bp = get_bandpass(band)
+    lam_rest = bp.lam_fine[None, :] / (1.0 + np.asarray(z_grid)[:, None])
+    atten = _silicate_attenuation(lam_rest, tau_sil)
+
+    curves = np.zeros((len(z_grid), len(plateaus)))
+    for p, (lam0, fwhm) in enumerate(plateaus):
+        spec = _profile_spectrum(lam_rest, lam0, fwhm, profile)
+        curves[:, p] = (
+            np.trapezoid(spec * atten * bp.resp_fine, bp.lam_fine, axis=1) / bp.norm
+        )
+    return curves
+
+
+def silicate_transmission(
+    z_grid: NDArray[np.float64],
+    band: str,
+    tau_sil: float,
+) -> NDArray[np.float64]:
+    """Bandpass-averaged silicate transmission S_b(z) for the smooth baseline.
+
+    Returns (n_z,) = int BP·exp(-tau·D97(lambda_rest)) dlambda / int BP dlambda.
+
+    The cold baseline enters the fit as a per-row scalar (a monochromatic
+    greybody evaluation), not as a spectrum, so it cannot be attenuated
+    inside its own integral the way the feature/plateau kernels are. This is
+    the response-weighted transmission it sees instead — flat-spectrum
+    weighting, whereas the features get their own peaked-spectrum weighting.
+    Each component therefore carries the effective transmission appropriate
+    to its own shape.
+    """
+    bp = get_bandpass(band)
+    lam_rest = bp.lam_fine[None, :] / (1.0 + np.asarray(z_grid)[:, None])
+    if not tau_sil:
+        return np.ones(len(np.asarray(z_grid)))
+    atten = _silicate_attenuation(lam_rest, tau_sil)
+    return np.trapezoid(atten * bp.resp_fine, bp.lam_fine, axis=1) / bp.norm
 
 
 def warm_band_curve(
@@ -201,13 +464,15 @@ def build_design_matrix(
     bands: tuple[str, ...] = DEFAULT_BANDS,
     features: list[PAHFeature] | None = None,
     feature_groups: list[list[int]] | None = None,
-    profile: str = "gaussian",
+    profile: str = "drude",
+    tau_sil: float = 0.0,
 ) -> NDArray[np.float64]:
     """Feature kernel matrix K[i, b, g] = Σ_k p_i(z_k) T_g,b(z_k).
 
     pz_matrix rows are discrete probability masses over z_grid (each row
     sums to 1); they encode bin width, dN/dz weighting, photo-z smearing
     and any catastrophic-outlier pedestal. Returns (n_bins, n_bands, G).
+    ``tau_sil`` is passed through to :func:`feature_band_curves`.
     """
     pz = np.asarray(pz_matrix, dtype=float)
     n_groups = len(DEFAULT_GROUPS if feature_groups is None else feature_groups)
@@ -221,9 +486,46 @@ def build_design_matrix(
     with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
         for b, band in enumerate(bands):
             K[:, b, :] = pz @ feature_band_curves(
-                z_grid, band, features, feature_groups, profile=profile
+                z_grid, band, features, feature_groups, profile=profile, tau_sil=tau_sil
             )
     return K
+
+
+def plateau_kernel(
+    pz_matrix: NDArray[np.float64],
+    z_grid: NDArray[np.float64],
+    bands: tuple[str, ...] = DEFAULT_BANDS,
+    plateaus: tuple[tuple[float, float], ...] = DEFAULT_PLATEAUS,
+    profile: str = "drude",
+    tau_sil: float = 0.0,
+) -> NDArray[np.float64]:
+    """Plateau kernel P[i, b, p] = Σ_k p_i(z_k) P_p,b(z_k). Returns (n_bins, n_bands, P)."""
+    pz = np.asarray(pz_matrix, dtype=float)
+    P = np.zeros((pz.shape[0], len(bands), len(plateaus)))
+    # See build_design_matrix: silence benign FP flags from degenerate pz rows.
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        for b, band in enumerate(bands):
+            P[:, b, :] = pz @ plateau_band_curves(
+                z_grid, band, plateaus, profile=profile, tau_sil=tau_sil
+            )
+    return P
+
+
+def silicate_kernel(
+    pz_matrix: NDArray[np.float64],
+    z_grid: NDArray[np.float64],
+    bands: tuple[str, ...] = DEFAULT_BANDS,
+    tau_sil: float = 0.0,
+) -> NDArray[np.float64]:
+    """Baseline transmission kernel S[i, b] = Σ_k p_i(z_k) S_b(z_k). Returns (n_bins, n_bands)."""
+    pz = np.asarray(pz_matrix, dtype=float)
+    S = np.ones((pz.shape[0], len(bands)))
+    if not tau_sil:
+        return S
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        for b, band in enumerate(bands):
+            S[:, b] = pz @ silicate_transmission(z_grid, band, tau_sil)
+    return S
 
 
 def warm_continuum_kernel(
@@ -391,11 +693,12 @@ def _ratio_block_solve(
 
 
 def _hot_columns(H_rows: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Column-normalize a bin's hot-ladder kernel rows to unit maximum.
+    """Column-normalize a non-negative component's kernel rows to unit maximum.
 
-    The fitted rung amplitude is then directly that rung's peak in-band
-    flux contribution across the bin's fitted points (same units as the
-    band fluxes). Rungs with no in-band response keep a zero column and
+    Used for both the hot-ladder rungs and the PAH plateau(s). The fitted
+    amplitude is then directly that component's peak in-band flux
+    contribution across the bin's fitted points (same units as the band
+    fluxes). Components with no in-band response keep a zero column and
     their amplitude is meaningless (flagged by a zero column, huge error).
     """
     H = np.asarray(H_rows, dtype=float).copy()
@@ -529,13 +832,26 @@ class PAHSpectrumModel:
         log_a0_bounds: tuple[float, float] = (-3.0, 1.0),
         pivot_log_mass: float = 10.5,
         pivot_log_sigma_sfr: float = 0.0,
-        profile: str = "gaussian",
+        profile: str = "drude",
         hot_ladder: tuple[float, ...] | None = None,
         hot_beta: float = 2.0,
+        plateaus: tuple[tuple[float, float], ...] | None = None,
+        plateau_profile: str = "drude",
+        include_silicate: bool = False,
+        tau_sil_bounds: tuple[float, float] = (0.0, 3.0),
+        tau_sil_prior: float | None = None,
+        silicate_scope: str = "all",
     ):
-        self.features = DEFAULT_FEATURES if features is None else features
+        # Branch-12 defaults: both welded blends set to their physical internal
+        # ratios (FEATURES_CALIBRATED = 8.6/7.7 peak 0.5 + integrated
+        # 12.7/11.3 = 0.377) with 7.7+8.6 as the reference group
+        # (PHYSICAL_GROUPS). Pass features=DEFAULT_FEATURES,
+        # feature_groups=DEFAULT_GROUPS to reproduce any pre-branch-12 fit, or
+        # features=FEATURES_86_CALIBRATED for the 2026-07-24 pass that had only
+        # the 8.6 fix.
+        self.features = FEATURES_CALIBRATED if features is None else features
         self.feature_groups = (
-            DEFAULT_GROUPS if feature_groups is None else feature_groups
+            PHYSICAL_GROUPS if feature_groups is None else feature_groups
         )
         self.bands = bands
         self.profile = profile
@@ -548,6 +864,30 @@ class PAHSpectrumModel:
         self.hot_ladder = tuple(hot_ladder) if hot_ladder else None
         self.hot_beta = hot_beta
         self.n_hot = len(self.hot_ladder) if self.hot_ladder else 0
+        # PAH plateau: broad fixed-(lambda0, fwhm) Drude(s) under the features,
+        # entering fit_shared/fit_evolving as extra non-negative LINEAR columns
+        # per mass bin — same treatment as the hot ladder. Off by default;
+        # plateaus=DEFAULT_PLATEAUS turns on the 5-10 µm plateau. See
+        # DEFAULT_PLATEAUS for why the shape must be a bump, not a power law.
+        self.plateaus = tuple(tuple(p) for p in plateaus) if plateaus else None
+        self.plateau_profile = plateau_profile
+        self.n_plateau = len(self.plateaus) if self.plateaus else 0
+        # 9.7 µm silicate absorption: ONE global tau_sil >= 0, fit jointly with
+        # everything else by the outer optimizer (it is the only nonlinear
+        # parameter in fit_shared). silicate_scope="all" screens continuum +
+        # plateau + features alike — the PAHFIT convention, and the
+        # self-consistent one here since C_m·f_cold is standing in for the MIR
+        # continuum of the same obscured region, not literally cold dust.
+        # "features" leaves the baseline unattenuated (asserts the continuum is
+        # foreground to the PAH), kept only as a systematic.
+        self.include_silicate = include_silicate
+        self.tau_sil_bounds = tau_sil_bounds
+        self.tau_sil_prior = tau_sil_prior
+        if silicate_scope not in ("all", "features"):
+            raise ValueError(
+                f"Unknown silicate_scope={silicate_scope!r}; use 'all' or 'features'"
+            )
+        self.silicate_scope = silicate_scope
         self.T_w_prior = T_w_prior
         self.T_w_bounds = T_w_bounds
         self.beta_w = beta_w
@@ -619,6 +959,65 @@ class PAHSpectrumModel:
                 ],
                 axis=-1,
             )  # (n_scheme_bins, n_bands, n_hot)
+
+        # Plateau kernels (fixed lambda0/fwhm, shape only — amplitudes are fit).
+        P_all = None
+        if self.plateaus:
+            P_all = plateau_kernel(
+                pz,
+                z_grid,
+                self.bands,
+                self.plateaus,
+                profile=self.plateau_profile,
+            )  # (n_scheme_bins, n_bands, n_plateau)
+
+        # Silicate: tau enters the feature/plateau kernels INSIDE the band
+        # integral, so those kernels are tau-dependent and cannot be factored.
+        # Tabulate them on a tau grid and interpolate, mirroring the T_GRID
+        # idiom above — this keeps the outer optimizer cheap and its objective
+        # smooth. Only paid when include_silicate is on; otherwise every array
+        # below stays exactly the pre-silicate one.
+        tau_grid = self._tau_grid() if self.include_silicate else None
+        K_tau = P_tau = S_tau = None
+        if tau_grid is not None:
+            K_tau = np.stack(
+                [
+                    build_design_matrix(
+                        pz,
+                        z_grid,
+                        self.bands,
+                        self.features,
+                        self.feature_groups,
+                        profile=self.profile,
+                        tau_sil=t,
+                    )
+                    for t in tau_grid
+                ]
+            )  # (n_tau, n_scheme_bins, n_bands, G)
+            if self.plateaus:
+                P_tau = np.stack(
+                    [
+                        plateau_kernel(
+                            pz,
+                            z_grid,
+                            self.bands,
+                            self.plateaus,
+                            profile=self.plateau_profile,
+                            tau_sil=t,
+                        )
+                        for t in tau_grid
+                    ]
+                )  # (n_tau, n_scheme_bins, n_bands, n_plateau)
+            S_tau = np.stack(
+                [
+                    (
+                        silicate_kernel(pz, z_grid, self.bands, tau_sil=t)
+                        if self.silicate_scope == "all"
+                        else np.ones((pz.shape[0], len(self.bands)))
+                    )
+                    for t in tau_grid
+                ]
+            )  # (n_tau, n_scheme_bins, n_bands)
 
         # Lookup: (run_id, z_lo) → row index in the scheme's pz matrix.
         # Different property bins may cover different subsets of z-bins (due to
@@ -725,12 +1124,71 @@ class PAHSpectrumModel:
                     "Ww_grid": Ww_grid,
                     "K": K_m,
                     "H": H_all[sidx] if H_all is not None else None,
+                    "P": P_all[sidx] if P_all is not None else None,
+                    # tau-grid tabulations (silicate only), sliced to this bin
+                    "K_tau": K_tau[:, sidx] if K_tau is not None else None,
+                    "P_tau": P_tau[:, sidx] if P_tau is not None else None,
+                    "S_tau": S_tau[:, sidx] if S_tau is not None else None,
                     "sidx": sidx,
                     "props": props,
                     "n_valid": int(mask.sum()),
                 }
             )
-        return {"scheme": scheme, "bins": bins, "K": K, "z_grid": z_grid, "pz": pz}
+        return {
+            "scheme": scheme,
+            "bins": bins,
+            "K": K,
+            "z_grid": z_grid,
+            "pz": pz,
+            "tau_grid": tau_grid,
+        }
+
+    # -- silicate tau tabulation ------------------------------------------
+
+    _TAU_STEP = 0.1  # linear interpolation of exp(-tau·D) is ~0.1% accurate here
+
+    def _tau_grid(self) -> NDArray[np.float64]:
+        """Tabulation grid for the silicate optical depth."""
+        lo, hi = self.tau_sil_bounds
+        n = max(2, int(round((hi - lo) / self._TAU_STEP)) + 1)
+        return np.linspace(lo, hi, n)
+
+    @staticmethod
+    def _interp_tau(arr_tau, tau_grid, tau):
+        """Linearly interpolate a tau-tabulated array (axis 0) at ``tau``."""
+        if arr_tau is None:
+            return None
+        t = np.clip(
+            (tau - tau_grid[0]) / (tau_grid[1] - tau_grid[0]),
+            0,
+            len(tau_grid) - 1 - 1e-9,
+        )
+        i0 = int(t)
+        frac = t - i0
+        return (1 - frac) * arr_tau[i0] + frac * arr_tau[i0 + 1]
+
+    def _reject_unwired(self, what: str, allow: tuple[str, ...] = ()) -> None:
+        """Guard for fitters that do not implement the extra components.
+
+        ``allow`` names components the caller DOES support — e.g.
+        ``fit_evolving_mcmc`` samples ``tau_sil`` (one scalar) but cannot take
+        the non-negative plateau/hot blocks, which would need an NNLS inside
+        the profiled likelihood.
+        """
+        extras = [
+            name
+            for name, on in (
+                ("hot_ladder", bool(self.hot_ladder)),
+                ("plateaus", bool(self.plateaus)),
+                ("include_silicate", bool(self.include_silicate)),
+            )
+            if on and name not in allow
+        ]
+        if extras:
+            raise NotImplementedError(
+                f"{', '.join(extras)} {'is' if len(extras) == 1 else 'are'} only "
+                f"wired into fit_shared/fit_evolving, not {what}"
+            )
 
     def _Ww(self, bin_data, T_w):
         """Whitened warm kernel at T_w by linear interpolation over T_GRID."""
@@ -768,10 +1226,7 @@ class PAHSpectrumModel:
         total chi² + T_w prior over the scalar T_w (golden-section via
         scipy). With fix_T_w the linear solve runs once.
         """
-        if self.hot_ladder:
-            raise NotImplementedError(
-                "hot_ladder is only wired into fit_shared/fit_evolving"
-            )
+        self._reject_unwired("fit_lstsq")
         from scipy.optimize import minimize_scalar
 
         prep = self._prepare(df, cov, scheme, dndz, sigma_z0, f_cat)
@@ -926,11 +1381,29 @@ class PAHSpectrumModel:
         non-negative rung amplitudes ``h`` — the hot/AGN continuum absorbed
         linearly instead of leaking into the Wien slope or the PAH term.
 
+        With model-level ``plateaus`` the model gains ``+ Σ_p q_{m,p} · P_p(z)``,
+        broad fixed-(λ₀, FWHM) Drude plateaus with non-negative per-bin
+        amplitudes — the continuum-under-features that the cold baseline's
+        fixed Wien exponent was previously forced to fake (see
+        :data:`DEFAULT_PLATEAUS`).
+
+        With ``include_silicate`` a single global 9.7 µm optical depth
+        ``tau_sil ≥ 0`` is fit by an outer scalar optimizer wrapping the
+        alternating WLS (the only nonlinear parameter here). It attenuates the
+        features and plateaus inside their own band integrals and the smooth
+        components (baseline, hot rungs) by the response-weighted band
+        transmission; ``silicate_scope="features"`` leaves the smooth
+        components unattenuated. ``tau_sil_prior`` adds a Gaussian
+        regularizer toward zero — recommended, since tau_sil trades against
+        the 7.7↔11.3 ratio.
+
         Returns a dict: ``alpha, alpha_err, C_m, C_m_err, r, r_err, A_pah,
         A_pah_err, A, labels, chi2, dof, chi2_red, n_iter, valid`` (+
         ``hot_T, hot_amp, hot_amp_err`` when a hot ladder is configured;
         ``hot_amp[m, t]`` is rung t's peak in-band flux contribution over
-        bin m's fitted points, in the band's flux units).
+        bin m's fitted points, in the band's flux units; + ``plateau_lam0,
+        plateau_amp, plateau_amp_err`` with the same peak-flux convention;
+        + ``tau_sil, tau_sil_err`` with silicate).
         """
         if smooth_baseline:
             df = smoothed_ms_baseline(df, baseline_col=baseline_col)
@@ -940,6 +1413,7 @@ class PAHSpectrumModel:
             df, cov, scheme, dndz, sigma_z0, f_cat, baseline_col=baseline_col
         )
         bins = prep["bins"]
+        tau_grid = prep["tau_grid"]
         G = self.n_groups
 
         data = []
@@ -962,15 +1436,41 @@ class PAHSpectrumModel:
                 data.append(None)
                 continue
             med = float(np.median(f_cold[ok]))
+            # Plateau/hot columns are peak-normalized ONCE, at tau=0, so the
+            # fitted amplitude keeps a fixed meaning (peak in-band flux
+            # contribution) as tau varies instead of rescaling with it.
+            p_scale = None
+            if b["P"] is not None:
+                p_scale = b["P"][:, bidx, :][ok].max(axis=0)
+                p_scale = np.where(p_scale > 0, p_scale, 1.0)
             data.append(
                 {
                     "f_obs": f_obs[ok],
                     "w": 1.0 / f_err[ok] ** 2,
                     "f_cold_norm": f_cold[ok] / med,
                     "K": K_g[ok],
+                    "P": (
+                        b["P"][:, bidx, :][ok] / p_scale if b["P"] is not None else None
+                    ),
                     "H": (
                         _hot_columns(b["H"][:, bidx, :][ok])
                         if b["H"] is not None
+                        else None
+                    ),
+                    # tau-tabulated variants, sliced to this bin/band/points
+                    "K_tau": (
+                        b["K_tau"][:, :, bidx, :][:, ok]
+                        if b["K_tau"] is not None
+                        else None
+                    ),
+                    "P_tau": (
+                        b["P_tau"][:, :, bidx, :][:, ok] / p_scale
+                        if b["P_tau"] is not None
+                        else None
+                    ),
+                    "S_tau": (
+                        b["S_tau"][:, :, bidx][:, ok]
+                        if b["S_tau"] is not None
                         else None
                     ),
                 }
@@ -978,6 +1478,8 @@ class PAHSpectrumModel:
         valid = [i for i, d in enumerate(data) if d is not None]
         n_m = len(bins)
         n_hot = self.n_hot
+        n_plat = self.n_plateau
+        n_nonneg = n_plat + n_hot
         if not valid:
             return None
 
@@ -990,93 +1492,151 @@ class PAHSpectrumModel:
                 Hi = np.linalg.pinv(H)
                 return Hi @ rhs, Hi
 
-        def _design(d, r):
-            D = np.column_stack([d["f_cold_norm"], d["K"] @ r])
+        def _at_tau(d, tau):
+            """(baseline column, feature kernel, plateau columns) at this tau."""
+            if tau_grid is None:
+                return d["f_cold_norm"], d["K"], d["P"]
+            S = self._interp_tau(d["S_tau"], tau_grid, tau)
+            return (
+                d["f_cold_norm"] * S,
+                self._interp_tau(d["K_tau"], tau_grid, tau),
+                self._interp_tau(d["P_tau"], tau_grid, tau),
+            )
+
+        def _design(fc, Kd, Pd, d, r):
+            # Column order: [baseline, features, plateaus..., hot...] — the
+            # non-negative components are contiguous at the end for
+            # _amp_hot_solve.
+            cols = [fc, Kd @ r]
+            if n_plat:
+                cols.append(Pd)
             if n_hot:
-                D = np.column_stack([D, d["H"]])
-            return D
+                # Smooth continuum: screened by the response-weighted band
+                # transmission, same weighting as the baseline.
+                H = d["H"]
+                if tau_grid is not None and self.silicate_scope == "all":
+                    H = H * (fc / d["f_cold_norm"])[:, None]
+                cols.append(H)
+            return np.column_stack(cols)
 
-        def _hot_flux(i):
-            return data[i]["H"] @ hot[i] if n_hot else 0.0
-
-        r = np.ones(G)
-        C_m = np.full(n_m, np.nan)
-        alpha = np.full(n_m, np.nan)
-        hot = np.full((n_m, n_hot), np.nan) if n_hot else None
-        n_done = 0
-        while n_done < n_iter:
-            n_done += 1
-            r_prev = r.copy()
-            for i in valid:
-                d = data[i]
-                theta, _ = _amp_hot_solve(_design(d, r), d["f_obs"], d["w"], n_hot)
-                C_m[i], alpha[i] = float(theta[0]), float(theta[1])
-                if n_hot:
-                    hot[i] = theta[2:]
-            if G > 1:
-                Ms, ys, ws = [], [], []
+        def _solve_at_tau(tau, iters):
+            """Alternating WLS at fixed tau. Returns (C_m, alpha, r, nonneg, chi2, n_done)."""
+            r = np.ones(G)
+            C_m = np.full(n_m, np.nan)
+            alpha = np.full(n_m, np.nan)
+            extra = np.full((n_m, n_nonneg), np.nan) if n_nonneg else None
+            comp = {i: _at_tau(data[i], tau) for i in valid}
+            n_done = 0
+            while n_done < iters:
+                n_done += 1
+                r_prev = r.copy()
                 for i in valid:
                     d = data[i]
-                    y = (
-                        d["f_obs"]
-                        - C_m[i] * d["f_cold_norm"]
-                        - alpha[i] * d["K"][:, 0]
-                        - _hot_flux(i)
+                    fc, Kd, Pd = comp[i]
+                    theta, _ = _amp_hot_solve(
+                        _design(fc, Kd, Pd, d, r), d["f_obs"], d["w"], n_nonneg
                     )
-                    Ms.append(alpha[i] * d["K"][:, 1:])
-                    ys.append(y)
-                    ws.append(d["w"])
-                M, y, w = np.vstack(Ms), np.concatenate(ys), np.concatenate(ws)
-                r[1:], _ = _ratio_block_solve(M, y, w)
-                r[0] = 1.0
-            if np.max(np.abs(r - r_prev)) < tol:
-                break
+                    C_m[i], alpha[i] = float(theta[0]), float(theta[1])
+                    if n_nonneg:
+                        extra[i] = theta[2:]
+                if G > 1:
+                    Ms, ys, ws = [], [], []
+                    for i in valid:
+                        d = data[i]
+                        fc, Kd, Pd = comp[i]
+                        y = d["f_obs"] - C_m[i] * fc - alpha[i] * Kd[:, 0]
+                        if n_nonneg:
+                            y = y - _design(fc, Kd, Pd, d, r)[:, 2:] @ extra[i]
+                        Ms.append(alpha[i] * Kd[:, 1:])
+                        ys.append(y)
+                        ws.append(d["w"])
+                    M, y, w = np.vstack(Ms), np.concatenate(ys), np.concatenate(ws)
+                    r[1:], _ = _ratio_block_solve(M, y, w)
+                    r[0] = 1.0
+                if np.max(np.abs(r - r_prev)) < tol:
+                    break
+            chi2 = 0.0
+            for i in valid:
+                d = data[i]
+                fc, Kd, Pd = comp[i]
+                D = _design(fc, Kd, Pd, d, r)
+                theta_i = np.concatenate(
+                    [[C_m[i], alpha[i]], extra[i] if n_nonneg else []]
+                )
+                chi2 += float(np.sum((d["f_obs"] - D @ theta_i) ** 2 * d["w"]))
+            return C_m, alpha, r, extra, chi2, n_done
+
+        # Outer scalar optimization over tau_sil (the only nonlinear parameter).
+        tau_sil = 0.0
+        tau_sil_err = np.nan
+        if tau_grid is not None:
+            from scipy.optimize import minimize_scalar
+
+            def chi2_of_tau(t):
+                c2 = _solve_at_tau(float(t), min(n_iter, 60))[4]
+                if self.tau_sil_prior:
+                    # Gaussian regularizer toward tau=0: tau_sil trades against
+                    # the 7.7<->11.3 ratio, so an unpenalized fit can buy a deep
+                    # trough by inflating both flanking features.
+                    c2 += float((t / self.tau_sil_prior) ** 2)
+                return c2
+
+            opt = minimize_scalar(
+                chi2_of_tau, bounds=self.tau_sil_bounds, method="bounded"
+            )
+            tau_sil = float(opt.x)
+
+        C_m, alpha, r, extra, chi2, n_done = _solve_at_tau(tau_sil, n_iter)
+        comp = {i: _at_tau(data[i], tau_sil) for i in valid}
 
         alpha_err = np.full(n_m, np.nan)
         C_m_err = np.full(n_m, np.nan)
         A_pah = np.full(n_m, np.nan)
         A_pah_err = np.full(n_m, np.nan)
-        hot_err = np.full((n_m, n_hot), np.nan) if n_hot else None
-        chi2 = 0.0
+        extra_err = np.full((n_m, n_nonneg), np.nan) if n_nonneg else None
         ndata = 0
         for i in valid:
             d = data[i]
-            D = _design(d, r)
+            fc, Kd, Pd = comp[i]
+            D = _design(fc, Kd, Pd, d, r)
             _, cov_i = _wls(D, d["f_obs"], d["w"])
             C_m_err[i] = np.sqrt(max(cov_i[0, 0], 0.0))
             alpha_err[i] = np.sqrt(max(cov_i[1, 1], 0.0))
-            if n_hot:
-                hot_err[i] = np.sqrt(np.clip(np.diag(cov_i)[2:], 0.0, None))
+            if n_nonneg:
+                extra_err[i] = np.sqrt(np.clip(np.diag(cov_i)[2:], 0.0, None))
             if C_m[i] != 0:
                 A_pah[i] = alpha[i] / C_m[i]
                 g = np.zeros(D.shape[1])
                 g[:2] = [-alpha[i] / C_m[i] ** 2, 1.0 / C_m[i]]
                 A_pah_err[i] = np.sqrt(max(g @ cov_i @ g, 0.0))
-            theta_i = np.concatenate([[C_m[i], alpha[i]], hot[i] if n_hot else []])
-            resid = d["f_obs"] - D @ theta_i
-            chi2 += float(np.sum(resid**2 * d["w"]))
             ndata += len(d["f_obs"])
         r_err = np.zeros(G)
         if G > 1:
-            Ms, ws = [], []
+            Ms, ys_e, ws = [], [], []
             for i in valid:
                 d = data[i]
-                Ms.append(alpha[i] * d["K"][:, 1:])
+                fc, Kd, Pd = comp[i]
+                y_i = d["f_obs"] - C_m[i] * fc - alpha[i] * Kd[:, 0]
+                if n_nonneg:
+                    y_i = y_i - _design(fc, Kd, Pd, d, r)[:, 2:] @ extra[i]
+                Ms.append(alpha[i] * Kd[:, 1:])
+                ys_e.append(y_i)
                 ws.append(d["w"])
             M, w = np.vstack(Ms), np.concatenate(ws)
-            ys_e = np.concatenate(
-                [
-                    data[i]["f_obs"]
-                    - C_m[i] * data[i]["f_cold_norm"]
-                    - alpha[i] * data[i]["K"][:, 0]
-                    - _hot_flux(i)
-                    for i in valid
-                ]
-            )
-            _, var_r = _ratio_block_solve(M, ys_e, w)
+            _, var_r = _ratio_block_solve(M, np.concatenate(ys_e), w)
             r_err[1:] = np.where(np.isfinite(var_r), np.sqrt(var_r), np.nan)
 
-        dof = max(1, ndata - ((2 + n_hot) * len(valid) + (G - 1)))
+        n_theta = 1 if tau_grid is not None else 0
+        if n_theta:
+            # Formal tau error from the curvature of the profiled chi².
+            h = 0.05
+            curv = max(
+                (chi2_of_tau(tau_sil + h) + chi2_of_tau(tau_sil - h) - 2 * chi2) / h**2,
+                1e-9,
+            )
+            tau_sil_err = float(np.sqrt(2.0 / curv))
+
+        dof = max(1, ndata - ((2 + n_nonneg) * len(valid) + (G - 1) + n_theta))
         # PAH/continuum ratio per (bin, group): A[m,g] = A_pah[m] * r[g]
         A = A_pah[:, None] * r[None, :]
         out = {
@@ -1096,10 +1656,28 @@ class PAHSpectrumModel:
             "n_iter": n_done,
             "valid": valid,
         }
-        if n_hot:
+        out.update(self._extra_component_output(extra, extra_err))
+        if tau_grid is not None:
+            out["tau_sil"] = tau_sil
+            out["tau_sil_err"] = tau_sil_err
+        return out
+
+    def _extra_component_output(self, extra, extra_err):
+        """Split the fitted non-negative block into plateau and hot-rung results.
+
+        The block is ordered ``[plateaus..., hot rungs...]`` in the design
+        matrix; this unpacks it back into the named result keys.
+        """
+        out = {}
+        if self.n_plateau:
+            out["plateau_lam0"] = tuple(p[0] for p in self.plateaus)
+            out["plateau_fwhm"] = tuple(p[1] for p in self.plateaus)
+            out["plateau_amp"] = extra[:, : self.n_plateau]
+            out["plateau_amp_err"] = extra_err[:, : self.n_plateau]
+        if self.n_hot:
             out["hot_T"] = self.hot_ladder
-            out["hot_amp"] = hot
-            out["hot_amp_err"] = hot_err
+            out["hot_amp"] = extra[:, self.n_plateau :]
+            out["hot_amp_err"] = extra_err[:, self.n_plateau :]
         return out
 
     # -- evolving shared-ratio fit (sSFR-anchored amplitude + ratio drift) --
@@ -1239,7 +1817,12 @@ class PAHSpectrumModel:
             keys = ["f_obs", "f_err", "w", "f_cold_norm", "K", "shat", "z_mid", "band"]
             if self.hot_ladder:
                 keys.append("H")
+            if self.plateaus:
+                keys.append("P")
             parts = {k: [] for k in keys}
+            # tau-tabulated blocks stack along the POINT axis (axis 1), since
+            # axis 0 is the tau grid; kept separate from `parts` for that reason.
+            tau_parts = {"K_tau": [], "P_tau": [], "S_tau": []}
             med_ref = None
             fcold_ref = None  # reference band's baseline, row-aligned
             for band in baseline_cols:
@@ -1266,15 +1849,26 @@ class PAHSpectrumModel:
                 if feature_envelope == "baseline":
                     K_rows = K_rows * (fcold_ref[ok] / med_ref)[:, None]
                 parts["K"].append(K_rows)
+                # The envelope applies to every EMISSION component, not just
+                # the features: under the observed-flux envelope each must dim
+                # with the population or a constant-amplitude column would be
+                # mis-specified across a wide-z bin.
+                env = (
+                    (fcold_ref[ok] / med_ref)[:, None]
+                    if feature_envelope == "baseline"
+                    else 1.0
+                )
                 if self.hot_ladder:
-                    # The hot component is source luminosity too: under the
-                    # observed-flux envelope it must dim with the population
-                    # like the features do, or a constant-amplitude rung
-                    # would be mis-specified across a wide-z bin.
-                    H_rows = b["H"][:, bidx, :][ok]
-                    if feature_envelope == "baseline":
-                        H_rows = H_rows * (fcold_ref[ok] / med_ref)[:, None]
-                    parts["H"].append(H_rows)
+                    parts["H"].append(b["H"][:, bidx, :][ok] * env)
+                if self.plateaus:
+                    parts["P"].append(b["P"][:, bidx, :][ok] * env)
+                if b["K_tau"] is not None:
+                    tau_parts["K_tau"].append(b["K_tau"][:, :, bidx, :][:, ok] * env)
+                    tau_parts["S_tau"].append(b["S_tau"][:, :, bidx][:, ok])
+                    if self.plateaus:
+                        tau_parts["P_tau"].append(
+                            b["P_tau"][:, :, bidx, :][:, ok] * env
+                        )
                 parts["shat"].append(ls[ok] - s_pivot)
                 parts["z_mid"].append(np.asarray(b["z_mid"], dtype=float)[ok])
                 parts["band"].append(np.full(int(ok.sum()), band, dtype=object))
@@ -1282,11 +1876,22 @@ class PAHSpectrumModel:
                 data.append(None)
                 continue
             d = {
-                k: (np.vstack(v) if k in ("K", "H") else np.concatenate(v))
+                k: (np.vstack(v) if k in ("K", "H", "P") else np.concatenate(v))
                 for k, v in parts.items()
             }
+            # tau blocks concatenate along the point axis (axis 1)
+            for k, v in tau_parts.items():
+                d[k] = np.concatenate(v, axis=1) if v else None
+            # Peak-normalize the non-negative components ONCE, at tau=0, so the
+            # fitted amplitude keeps a fixed meaning as tau varies.
             if self.hot_ladder:
                 d["H"] = _hot_columns(d["H"])
+            if self.plateaus:
+                p_scale = d["P"].max(axis=0)
+                p_scale = np.where(p_scale > 0, p_scale, 1.0)
+                d["P"] = d["P"] / p_scale
+                if d["P_tau"] is not None:
+                    d["P_tau"] = d["P_tau"] / p_scale
             d["m"] = b["m"]
             d["log_M_star"] = b["props"]["log_M_star"]
             data.append(d)
@@ -1365,8 +1970,13 @@ class PAHSpectrumModel:
         ``eta_ratio`` (length G, ``η_0 ≡ 0``), ``eta_ratio_err``, ``s_pivot`` and
         ``bands``. With a model-level ``hot_ladder`` the per-bin model gains
         non-negative fixed-temperature hot-MBB rungs (``hot_T``/``hot_amp``/
-        ``hot_amp_err`` in the result; under ``feature_envelope="baseline"``
-        the rungs dim with the source like the features).
+        ``hot_amp_err`` in the result); with model-level ``plateaus`` it gains
+        non-negative broad-Drude plateau columns (``plateau_lam0``/
+        ``plateau_amp``/``plateau_amp_err``). Under
+        ``feature_envelope="baseline"`` both dim with the source like the
+        features. With ``include_silicate`` a global 9.7 µm ``tau_sil`` joins
+        the outer optimizer alongside the η slopes (``tau_sil``/
+        ``tau_sil_err``); see :meth:`fit_shared` for how the screen is applied.
         """
         from scipy.optimize import minimize
 
@@ -1406,9 +2016,14 @@ class PAHSpectrumModel:
                 Hi = np.linalg.pinv(H)
                 return Hi @ rhs, Hi
 
-        # θ → per-group exponent e_g = η_A + η_g (η_0 ≡ 0).
+        # θ → per-group exponent e_g = η_A + η_g (η_0 ≡ 0), plus tau_sil last.
         n_amp = 1 if evolve_amp else 0
         n_rat = (G - 1) if (evolve_ratios and G > 1) else 0
+        tau_grid = prep["tau_grid"]
+        n_tau = 1 if tau_grid is not None else 0
+        n_hot = self.n_hot
+        n_plat = self.n_plateau
+        n_nonneg = n_plat + n_hot
 
         def unpack(theta):
             k = 0
@@ -1417,42 +2032,68 @@ class PAHSpectrumModel:
             eta_ratio = np.zeros(G)
             if n_rat:
                 eta_ratio[1:] = theta[k : k + n_rat]
-            return eta_amp, eta_ratio
+            k += n_rat
+            tau_sil = float(theta[k]) if n_tau else 0.0
+            return eta_amp, eta_ratio, tau_sil
 
-        def modulated(d, e):
+        def at_tau(d, tau):
+            """(baseline column, feature kernel, plateau columns) at this tau."""
+            if tau_grid is None:
+                return d["f_cold_norm"], d["K"], d["P"] if n_plat else None
+            S = self._interp_tau(d["S_tau"], tau_grid, tau)
+            return (
+                d["f_cold_norm"] * S,
+                self._interp_tau(d["K_tau"], tau_grid, tau),
+                self._interp_tau(d["P_tau"], tau_grid, tau),
+            )
+
+        def modulated(d, K, e):
             # e: (G,) per-group exponent; returns (n_pts, G) modulated kernel.
-            return (10.0 ** np.outer(d["shat"], e)) * d["K"]
+            return (10.0 ** np.outer(d["shat"], e)) * K
 
-        n_hot = self.n_hot
+        def design(d, fc, Kmod_i, Pd, r):
+            # Column order: [baseline, features, plateaus..., hot...] — the
+            # non-negative components are contiguous at the end.
+            cols = [fc, Kmod_i @ r]
+            if n_plat:
+                cols.append(Pd)
+            if n_hot:
+                H = d["H"]
+                if tau_grid is not None and self.silicate_scope == "all":
+                    # Smooth continuum: response-weighted band transmission.
+                    H = H * (fc / d["f_cold_norm"])[:, None]
+                cols.append(H)
+            return np.column_stack(cols)
 
-        def solve_inner(e, iters):
+        def solve_inner(e, tau, iters):
             r = np.ones(G)
             C_m = np.full(n_m, np.nan)
             alpha = np.full(n_m, np.nan)
-            hot = np.full((n_m, n_hot), np.nan) if n_hot else None
-            Kmod = {i: modulated(data[i], e) for i in valid}
+            extra = np.full((n_m, n_nonneg), np.nan) if n_nonneg else None
+            comp = {}
+            Kmod = {}
+            for i in valid:
+                fc, K_i, Pd = at_tau(data[i], tau)
+                comp[i] = (fc, Pd)
+                Kmod[i] = modulated(data[i], K_i, e)
             for _ in range(iters):
                 r_prev = r.copy()
                 for i in valid:
                     d = data[i]
-                    D = np.column_stack([d["f_cold_norm"], Kmod[i] @ r])
-                    if n_hot:
-                        D = np.column_stack([D, d["H"]])
-                    theta, _ = _amp_hot_solve(D, d["f_obs"], d["w"], n_hot)
+                    fc, Pd = comp[i]
+                    D = design(d, fc, Kmod[i], Pd, r)
+                    theta, _ = _amp_hot_solve(D, d["f_obs"], d["w"], n_nonneg)
                     C_m[i], alpha[i] = float(theta[0]), float(theta[1])
-                    if n_hot:
-                        hot[i] = theta[2:]
+                    if n_nonneg:
+                        extra[i] = theta[2:]
                 if G > 1:
                     Ms, ys, ws = [], [], []
                     for i in valid:
                         d = data[i]
-                        y = (
-                            d["f_obs"]
-                            - C_m[i] * d["f_cold_norm"]
-                            - alpha[i] * Kmod[i][:, 0]
-                        )
-                        if n_hot:
-                            y = y - d["H"] @ hot[i]
+                        fc, Pd = comp[i]
+                        y = d["f_obs"] - C_m[i] * fc - alpha[i] * Kmod[i][:, 0]
+                        if n_nonneg:
+                            y = y - design(d, fc, Kmod[i], Pd, r)[:, 2:] @ extra[i]
                         Ms.append(alpha[i] * Kmod[i][:, 1:])
                         ys.append(y)
                         ws.append(d["w"])
@@ -1464,56 +2105,60 @@ class PAHSpectrumModel:
             chi2 = 0.0
             for i in valid:
                 d = data[i]
-                model = C_m[i] * d["f_cold_norm"] + alpha[i] * (Kmod[i] @ r)
-                if n_hot:
-                    model = model + d["H"] @ hot[i]
-                chi2 += float(np.sum((d["f_obs"] - model) ** 2 * d["w"]))
-            return C_m, alpha, r, Kmod, chi2, hot
+                fc, Pd = comp[i]
+                D = design(d, fc, Kmod[i], Pd, r)
+                theta_i = np.concatenate(
+                    [[C_m[i], alpha[i]], extra[i] if n_nonneg else []]
+                )
+                chi2 += float(np.sum((d["f_obs"] - D @ theta_i) ** 2 * d["w"]))
+            return C_m, alpha, r, Kmod, chi2, extra, comp
 
         def chi2_of(theta):
-            eta_amp, eta_ratio = unpack(theta)
+            eta_amp, eta_ratio, tau = unpack(theta)
             e = eta_amp + eta_ratio
-            chi2 = solve_inner(e, min(n_iter, 60))[4]
+            chi2 = solve_inner(e, tau, min(n_iter, 60))[4]
             if eta_prior_sigma:
                 # Gaussian prior on every free slope — tames the η_A↔alpha_m
                 # runaway when the sSFR lever arm is short (real data).
-                chi2 += float(np.sum((np.asarray(theta) / eta_prior_sigma) ** 2))
+                n_eta = n_amp + n_rat
+                chi2 += float(
+                    np.sum((np.asarray(theta)[:n_eta] / eta_prior_sigma) ** 2)
+                )
+            if n_tau and self.tau_sil_prior:
+                chi2 += float((theta[-1] / self.tau_sil_prior) ** 2)
             return chi2
 
-        n_theta = n_amp + n_rat
+        n_theta = n_amp + n_rat + n_tau
         if n_theta > 0:
             theta0 = np.zeros(n_theta)
-            opt = minimize(
-                chi2_of,
-                theta0,
-                method="L-BFGS-B",
-                bounds=[eta_bounds] * n_theta,
-            )
+            bounds = [eta_bounds] * (n_amp + n_rat)
+            if n_tau:
+                bounds.append(self.tau_sil_bounds)
+            opt = minimize(chi2_of, theta0, method="L-BFGS-B", bounds=bounds)
             theta_best = opt.x
         else:
             theta_best = np.zeros(0)
 
-        eta_amp, eta_ratio = unpack(theta_best)
+        eta_amp, eta_ratio, tau_sil = unpack(theta_best)
         e_best = eta_amp + eta_ratio
-        C_m, alpha, r, Kmod, chi2, hot = solve_inner(e_best, n_iter)
+        C_m, alpha, r, Kmod, chi2, extra, comp = solve_inner(e_best, tau_sil, n_iter)
 
         # Per-bin formal errors (delta method on alpha/C_m), as in fit_shared.
         alpha_err = np.full(n_m, np.nan)
         C_m_err = np.full(n_m, np.nan)
         A_pah = np.full(n_m, np.nan)
         A_pah_err = np.full(n_m, np.nan)
-        hot_err = np.full((n_m, n_hot), np.nan) if n_hot else None
+        extra_err = np.full((n_m, n_nonneg), np.nan) if n_nonneg else None
         ndata = 0
         for i in valid:
             d = data[i]
-            D = np.column_stack([d["f_cold_norm"], Kmod[i] @ r])
-            if n_hot:
-                D = np.column_stack([D, d["H"]])
+            fc, Pd = comp[i]
+            D = design(d, fc, Kmod[i], Pd, r)
             _, cov_i = _wls(D, d["f_obs"], d["w"])
             C_m_err[i] = np.sqrt(max(cov_i[0, 0], 0.0))
             alpha_err[i] = np.sqrt(max(cov_i[1, 1], 0.0))
-            if n_hot:
-                hot_err[i] = np.sqrt(np.clip(np.diag(cov_i)[2:], 0.0, None))
+            if n_nonneg:
+                extra_err[i] = np.sqrt(np.clip(np.diag(cov_i)[2:], 0.0, None))
             if C_m[i] != 0:
                 A_pah[i] = alpha[i] / C_m[i]
                 g = np.zeros(D.shape[1])
@@ -1525,10 +2170,11 @@ class PAHSpectrumModel:
             Ms, ys_e, ws = [], [], []
             for i in valid:
                 d = data[i]
+                fc, Pd = comp[i]
                 Ms.append(alpha[i] * Kmod[i][:, 1:])
-                y_i = d["f_obs"] - C_m[i] * d["f_cold_norm"] - alpha[i] * Kmod[i][:, 0]
-                if n_hot:
-                    y_i = y_i - d["H"] @ hot[i]
+                y_i = d["f_obs"] - C_m[i] * fc - alpha[i] * Kmod[i][:, 0]
+                if n_nonneg:
+                    y_i = y_i - design(d, fc, Kmod[i], Pd, r)[:, 2:] @ extra[i]
                 ys_e.append(y_i)
                 ws.append(d["w"])
             M, y_e, w = np.vstack(Ms), np.concatenate(ys_e), np.concatenate(ws)
@@ -1538,6 +2184,7 @@ class PAHSpectrumModel:
         # Formal slope errors from the diagonal curvature of profiled chi².
         eta_amp_err = np.nan
         eta_ratio_err = np.zeros(G)
+        tau_sil_err = np.nan
         if n_theta > 0:
             h = 0.05
             for j in range(n_theta):
@@ -1547,13 +2194,15 @@ class PAHSpectrumModel:
                 tm[j] -= h
                 curv = max((chi2_of(tp) + chi2_of(tm) - 2 * chi2) / h**2, 1e-9)
                 sig = float(np.sqrt(2.0 / curv))
-                if evolve_amp and j == 0:
+                if n_tau and j == n_theta - 1:
+                    tau_sil_err = sig
+                elif evolve_amp and j == 0:
                     eta_amp_err = sig
                 else:
                     g_idx = 1 + (j - n_amp)
                     eta_ratio_err[g_idx] = sig
 
-        dof = max(1, ndata - ((2 + n_hot) * len(valid) + (G - 1) + n_theta))
+        dof = max(1, ndata - ((2 + n_nonneg) * len(valid) + (G - 1) + n_theta))
         A = A_pah[:, None] * r[None, :]
         out = {
             "alpha": alpha,
@@ -1577,10 +2226,10 @@ class PAHSpectrumModel:
             "chi2_red": chi2 / dof,
             "valid": valid,
         }
-        if n_hot:
-            out["hot_T"] = self.hot_ladder
-            out["hot_amp"] = hot
-            out["hot_amp_err"] = hot_err
+        out.update(self._extra_component_output(extra, extra_err))
+        if n_tau:
+            out["tau_sil"] = tau_sil
+            out["tau_sil_err"] = tau_sil_err
         return out
 
     # -- MCMC over the evolving-template parameters ------------------------
@@ -1645,10 +2294,7 @@ class PAHSpectrumModel:
         ``alpha``/``C_m``/``A_pah`` summaries from a chain subsample, and the
         per-point ``data`` needed by :func:`evolving_flux_decomposition`.
         """
-        if self.hot_ladder:
-            raise NotImplementedError(
-                "hot_ladder is only wired into fit_shared/fit_evolving"
-            )
+        self._reject_unwired("fit_evolving_mcmc", allow=("include_silicate",))
         import emcee
 
         baseline_cols = self._resolve_baseline_cols(df, baseline_cols, baseline_col)
@@ -1683,7 +2329,10 @@ class PAHSpectrumModel:
         n_rblk = 0
         if G > 1:
             n_rblk = len(valid) * (G - 1) if per_bin_ratios else (G - 1)
-        ndim = n_amp + n_rat + n_rblk
+        # tau_sil is sampled LAST so the eta/log-r slices keep their indices.
+        tau_grid = prep["tau_grid"]
+        n_tau = 1 if tau_grid is not None else 0
+        ndim = n_amp + n_rat + n_rblk + n_tau
 
         rlab = self._labels()[1:]
         names = []
@@ -1696,6 +2345,8 @@ class PAHSpectrumModel:
                 names += [f"logr_{lab}_m{bins[i]['m']}" for i in valid for lab in rlab]
             else:
                 names += [f"logr_{lab}" for lab in rlab]
+        if n_tau:
+            names.append("tau_sil")
 
         def unpack(theta):
             k = 0
@@ -1705,8 +2356,18 @@ class PAHSpectrumModel:
             if n_rat:
                 eta_ratio[1:] = theta[k : k + n_rat]
             k += n_rat
-            logr = np.asarray(theta[k:], dtype=float)
-            return eta_amp, eta_ratio, logr
+            tau = float(theta[-1]) if n_tau else 0.0
+            logr = np.asarray(theta[k : len(theta) - n_tau], dtype=float)
+            return eta_amp, eta_ratio, logr, tau
+
+        def at_tau(d, tau):
+            """(baseline column, feature kernel) at this tau."""
+            if tau_grid is None:
+                return d["f_cold_norm"], d["K"]
+            return (
+                d["f_cold_norm"] * self._interp_tau(d["S_tau"], tau_grid, tau),
+                self._interp_tau(d["K_tau"], tau_grid, tau),
+            )
 
         def r_vec(j, logr):
             """Ratio vector for the j-th VALID bin (r_0 ≡ 1)."""
@@ -1725,14 +2386,15 @@ class PAHSpectrumModel:
 
         def profile(theta):
             """Profiled (C, alpha) per valid bin and the total chi²."""
-            eta_amp, eta_ratio, logr = unpack(theta)
+            eta_amp, eta_ratio, logr, tau = unpack(theta)
             e = eta_amp + eta_ratio
             C_l, a_l, chi2 = [], [], 0.0
             for j, i in enumerate(valid):
                 d = data[i]
-                Kmod = (10.0 ** np.outer(d["shat"], e)) * d["K"]
+                fc, K_i = at_tau(d, tau)
+                Kmod = (10.0 ** np.outer(d["shat"], e)) * K_i
                 t = Kmod @ r_vec(j, logr)
-                D = np.column_stack([d["f_cold_norm"], t])
+                D = np.column_stack([fc, t])
                 th, _ = _wls2(D, d["f_obs"], d["w"])
                 resid = d["f_obs"] - D @ th
                 chi2 += float(np.sum(resid**2 * d["w"]))
@@ -1741,7 +2403,7 @@ class PAHSpectrumModel:
             return np.array(C_l), np.array(a_l), chi2
 
         eta_slice = slice(0, n_amp + n_rat)
-        r_slice = slice(n_amp + n_rat, ndim)
+        r_slice = slice(n_amp + n_rat, ndim - n_tau)
 
         def log_prob(theta):
             th = np.asarray(theta, dtype=float)
@@ -1753,9 +2415,15 @@ class PAHSpectrumModel:
                 th[r_slice] > log_r_bounds[1]
             ):
                 return -np.inf
+            if n_tau and not (
+                self.tau_sil_bounds[0] <= th[-1] <= self.tau_sil_bounds[1]
+            ):
+                return -np.inf
             lp = 0.0
             if eta_prior_sigma and (n_amp + n_rat):
                 lp -= 0.5 * float(np.sum((th[eta_slice] / eta_prior_sigma) ** 2))
+            if n_tau and self.tau_sil_prior:
+                lp -= 0.5 * float((th[-1] / self.tau_sil_prior) ** 2)
             chi2 = profile(th)[2]
             return lp - 0.5 * chi2
 
@@ -1794,6 +2462,10 @@ class PAHSpectrumModel:
             logr0 = np.clip(logr0, log_r_bounds[0] + pad, log_r_bounds[1] - pad)
             reps = len(valid) if per_bin_ratios else 1
             theta0 += list(np.tile(logr0, reps))
+        if n_tau:
+            theta0.append(
+                float(np.clip(init.get("tau_sil", 0.0), *self.tau_sil_bounds))
+            )
         theta0 = np.asarray(theta0)
 
         rng = np.random.default_rng(seed)
@@ -1804,6 +2476,9 @@ class PAHSpectrumModel:
         p0[:, r_slice] = np.clip(
             p0[:, r_slice], log_r_bounds[0] + pad, log_r_bounds[1] - pad
         )
+        if n_tau:
+            lo, hi = self.tau_sil_bounds
+            p0[:, -1] = np.clip(p0[:, -1], lo + 1e-3, hi - 1e-3)
 
         sampler = emcee.EnsembleSampler(n_walkers, ndim, log_prob)
         sampler.run_mcmc(p0, n_steps, progress=progress)
@@ -1811,7 +2486,7 @@ class PAHSpectrumModel:
         theta_med = np.median(chain, axis=0)
         theta_err = np.std(chain, axis=0)
 
-        eta_amp, eta_ratio, logr_med = unpack(theta_med)
+        eta_amp, eta_ratio, logr_med, tau_med = unpack(theta_med)
         eta_amp_err = float(theta_err[0]) if evolve_amp else np.nan
         eta_ratio_err = np.zeros(G)
         if n_rat:
@@ -1889,6 +2564,15 @@ class PAHSpectrumModel:
             "evolve_amp": evolve_amp,
             "evolve_ratios": evolve_ratios,
             "per_bin_ratios": per_bin_ratios,
+            **(
+                {
+                    "tau_sil": tau_med,
+                    "tau_sil_err": float(theta_err[-1]),
+                    "tau_grid": tau_grid,
+                }
+                if n_tau
+                else {}
+            ),
         }
 
     # -- fit the Wien-slope alpha jointly, with a Gaussian prior ----------
@@ -2008,10 +2692,7 @@ class PAHSpectrumModel:
         C_m are profiled analytically at every step (linear given A), so
         the chain stays low-dimensional — the DustEvolutionModel pattern.
         """
-        if self.hot_ladder:
-            raise NotImplementedError(
-                "hot_ladder is only wired into fit_shared/fit_evolving"
-            )
+        self._reject_unwired("fit_mcmc")
         import emcee
 
         prep = self._prepare(df, cov, scheme, dndz, sigma_z0, f_cat)
@@ -2237,6 +2918,9 @@ def evolving_flux_decomposition(result, n_draws=120, seed=0):
     n_amp = 1 if result["evolve_amp"] else 0
     n_rat = (G - 1) if (result["evolve_ratios"] and G > 1) else 0
     per_bin = result["per_bin_ratios"]
+    # tau_sil, when sampled, is the LAST theta element (see fit_evolving_mcmc).
+    tau_grid = result.get("tau_grid")
+    n_tau = 1 if tau_grid is not None else 0
 
     def unpack(theta):
         k = 0
@@ -2246,7 +2930,25 @@ def evolving_flux_decomposition(result, n_draws=120, seed=0):
         if n_rat:
             eta_ratio[1:] = theta[k : k + n_rat]
         k += n_rat
-        return eta_amp, eta_ratio, np.asarray(theta[k:], dtype=float)
+        tau = float(theta[-1]) if n_tau else 0.0
+        logr = np.asarray(theta[k : len(theta) - n_tau], dtype=float)
+        return eta_amp, eta_ratio, logr, tau
+
+    def _interp_tau(arr, tau):
+        t = np.clip(
+            (tau - tau_grid[0]) / (tau_grid[1] - tau_grid[0]),
+            0,
+            len(tau_grid) - 1 - 1e-9,
+        )
+        i0 = int(t)
+        return (1 - (t - i0)) * arr[i0] + (t - i0) * arr[i0 + 1]
+
+    def at_tau(d, tau):
+        if not n_tau:
+            return d["f_cold_norm"], d["K"]
+        return d["f_cold_norm"] * _interp_tau(d["S_tau"], tau), _interp_tau(
+            d["K_tau"], tau
+        )
 
     def r_vec(j, logr):
         if G == 1:
@@ -2256,22 +2958,23 @@ def evolving_flux_decomposition(result, n_draws=120, seed=0):
 
     def components(theta):
         """Per valid bin: (baseline, per-group contributions, total)."""
-        eta_amp, eta_ratio, logr = unpack(theta)
+        eta_amp, eta_ratio, logr, tau = unpack(theta)
         e = eta_amp + eta_ratio
         out = []
         for j, i in enumerate(valid):
             d = data[i]
-            Kmod = (10.0 ** np.outer(d["shat"], e)) * d["K"]
+            fc, K_i = at_tau(d, tau)
+            Kmod = (10.0 ** np.outer(d["shat"], e)) * K_i
             r_m = r_vec(j, logr)
             t = Kmod @ r_m
-            D = np.column_stack([d["f_cold_norm"], t])
+            D = np.column_stack([fc, t])
             H = D.T @ (d["w"][:, None] * D)
             rhs = D.T @ (d["w"] * d["f_obs"])
             try:
                 C, a = np.linalg.solve(H, rhs)
             except np.linalg.LinAlgError:
                 C, a = np.linalg.pinv(H) @ rhs
-            base = C * d["f_cold_norm"]
+            base = C * fc
             contrib = a * r_m[None, :] * Kmod  # (n_pts, G)
             out.append((base, contrib, base + contrib.sum(axis=1)))
         return out
@@ -2324,6 +3027,75 @@ def evolving_flux_decomposition(result, n_draws=120, seed=0):
 # well-constrained (Tier A/B) bins removes that. PAH-free by construction (the
 # SEDs that produced T/logA exclude 24 µm).
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ---------------------------------------------------------------------------
+# L_PAH conversion
+# ---------------------------------------------------------------------------
+
+# Features that are NOT PAH and must be excluded from L_PAH even when they sit
+# inside a welded feature group. Empty for now; the intended first member is a
+# [Ne II] 12.81 µm line welded into the 11.3+12.7 group, which MIPS cannot
+# resolve from PAH 12.7 (0.11 µm apart at R~2.4) but which is ionized-gas
+# emission, not PAH. Referenced by index, like every other feature list here.
+NON_PAH_FEATURES: frozenset[int] = frozenset()
+
+
+def feature_template_luminosity(
+    z: float,
+    d_lum_mpc: float,
+    r_ratios,
+    *,
+    features: list[PAHFeature] | None = None,
+    feature_groups: list[list[int]] | None = None,
+    profile: str = "drude",
+    exclude: "frozenset[int] | set[int] | tuple[int, ...]" = NON_PAH_FEATURES,
+    lam_range: tuple[float, float] = (3.0, 20.0),
+    n_lam: int = 400,
+) -> float:
+    """Bolometric L_sun of a unit-amplitude, ``r``-weighted feature template.
+
+    ``alpha_m * feature_template_luminosity(...) = L_PAH`` for property bin m,
+    with ``alpha_m`` in the same flux units as the fitted band data.
+
+    This lived as a copy-pasted ``lshape_at_z`` in ~20 notebooks, every one of
+    which defaulted to ``DEFAULT_FEATURES`` and hard-coded a Gaussian — so the
+    luminosity conversion silently used the frozen (mis-calibrated) catalog and
+    the wrong line shape while the fit used neither. Because each property bin
+    has its OWN ``r`` vector, that mismatch does not cancel: it moved the
+    L_PAH mass slope by ~0.05 dex/dex and flipped its sign. It is library code
+    now so the fit and the conversion cannot drift apart again — pass the model's
+    own ``features``/``feature_groups``/``profile``.
+
+    ``exclude`` drops feature indices from the luminosity sum while leaving them
+    in the *template* — the hook for non-PAH lines welded into a PAH group,
+    which must shape the band response but not count toward L_PAH.
+
+    The flux→luminosity normalization is preserved exactly from the notebook
+    implementation so existing L_PAH/L_IR numbers stay on the same scale.
+    """
+    features = FEATURES_CALIBRATED if features is None else features
+    feature_groups = PHYSICAL_GROUPS if feature_groups is None else feature_groups
+    exclude = frozenset(exclude)
+    r_ratios = np.asarray(r_ratios, dtype=float)
+
+    lam = np.logspace(np.log10(lam_range[0]), np.log10(lam_range[1]), n_lam)
+    weights = group_weights(features, feature_groups)
+    shape = np.zeros_like(lam)
+    for g, (grp, w) in enumerate(zip(feature_groups, weights, strict=False)):
+        r_g = float(r_ratios[g]) if g < len(r_ratios) else 0.0
+        for j, wj in zip(grp, w, strict=False):
+            if j in exclude:
+                continue
+            center, _, fwhm = features[j]
+            shape += r_g * wj * _profile_spectrum(lam, center, fwhm, profile)
+
+    nu = _c_um_hz / lam
+    d_lum_m = float(d_lum_mpc) * 3.08568025e22
+    l_watts = (
+        4.0 * np.pi * d_lum_m**2 * 1e-26 * float(-np.trapezoid(shape, nu)) / (1.0 + z)
+    )
+    return l_watts / 3.828e26  # L_sun, same constant as Greybody.L_sun
 
 
 def _baseline_design(z, dM, quad):

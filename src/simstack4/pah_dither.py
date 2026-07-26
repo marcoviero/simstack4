@@ -51,6 +51,7 @@ from .pah_spectrum import (
     DEFAULT_FEATURES,
     DEFAULT_GROUPS,
     PAHFeature,
+    _profile_spectrum,
     build_design_matrix,
     feature_band_curves,
     get_bandpass,
@@ -220,6 +221,12 @@ class TruthSpectrum:
     pivot_log_sigma_sfr: float = 0.0
     T_warm: float = 60.0
     beta_warm: float = 1.5
+    # Line shape for the injected features. Drude as of branch-12, matching
+    # PAHSpectrumModel's default -- this path used to hard-code a Gaussian, so
+    # once the fitter moved to Drude the simulator was silently injecting a
+    # DIFFERENT shape from the one being fitted. Set "gaussian" only to
+    # reproduce a pre-branch-12 simulation.
+    profile: str = "drude"
     continuum_amp: float = 1.0  # C: overall normalization (mJy at MBB peak)
     # Optional hot/VSG MIR continuum: amp·(λ/10 µm)^slope added to the warm
     # MBB, in the same relative f_ν units as the unit-peak features. The warm
@@ -323,8 +330,9 @@ class TruthSpectrum:
             a_g = amps[g] if z is None else amps[:, g][:, None]
             for j, wj in zip(grp, w, strict=True):
                 center, _, fwhm = self.features[j]
-                sigma = fwhm / 2.355
-                spec = spec + a_g * wj * np.exp(-0.5 * ((lam - center) / sigma) ** 2)
+                spec = spec + a_g * wj * _profile_spectrum(
+                    lam, center, fwhm, self.profile
+                )
         return self.continuum_amp * spec
 
     def band_flux_curve(
@@ -854,7 +862,10 @@ def fisher_evolution(
     pz, z_grid = compute_pz_matrix(scheme, dndz, sigma_z0=sigma_z0, f_cat=f_cat)
     n_i = pz.shape[0]
     # z-grid kernels per band and the per-bin centered sSFR proxy.
-    Tg = {b: feature_band_curves(z_grid, b, truth.features, groups) for b in bands}
+    Tg = {
+        b: feature_band_curves(z_grid, b, truth.features, groups, profile=truth.profile)
+        for b in bands
+    }
     Wb = {b: warm_band_curve(z_grid, b, truth.T_warm, truth.beta_warm) for b in bands}
     shat = {
         m: main_sequence_ssfr(
