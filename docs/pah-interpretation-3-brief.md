@@ -56,6 +56,16 @@ a physical relation. G₀ ∝ sSFR^a is a proxy whose exponent is unknown and wh
 in fixed geometry — the very thing under test. So this can show the radiation term is
 *sufficient*; a null would not exclude a geometry term sSFR fails to capture.
 
+> **EXECUTED 2026-07-27** — `notebooks/build_qpah_radiation.py`; see the
+> "Step 0-bis executed" section of `pah-interpretation-candidates.md` for the full
+> results. Summary of what changed below: (a) the z~1 arm *is* erased, but only under
+> the maximal-decoupling assumption `G₀ = const`, and the **swing survives at
+> 3.4–4.6σ**; (b) the first-pass numbers are median-specific — the source-weighted
+> mean gives +0.053 / −0.791; (c) Viero+2013 Eq 19, an *external* T(M\*,z), changes
+> the swing by **exactly zero**, so the whole effect rides on our own fits' z-evolving
+> T–M\* gradient (which does survive Tier-A and SNR cuts); (d) **no power-law G₀ proxy
+> can work** — Σ_SFR needs b = −7.8, sSFR b = +12.5. Task 1 is now the only task.
+
 ### First-pass result (`notebooks/build_qpah_backout.py`)
 
 | a | z~1 | z~2 | z~3 | swing |
@@ -94,15 +104,32 @@ in fixed geometry — the very thing under test. So this can show the radiation 
 branches were partly a dust-temperature gradient — and the letter's framing changes
 materially.** Do this before task 1.
 
+### Verdict (2026-07-27)
+
+**Half true, and the half that is true is smaller than feared.** Under maximal decoupling
+(`G₀ = const`) the z~1 arm goes to +0.026 ± 0.023 (weighted mean) or −0.008 ± 0.039
+(median) — erased. But the **swing survives at −0.80 ± 0.17 (4.6σ)**: the correction turns
+a sign change into a decline that steepens with z, it does not remove the phenomenon. And
+`G₀ = const` is the extreme, not the null — at fixed geometry (`G₀ ∝ ⟨U⟩`) there is no
+correction at all. **So: state the crossing as the headline, and carry "the positive arm
+at z~1 is degenerate with a dust-temperature gradient" as a stated systematic**, not as a
+retraction. The letter's framing survives; its z~1 arm needs a caveat sentence.
+
 ## Tasks, in order
 
 1. **Stabilise the ionised/neutral decomposition.** Drop 6.2 (no leverage at z<2, it
    rails to −11…−60 and contaminates its neighbours), match the combined stack's
    z-sampling to pooled's, and establish whether the two estimators can be made to
-   agree. Until they do, nothing else here is safe. *This is the gate.*
-2. **If it holds: measure d log(G₀/⟨U⟩)/d log M\* and its z-evolution.** The ionised/
-   neutral ratio is the G₀ proxy; the question is whether its mass slope changes sign or
-   magnitude between the z-slices the way the crossing does.
+   agree. Until they do, nothing else here is safe. *This is the gate — and as of
+   2026-07-27 it is the **only** task on the G₀ hypothesis: every proxy that can be
+   built from the main sequence plus sizes has been screened and fails (task 2 below).
+   The band ratio is the one G₀ estimator that is not a scaling relation in disguise.*
+2. ~~**If it holds: measure d log(G₀/⟨U⟩)/d log M\* and its z-evolution.**~~
+   **CLOSED 2026-07-27 for every proxy except the band ratio.** Inverting for the
+   required `d log G₀/d log M\*` (+0.053 / −0.289 / −0.739, change −0.791) and screening
+   `G₀ ∝ X^b`: Σ_SFR needs b = −7.8 (wrong sign), sSFR +12.5, Δ_MS +4.8, T_dust −15.9.
+   D6 applies to G₀ *proxies* even though it does not apply to G₀ itself — the escape in
+   "Why it could work" is only available to a **measured** radiation field.
 3. **Revisit the §3g bands.** They carry only **±0.10 dex/dex** for the G₀ correction,
    on the untested assumption that radiation-field factors "cancel to first order in the
    ratio". If G₀/⟨U⟩ varies by several tenths of a dex per dex of mass, the whole
