@@ -26,7 +26,8 @@ shortname = "cosmos25"      # Name for output folder
 
 [catalog]
 path = "$CATSPATH/cosmos"     # Path to catalog directory
-file = "COSMOSWeb_p26_PAH_split0of3.parquet"  # Catalog filename
+#file = "COSMOSWeb_p26_PAH_split0of3.parquet"  # Catalog filename
+file = "COSMOSWeb_sersic_stacking_catalog.parquet"  # Catalog filename
 
 [catalog.astrometry]
 ra = "ra"                     # Column name for right ascension
@@ -80,7 +81,8 @@ bins = [9.0, 10.0, 10.7, 11.5]
 id = "log_sigma_sfr"
 label = "SFR Surface Density"
 #bins = [-2.0, -1.0, -0.25, 0.25, 1.0, 2.0]
-bins = [-9.0, -0.96, -0.27, 9.0]
+#bins = [-9.0, -0.96, -0.27, 9.0]
+bins = [-9.0, -0.75, 9.0]
 
 # Map configurations - each section defines a new map
 [maps.mips_24]
