@@ -388,3 +388,49 @@ same bins with **3–4 offsets** (stagger the z edges by ⅓–¼ of the local b
 
 **Rule to carry:** when an analysis solves inside sub-windows, Fisher on the global
 fit is the wrong figure of merit. Count points per window.
+
+## D4 EXECUTED — inconclusive, and structurally so (2026-07-26)
+
+Run on the three dithered COMBINED stacks (`20260726_141318 / 152037 / 161906`,
+COSMOSWeb sersic, 20 graded z-bins × 3 mass × 3 σ_SFR at catalog terciles, offsets
+0 / ⅓ / ⅔ of the local bin width). `population_class == 0` = sfg_keep; the
+9.0–10.0 nuisance mass bin excluded; cells with `n_sources < 20` cut (that cut
+removes the 16 % of cells whose MIPS-24 SNR median is 1.24, including 9 % with
+*negative* 24 µm flux).
+
+**The whole-range fit is good.** Template shape fixed to the COSMOS2020-measured
+group ratios (all features welded into one group, so r ≡ 1 and only (C_m, α_m) are
+free): χ²_red = 2.98, τ_sil = 0.17, all six amplitudes positive —
+A = 2.73, 1.06, 3.22 (logM ≈ 10.25, σ_SFR low→high) and 1.03, 2.77, 3.01
+(logM ≈ 10.90). But six cells with two controls is **dof = 2**, where the critical
+|r| is 0.95. Partials: **+0.795** (C1 radiation, T_dust) and **−0.579** (C2 density,
+σ_SFR). Leaning C1, nowhere near significance, not quotable.
+
+**The z-sliced route to 18 cells still fails.** The dithering did exactly what it
+was designed to do — 5–18 points per (cell, z-window) instead of the 3–6 that broke
+the un-dithered attempt — and the window solves were *still* degenerate: 6 of 17
+cells returned negative amplitudes, the positives spanned 0.54 → 13.5, and single
+cells swung −0.92 → +9.77 between adjacent z-slices.
+
+**Why, and this is the transferable part: z-slicing the amplitude is
+self-defeating for a tomographic measurement.** The PAH amplitude is identified *by*
+the bandpass sweeping rest wavelength as z varies. Inside a narrow z-window the
+feature template and the cold baseline are nearly parallel, so the two-parameter
+(C, α) solve is degenerate however many points it contains. **More points do not fix
+collinearity.** The COSMOS2020 crossing survives the same slicing only because its
+cells are ~4× richer (no σ_SFR split, 4 mass bins), leaving residual leverage.
+
+**Net: D4 needs many cells AND well-determined per-cell amplitudes, and those fight
+— cells come from splitting, amplitudes come from not splitting.** With ~34 000
+sfg_keep galaxies you cannot have both. This is the same conclusion D3 reached by a
+different route: the mediator question is not answerable with existing MIR data.
+
+**What still stands from the feasibility work:** the mediators *are* separable —
+partial corr(T_dust, log σ_SFR | z, logM) = +0.12 to +0.19, only 1–4 % shared
+variance. The obstacle is cell count and amplitude precision, not collinearity
+between the mediators.
+
+**Do not re-attempt without new data.** Neither finer binning nor more dither
+offsets will help — both were tried. What would help: a deeper MIR sample (more
+sfg_keep galaxies per cell), or a direct per-galaxy PAH measurement that removes
+the need to split at all.
