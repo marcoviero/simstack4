@@ -344,3 +344,202 @@ with a **1514 K** error bar and is labelled **Tier A**. Left in, it alone double
 the apparent lever (S/N 5.3 vs the true 2.3). Anything consuming T_dust needs an
 explicit physicality + error cut; Tier A/B filtering does not protect against
 railed or unconstrained temperature fits.
+
+## D4 first execution on the 20260726 re-stack — NOT answerable, needs dithering
+
+`cosmos25_stacking_20260726_105516` (COSMOSWeb sersic, 20 graded z-bins, mass
+[9.0, 10.0, 10.7, 11.5], σ_SFR at catalog terciles [-9, -0.96, -0.27, 9], SINGLE
+un-dithered run). Nuisance mass bin (9.0–10.0) excluded per convention → 91 rows,
+6 (mass, σ_SFR) cells, 13–16 z-points each.
+
+**The ratio block cannot be fit here.** Free group ratios rail: r(6.2) = −0.83
+overall, r(11.3+12.7) = **+28.6** in one σ bin, r(6.2) = **+6.35** in one mass bin.
+This is *not* a model problem — the identical model on COSMOS2020 gives
+r(6.2) = +0.56 to +1.14, well determined. Nor is it the low-z anchor: cutting
+COSMOS2020 to z ≥ 0.57 (this stack's floor) leaves r(6.2) = +1.04 unchanged. It is
+simply too little data spread over too many cells.
+
+**Fix: fix the shape, fit only the amplitude.** D4 needs α per cell, not the
+template. `notebooks/build_d4_amplitudes.py` bakes the COSMOS2020-measured ratios
+into the feature strengths and welds all features into one group, so r ≡ 1 with
+nothing to fit and each cell contributes only (C_m, α_m). That fit is clean:
+χ²_red = 4.88, τ_sil = 0.45, all six amplitudes positive.
+
+**Result: inconclusive.** partial corr(logA, T_dust | logM, logσ) = −0.694 (C1
+radiation); partial corr(logA, logσ | logM, T_dust) = +0.699 (C2 density). With
+N = 6 and two controls, dof = 2 and the critical |r| is **≈0.95** — neither is
+close. The two partials being near-mirror-images while the raw correlations are
+tiny (−0.069, +0.134) is the signature of two correlated predictors splitting
+noise, and the amplitudes run non-monotonically in σ_SFR in *opposite* directions
+in the two mass bins.
+
+**z-slicing to 18 cells makes it worse, not better.** Window solves get only 3–6
+points: 6 of 16 cells return negative amplitudes and the positives span 0.015 to
+23.8. A partial correlation computed on the 10 positive cells returns "significant"
+(−0.85) but that is **selection on the dependent variable** and must not be quoted.
+
+**What is actually needed: DITHER OFFSETS.** The advice to use a single run was
+wrong for this application. Fisher/CRLB prices the *global* fit and correctly says
+oversampling is near information-neutral there — but it says nothing about whether
+each z-window has enough points to solve. The June-15 runs (4 offsets) had 75–83
+z-points per (mass,σ) cell; this one has 15, so each window gets 3–6. Re-run the
+same bins with **3–4 offsets** (stagger the z edges by ⅓–¼ of the local bin width)
+→ 45–60 z-points per cell, 15–20 per window, dof ≈ 12 and a critical |r| of ~0.55.
+
+**Rule to carry:** when an analysis solves inside sub-windows, Fisher on the global
+fit is the wrong figure of merit. Count points per window.
+
+## D4 EXECUTED — inconclusive, and structurally so (2026-07-26)
+
+Run on the three dithered COMBINED stacks (`20260726_141318 / 152037 / 161906`,
+COSMOSWeb sersic, 20 graded z-bins × 3 mass × 3 σ_SFR at catalog terciles, offsets
+0 / ⅓ / ⅔ of the local bin width). `population_class == 0` = sfg_keep; the
+9.0–10.0 nuisance mass bin excluded; cells with `n_sources < 20` cut (that cut
+removes the 16 % of cells whose MIPS-24 SNR median is 1.24, including 9 % with
+*negative* 24 µm flux).
+
+**The whole-range fit is good.** Template shape fixed to the COSMOS2020-measured
+group ratios (all features welded into one group, so r ≡ 1 and only (C_m, α_m) are
+free): χ²_red = 2.98, τ_sil = 0.17, all six amplitudes positive —
+A = 2.73, 1.06, 3.22 (logM ≈ 10.25, σ_SFR low→high) and 1.03, 2.77, 3.01
+(logM ≈ 10.90). But six cells with two controls is **dof = 2**, where the critical
+|r| is 0.95. Partials: **+0.795** (C1 radiation, T_dust) and **−0.579** (C2 density,
+σ_SFR). Leaning C1, nowhere near significance, not quotable.
+
+**The z-sliced route to 18 cells still fails.** The dithering did exactly what it
+was designed to do — 5–18 points per (cell, z-window) instead of the 3–6 that broke
+the un-dithered attempt — and the window solves were *still* degenerate: 6 of 17
+cells returned negative amplitudes, the positives spanned 0.54 → 13.5, and single
+cells swung −0.92 → +9.77 between adjacent z-slices.
+
+**Why, and this is the transferable part: z-slicing the amplitude is
+self-defeating for a tomographic measurement.** The PAH amplitude is identified *by*
+the bandpass sweeping rest wavelength as z varies. Inside a narrow z-window the
+feature template and the cold baseline are nearly parallel, so the two-parameter
+(C, α) solve is degenerate however many points it contains. **More points do not fix
+collinearity.** The COSMOS2020 crossing survives the same slicing only because its
+cells are ~4× richer (no σ_SFR split, 4 mass bins), leaving residual leverage.
+
+**Net: D4 needs many cells AND well-determined per-cell amplitudes, and those fight
+— cells come from splitting, amplitudes come from not splitting.** With ~34 000
+sfg_keep galaxies you cannot have both. This is the same conclusion D3 reached by a
+different route: the mediator question is not answerable with existing MIR data.
+
+**What still stands from the feasibility work:** the mediators *are* separable —
+partial corr(T_dust, log σ_SFR | z, logM) = +0.12 to +0.19, only 1–4 % shared
+variance. The obstacle is cell count and amplitude precision, not collinearity
+between the mediators.
+
+**Do not re-attempt without new data.** Neither finer binning nor more dither
+offsets will help — both were tried. What would help: a deeper MIR sample (more
+sfg_keep galaxies per cell), or a direct per-galaxy PAH measurement that removes
+the need to split at all.
+
+## Threshold-model fit — the destruction hypothesis TESTED, and it fails (2026-07-26)
+
+D6 concluded the crossing "demands a threshold/nonlinear response". That was never
+fitted, only asserted. It has now been fitted, to the 12 (4 mass × 3 z) pooled
+L_PAH/L_IR points with fold errors, and **the natural implementation does not work.**
+
+**Model.** log(L_PAH/L_IR) = a₀ + a₁(logM\*−10.5) − d·f(Σ_SFR), i.e. a z-independent
+production slope plus a destruction term triggered above a Σ_SFR threshold, with
+Σ_SFR(M\*,z) from Speagle+14 × van der Wel+14 (the same relations as §3g).
+
+**Model comparison (12 points).** Hard threshold: χ² = 77.5, χ²_red = 9.7, AIC = 85.5,
+versus production-only (AIC 350.2) and production + free normalisation per z
+(AIC 130.6, same parameter count). **ΔAIC = −45 — the threshold wins.** But it wins
+while failing:
+
+| z | measured slope | hard threshold | soft (scatter) threshold |
+|---|---|---|---|
+| 0.95 | +0.380 | +0.184 | +0.176 |
+| 1.90 | −0.009 | −0.069 | +0.058 |
+| **2.95** | **−0.699** | **−0.096** | −0.503 |
+
+**Why it fails — Σ_SFR is too flat in mass.** d log Σ_SFR/d log M\* is 0.242 / 0.310 /
+0.343 at z = 0.95 / 1.90 / 2.95: it grows only **1.11×** from z=1.9 to 3.0. Taking the
+z~1 slope as the destruction-free production value (+0.380), the destruction term must
+supply a tilt of 0.000 / −0.389 / **−1.079** — a growth of **2.8×**. A Σ_SFR trigger
+falls short by **2.5×**. sSFR is worse (its gradient *shrinks*, 0.87×).
+
+**Adding scatter (threshold → sigmoid) helps but is degenerate.** The mass gradient of
+the above-threshold fraction peaks where the population crosses Σ_crit, which is the
+right mechanism, and it improves χ²_red 9.7 → 5.4 and the z~3 slope −0.10 → −0.50.
+But the destruction depth **rails at every bound tested** (0.5, 1.0, 1.5, 2.0, 3.0,
+12.0 dex), χ² falling monotonically as the bound loosens: only the *product*
+d × P(Σ>Σ_crit) is constrained. At d ≤ 1.0 it reproduces the z~3 slope (−0.647) but
+at χ²_red 7.6, i.e. by breaking the other two slices. χ²_red never falls below 5.4.
+
+**SPECIFICATION for any viable trigger X(M\*,z)** — the useful output of this exercise:
+its **mass gradient must grow ≈2.8× between z=2 and z=3**. No mean scaling relation
+built from the main sequence plus sizes has that property, because their exponents are
+near-constant and only normalisations evolve — the D6 result, now sharpened from "power
+laws fail" to "thresholds in Σ_SFR fail too, and here is the quantitative requirement".
+
+**So destruction is not ruled out — the Σ_SFR-triggered implementation of it is.**
+What survives needs either a trigger whose *mass dependence itself* evolves (radiation
+hardness? gas-phase geometry? merger fraction?), or a genuinely non-mean-relation
+effect (the massive z~3 population being a different galaxy mix, not the same galaxies
+shifted along a scaling relation).
+
+Reproduce: `notebooks/build_threshold_fit.py`.
+
+## Direct Σ_SFR test + the G₀ hypothesis (2026-07-27) — the thread for branch 3
+
+**Direct test of the destruction trigger.** The 2-σ_SFR-bin dithered COMBINED stacks
+(`20260726_210408 / 203157 / 192719`, split at log Σ_SFR = −0.75) let us ask the
+threshold question *directly* rather than inferring Σ_crit from the (M\*, z) pattern:
+at fixed mass and z, is the PAH amplitude lower in the high-Σ_SFR half?
+
+**It is not.** The raw 24 µm excess *before any fitting* rises with Σ_SFR in both mass
+bins: f24/f24_cold = 1.01 → 1.64 (logM ≈ 10.28) and 0.96 → 2.13 (logM ≈ 10.91). Fitted
+amplitudes: A = 2.25 → 1.91 and 0.29 → 3.07. This is the **third** independent statement
+of the same thing (D4 first pass +1.2/+1.5 dex/dex; the 3-σ-bin run; this), and it is
+the opposite sign to destruction.
+
+*Caveat*: the low-σ cells have Tier-A fractions of 0.13–0.16 vs 0.38–0.51 for high-σ,
+so their `f24_cold` baseline is prior-dominated exactly where the excess vanishes — the
+same ambiguity as the 9.0–9.9 nuisance bin. And the split at −0.75 sits *below* the
+Σ_crit ≈ −0.30 the fit wanted, so the upper bin straddles rather than clears the
+threshold. **This constrains destruction below Σ_SFR ≈ 1 M☉/yr/kpc²; it does not
+exclude a threshold above the range COSMOSWeb's main-sequence sample reaches.**
+
+### The reframing this forces: are we measuring q_PAH at all?
+
+Narayanan+26's density term is **suppressed shattering** (a *production* channel), so
+their q_PAH *falls* with Σ_SFR — the opposite sign to what we measure. But they state
+explicitly that *"the physical q_PAH and the observed L_PAH/L_FIR do **not** evolve in
+lockstep"*, because L_PAH/M_PAH ∝ G₀ while q_PAH anti-correlates with Σ_SFR. So
+
+  **L_PAH/L_IR ∝ q_PAH × (G₀ / ⟨U⟩)**
+
+and our rising L_PAH/L_IR is *consistent* with their falling q_PAH provided the G₀ boost
+wins. **We have been fitting abundance mechanisms (metallicity supply, shattering
+suppression, destruction thresholds) to an observable that may be radiation-dominated.**
+
+This matters because G₀/⟨U⟩ is a **geometry** factor — how concentrated young stars are
+relative to the bulk dust — not a mean scaling relation. It therefore **escapes the D6
+argument entirely**: D6's force is that scaling-relation *exponents* barely evolve, so
+nothing built from the MS + sizes can flip a mass slope. A radiation-geometry term is
+not so constrained.
+
+### Evidence so far — promising, NOT established
+
+Mass slope of the ionised (7.7+8.6) vs neutral (11.3+12.7) luminosity per L_IR, z<2
+(the only window where the neutral group has leverage, §1b):
+
+| variant | pooled ion / neu | combined ion / neu |
+|---|---|---|
+| 3 groups (6.2 railed) | +0.224 / −0.040 | +0.296 / −0.048 |
+| 6.2 dropped, z<2 | +0.168 / −0.059 | **+0.070 / −0.175** |
+| 6.2 dropped, z<1.6 | +0.296 / +0.043 | +0.033 / −0.098 |
+| 6.2 dropped, z<2.4 | **+0.257 / +0.010** | +0.137 / −0.116 |
+
+**Pooled supports G₀** — the trend lives in the ionised bands, neutral flat, stable
+across every window and grouping — and it reproduces §3h's independent inference that
+d log(α·r_neutral)/d log M\* ≈ 0. **Combined inverts** once 6.2 is dropped (neutral slope
+exceeds ionised). The clean-looking 3-group agreement (−0.040 / −0.048) is suspect:
+r(6.2) railed to −11…−60 in those fits, and a railing column absorbs its neighbours'
+flux. **Two estimators disagree — this is not yet a result.**
+
+**→ Chased explicitly in `docs/pah-interpretation-3-brief.md`.**
