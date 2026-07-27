@@ -434,3 +434,52 @@ between the mediators.
 offsets will help — both were tried. What would help: a deeper MIR sample (more
 sfg_keep galaxies per cell), or a direct per-galaxy PAH measurement that removes
 the need to split at all.
+
+## Threshold-model fit — the destruction hypothesis TESTED, and it fails (2026-07-26)
+
+D6 concluded the crossing "demands a threshold/nonlinear response". That was never
+fitted, only asserted. It has now been fitted, to the 12 (4 mass × 3 z) pooled
+L_PAH/L_IR points with fold errors, and **the natural implementation does not work.**
+
+**Model.** log(L_PAH/L_IR) = a₀ + a₁(logM\*−10.5) − d·f(Σ_SFR), i.e. a z-independent
+production slope plus a destruction term triggered above a Σ_SFR threshold, with
+Σ_SFR(M\*,z) from Speagle+14 × van der Wel+14 (the same relations as §3g).
+
+**Model comparison (12 points).** Hard threshold: χ² = 77.5, χ²_red = 9.7, AIC = 85.5,
+versus production-only (AIC 350.2) and production + free normalisation per z
+(AIC 130.6, same parameter count). **ΔAIC = −45 — the threshold wins.** But it wins
+while failing:
+
+| z | measured slope | hard threshold | soft (scatter) threshold |
+|---|---|---|---|
+| 0.95 | +0.380 | +0.184 | +0.176 |
+| 1.90 | −0.009 | −0.069 | +0.058 |
+| **2.95** | **−0.699** | **−0.096** | −0.503 |
+
+**Why it fails — Σ_SFR is too flat in mass.** d log Σ_SFR/d log M\* is 0.242 / 0.310 /
+0.343 at z = 0.95 / 1.90 / 2.95: it grows only **1.11×** from z=1.9 to 3.0. Taking the
+z~1 slope as the destruction-free production value (+0.380), the destruction term must
+supply a tilt of 0.000 / −0.389 / **−1.079** — a growth of **2.8×**. A Σ_SFR trigger
+falls short by **2.5×**. sSFR is worse (its gradient *shrinks*, 0.87×).
+
+**Adding scatter (threshold → sigmoid) helps but is degenerate.** The mass gradient of
+the above-threshold fraction peaks where the population crosses Σ_crit, which is the
+right mechanism, and it improves χ²_red 9.7 → 5.4 and the z~3 slope −0.10 → −0.50.
+But the destruction depth **rails at every bound tested** (0.5, 1.0, 1.5, 2.0, 3.0,
+12.0 dex), χ² falling monotonically as the bound loosens: only the *product*
+d × P(Σ>Σ_crit) is constrained. At d ≤ 1.0 it reproduces the z~3 slope (−0.647) but
+at χ²_red 7.6, i.e. by breaking the other two slices. χ²_red never falls below 5.4.
+
+**SPECIFICATION for any viable trigger X(M\*,z)** — the useful output of this exercise:
+its **mass gradient must grow ≈2.8× between z=2 and z=3**. No mean scaling relation
+built from the main sequence plus sizes has that property, because their exponents are
+near-constant and only normalisations evolve — the D6 result, now sharpened from "power
+laws fail" to "thresholds in Σ_SFR fail too, and here is the quantitative requirement".
+
+**So destruction is not ruled out — the Σ_SFR-triggered implementation of it is.**
+What survives needs either a trigger whose *mass dependence itself* evolves (radiation
+hardness? gas-phase geometry? merger fraction?), or a genuinely non-mean-relation
+effect (the massive z~3 population being a different galaxy mix, not the same galaxies
+shifted along a scaling relation).
+
+Reproduce: `notebooks/build_threshold_fit.py`.
