@@ -117,13 +117,23 @@ retraction. The letter's framing survives; its z~1 arm needs a caveat sentence.
 
 ## Tasks, in order
 
-1. **Stabilise the ionised/neutral decomposition.** Drop 6.2 (no leverage at z<2, it
-   rails to −11…−60 and contaminates its neighbours), match the combined stack's
-   z-sampling to pooled's, and establish whether the two estimators can be made to
-   agree. Until they do, nothing else here is safe. *This is the gate — and as of
-   2026-07-27 it is the **only** task on the G₀ hypothesis: every proxy that can be
-   built from the main sequence plus sizes has been screened and fails (task 2 below).
-   The band ratio is the one G₀ estimator that is not a scaling relation in disguise.*
+1. ~~**Stabilise the ionised/neutral decomposition.**~~ **EXECUTED 2026-07-27 —
+   THE GATE DOES NOT OPEN** (`notebooks/build_g0_bandratio_stability.py`; full results
+   in `pah-interpretation-candidates.md`).
+   - The two estimators **never disagreed about the band ratio** (sd 0.058 across all 8
+     estimator×window variants, vs 0.100 / 0.070 for the ionised / neutral amplitudes).
+     They disagree about `A = α/C_m`, the known α-degenerate normalisation. z-sampling
+     is not the cause — matching pooled to combined's grid moves it the wrong way.
+   - **But the ratio is not a measurement at a redshift.** MIPS 24 reaches 12.7 µm at
+     z=0.89, 11.3 at z=1.12, 8.6 at z=1.79, and 7.7 at z=2.12 — *outside the window*.
+     Neutral leverage peaks at z≈0.95, ionised at z≈1.95; neither half of the window
+     constrains both. The fitted ratio compares the z≈0.95 flux to the z≈1.85 flux.
+   - **So it inherits the baseline's mass-dependent z-tilt.** Switching the cold
+     baseline smoothed→raw flips the sign (−0.227 → +0.153), and the smoothing's own
+     mass-dependent tilt between the two leverage epochs (−0.321 dex/dex) **accounts
+     for 84%** of that shift. The signal is largely manufactured.
+   - **Breaking it needs the two groups sampled at the same z — MIRI**, not more
+     stacking or dithering. MIPS 70 reaches 12.7 µm only at z≈4.5.
 2. ~~**If it holds: measure d log(G₀/⟨U⟩)/d log M\* and its z-evolution.**~~
    **CLOSED 2026-07-27 for every proxy except the band ratio.** Inverting for the
    required `d log G₀/d log M\*` (+0.053 / −0.289 / −0.739, change −0.791) and screening
@@ -137,6 +147,29 @@ retraction. The letter's framing survives; its z~1 arm needs a caveat sentence.
    8.6σ swing result would need restating.
 4. **Convert L_PAH/L_IR → q_PAH** where possible, so the comparison is like-for-like
    with simulations. Needs a G₀ estimator per bin (ionised/neutral ratio, or T_dust).
+
+## Branch verdict (2026-07-27) — the G₀ hypothesis is not testable on this dataset
+
+Both halves are now closed. Step 0-bis killed every G₀ **proxy** (all are mean scaling
+relations, so D6 applies to them even though it does not apply to G₀ itself). Task 1
+killed the one **measured** G₀ estimator (with a single broad band the ionised/neutral
+ratio is degenerate with the baseline's mass-dependent z-tilt, which reproduces 84% of
+the signal). The branch's opening argument — "G₀/⟨U⟩ is not a scaling relation, so it
+escapes D6" — is correct in principle and unreachable in practice with MIPS 24.
+
+**What survives.** The crossing itself: −0.80 ± 0.17 (4.6σ) after the most aggressive
+⟨U⟩ correction available, with the z~1 positive arm carrying a stated dust-temperature
+systematic. And the specification, now proven on both sides: any viable mechanism needs
+a mass gradient growing ≈2.8× between z=2 and z=3, and no mean scaling relation —
+abundance or radiation — has that property.
+
+**§3h should be downgraded.** Its mass-invariant neutral band is the same measurement
+under a different name and carries the same baseline degeneracy; do not quote it in the
+letter as independent support for a radiation interpretation.
+
+**Next.** This is a MIRI proposal, not another stacking branch. The letter should report
+the crossing and the specification, and name the radiation-geometry interpretation as
+the leading untested candidate with the reason it is untestable here.
 
 ## What NOT to redo
 

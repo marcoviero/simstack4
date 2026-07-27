@@ -646,3 +646,108 @@ this closes the cheap route.
 ratio is the only G₀ estimator that is not a scaling relation in disguise, and it is
 precisely the one that is unstable. Stabilising it is not the first task among several —
 it is the *only* remaining task on the G₀ hypothesis.
+
+## Task 1 executed — the gate does not open (2026-07-27)
+
+`notebooks/build_g0_bandratio_stability.py`. The brief called stabilising the
+ionised/neutral decomposition "the gate", and after step 0-bis it was the *only*
+remaining task on the G₀ hypothesis. It is now closed, negatively.
+
+### 1. The two estimators never disagreed about the measurable quantity
+
+The published disagreement is in the **amplitude**, not the band ratio. Reporting the
+ratio `r = neutral/ionised` — the difference of the two columns, and the actual G₀
+observable — alongside them:
+
+| | ionised | neutral | **RATIO** |
+|---|---|---|---|
+| spread across all 8 (estimator × window) variants | sd 0.100 | sd 0.070 | **sd 0.058** |
+| range | +0.033…+0.296 | −0.175…+0.043 | −0.344…−0.131 |
+
+Six of the eight ratio values sit inside −0.227…−0.264. What scatters is
+`A = α/C_m`, which branch-5/6 already established is strongly α-degenerate — the same
+lesson as the EW slope: **quote the differential, not the normalisation.**
+
+**z-sampling is not the cause.** Downsampling pooled onto combined's 11-point z<2 grid
+moves the ionised slope *away* from combined's (+0.168 → +0.192 vs combined +0.070)
+while the ratio barely moves (−0.227 → −0.241 vs combined −0.245).
+
+### 2. But the ratio is not a measurement *at* a redshift
+
+MIPS 24 samples a feature centre at `z = 24/λ − 1`: **12.7 µm → z = 0.89, 11.3 → 1.12,
+8.6 → 1.79, and 7.7 → 2.12 — outside the window entirely.** Bandpass-integrated group
+leverage `T_g(z)`:
+
+| window | ionised | neutral | ion/neu |
+|---|---|---|---|
+| z 0.2–1.1 | 0.050 | 0.396 | 0.13 |
+| z 1.1–2.0 | 1.607 | 0.292 | 5.50 |
+
+Neutral leverage peaks at z≈0.95, ionised at z≈1.95. **Neither half constrains both
+groups.** The fitted ratio is structurally a comparison of the z≈0.95 flux against the
+z≈1.85 flux, so anything varying with z between those epochs in a mass-dependent way maps
+straight onto it.
+
+### 3. Task 2's target is therefore not measurable at all
+
+Disjoint halves (pooled, delete-one-z jackknife):
+
+| window | A>0 in | ionised | neutral | **RATIO** |
+|---|---|---|---|---|
+| z 0.2–1.1 | 4/4 | +0.143 ± 0.154 | +0.137 ± 0.166 | **−0.005 ± 0.019** |
+| z 1.1–2.0 | 2/4 | −0.469 ± 0.077 | −0.800 ± 0.119 | **−0.255 ± 0.450** |
+| z 0.2–2.0 | 4/4 | +0.175 ± 0.096 | −0.052 ± 0.146 | **−0.227 ± 0.088** |
+
+The lower half returns `r ≈ 1.00` in all four mass bins with error 0.019 — an
+*unconstrained parameter sitting at its degenerate value*, not a tight measurement. The
+upper half rails `A` to −106 and −268 in two bins. A slope present in the union but in
+neither disjoint half is the z-baseline being read as a mass trend. **Measuring the
+ratio's z-evolution is self-defeating for the same structural reason D4 was**: obtaining
+one ratio value already requires integrating the whole window.
+
+### 4. The baseline flips the sign — and accounts for the signal
+
+| variant | ionised | neutral | RATIO |
+|---|---|---|---|
+| baseline = `f24_cold` (smoothed) | +0.168 | −0.059 | **−0.227** |
+| baseline = `f24_cold_raw` | −0.312 | −0.159 | **+0.153** |
+| silicate OFF | +0.374 | +0.100 | −0.274 |
+
+Budget on the ratio slope: statistical ±0.088, estimator×window ±0.058, silicate ∓0.047,
+**cold baseline raw→smoothed −0.380 (+0.153 → −0.227) — a sign flip.**
+
+This is not a coincidence, it is what §2 predicts. Smoothing changes the baseline
+*between the two leverage epochs*, and does so mass-dependently:
+
+| log M\* | log(smooth/raw) at z≈0.95 | at z≈1.85 | difference |
+|---|---|---|---|
+| 10.25 | −0.041 | +0.001 | +0.042 |
+| 10.70 | +0.051 | −0.093 | −0.144 |
+| 10.90 | +0.090 | −0.111 | −0.201 |
+| 11.25 | +0.229 | −0.047 | −0.276 |
+
+`d(tilt)/d log M\* = −0.321` against a measured ratio-slope shift of −0.380: **the
+baseline tilt accounts for 84% of it.** Sign check: smoothing lowers the ionised-epoch
+baseline more for massive bins → forces a larger ionised amplitude → smaller
+neutral/ionised ratio, increasingly with mass. That *is* the "PAHs become more ionised
+with stellar mass" signal, manufactured by a smoothing choice made for unrelated reasons
+(`smoothed_ms_baseline` exists to stabilise the Wien tail).
+
+### Verdict
+
+**The G₀ hypothesis is not testable on this dataset.** Step 0-bis closed every G₀
+*proxy* (all are scaling relations in disguise, and D6 applies to them). Task 1 now
+closes the one *measured* G₀ estimator: with a single broad band, the ionised/neutral
+ratio is degenerate with the baseline's mass-dependent z-tilt, which reproduces 84% of
+the claimed signal.
+
+Breaking it requires the two feature groups sampled at the **same redshift** — MIRI
+photometry or spectroscopy, not more stacking or more dithering. MIPS 70 does not help:
+it reaches 12.7 µm at z≈4.5 and 11.3 µm at z≈5.2, a different epoch again.
+
+**What survives from branch 3**: the crossing itself (−0.80 ± 0.17, 4.6σ, after the most
+aggressive ⟨U⟩ correction), and the *specification* — any viable mechanism needs a mass
+gradient that grows ≈2.8× between z=2 and z=3, and no mean scaling relation, on either
+the abundance or the radiation side, has that property. §3h's mass-invariant neutral
+band remains suggestive but is subject to the same baseline degeneracy and should not
+be quoted as independent support.
