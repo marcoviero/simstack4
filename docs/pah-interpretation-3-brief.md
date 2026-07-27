@@ -40,15 +40,106 @@ redshift. It is the only candidate identified so far that is not excluded by D6.
    (Narayanan) *only if* G₀ dominates. Independent support for the decoupling being real
    and large.
 
+## Step 0-bis — the cheap route that BYPASSES the gate (added 2026-07-27)
+
+Task 1 below needs the ionised/neutral decomposition, which is exactly what is unstable.
+There is a cheaper route to the same question that does not touch it:
+
+    q_PAH  ∝  (L_PAH/L_IR) × ⟨U⟩ / G₀ ,   ⟨U⟩ ∝ T_dust^(4+β) ,   G₀ ∝ sSFR^a
+
+`T_dust` comes free from every greybody fit and `lp_sSFR_med` is in the COSMOS2020
+catalog, so this runs on data already in hand. (Σ_SFR is *not* available for the
+crossing data — COSMOS2020 has no sizes — so sSFR is the only usable G₀ proxy there.)
+
+**The two halves are not equally sound.** ⟨U⟩ ∝ T_dust^(4+β) is radiative equilibrium,
+a physical relation. G₀ ∝ sSFR^a is a proxy whose exponent is unknown and which bakes
+in fixed geometry — the very thing under test. So this can show the radiation term is
+*sufficient*; a null would not exclude a geometry term sSFR fails to capture.
+
+> **EXECUTED 2026-07-27** — `notebooks/build_qpah_radiation.py`; see the
+> "Step 0-bis executed" section of `pah-interpretation-candidates.md` for the full
+> results. Summary of what changed below: (a) the z~1 arm *is* erased, but only under
+> the maximal-decoupling assumption `G₀ = const`, and the **swing survives at
+> 3.4–4.6σ**; (b) the first-pass numbers are median-specific — the source-weighted
+> mean gives +0.053 / −0.791; (c) Viero+2013 Eq 19, an *external* T(M\*,z), changes
+> the swing by **exactly zero**, so the whole effect rides on our own fits' z-evolving
+> T–M\* gradient (which does survive Tier-A and SNR cuts); (d) **no power-law G₀ proxy
+> can work** — Σ_SFR needs b = −7.8, sSFR b = +12.5. Task 1 is now the only task.
+
+### First-pass result (`notebooks/build_qpah_backout.py`)
+
+| a | z~1 | z~2 | z~3 | swing |
+|---|---|---|---|---|
+| **observed** | **+0.380** | −0.009 | **−0.699** | **−1.079** |
+| 0.00 (T_dust only) | **−0.010** | −0.241 | −0.654 | **−0.644** |
+| 0.50 | +0.496 | +0.359 | −0.132 | −0.628 |
+| 1.00 | +1.003 | +0.959 | +0.390 | −0.613 |
+
+1. **The T_dust correction alone removes the z~1 positive arm** (+0.380 → −0.010) and
+   **40% of the swing**. Massive galaxies at z~1 are colder (30.3 → 26.0 K across the
+   mass range), so at fixed L_IR they carry more dust mass. The "unexplained piece" that
+   D1 found 5σ above the metallicity ceiling may substantially be a **temperature
+   gradient**.
+2. **sSFR cannot change the swing — the D6 failure again.** Its mass gradient is nearly
+   z-independent (−1.00 at z~1, −1.05 at z~3), so dividing by sSFR^a shifts all three
+   slopes almost equally: the swing moves only −0.644 → −0.582 as a goes 0 → 2. A proxy
+   whose mass gradient does not evolve cannot create a z-dependent slope change. **Drop
+   the sSFR term.**
+3. **A residual crossing survives** the full ⟨U⟩ correction: swing −0.64 vs −1.08.
+
+### Before any of this is quoted
+
+- **Propagate T_dust errors through T^(4+β) = T^5.8.** A 1 K error at 30 K is 3.3% in T
+  but **19% in ⟨U⟩**. Use the fold ensemble, not the formal errors — a correlated T bias
+  across a mass bin would masquerade as a slope.
+- **T_dust is not independent of L_IR.** L_IR is computed from (amplitude, T, β), so
+  multiplying by T^5.8 partly undoes that calculation. What is actually recovered is
+  **L_PAH/M_dust**, which is the cleaner quantity to quote — and it needs no G₀ proxy at
+  all, given the sSFR term does nothing.
+- **β is fixed at 1.8** and 4+β *is* the lever. If β varies with mass, so does the
+  exponent.
+
+**If the z~1 positive arm does not survive that error propagation, D1's headline and the
+"mass-correlated driver above half-solar Z" that has been the unexplained piece for three
+branches were partly a dust-temperature gradient — and the letter's framing changes
+materially.** Do this before task 1.
+
+### Verdict (2026-07-27)
+
+**Half true, and the half that is true is smaller than feared.** Under maximal decoupling
+(`G₀ = const`) the z~1 arm goes to +0.026 ± 0.023 (weighted mean) or −0.008 ± 0.039
+(median) — erased. But the **swing survives at −0.80 ± 0.17 (4.6σ)**: the correction turns
+a sign change into a decline that steepens with z, it does not remove the phenomenon. And
+`G₀ = const` is the extreme, not the null — at fixed geometry (`G₀ ∝ ⟨U⟩`) there is no
+correction at all. **So: state the crossing as the headline, and carry "the positive arm
+at z~1 is degenerate with a dust-temperature gradient" as a stated systematic**, not as a
+retraction. The letter's framing survives; its z~1 arm needs a caveat sentence.
+
 ## Tasks, in order
 
-1. **Stabilise the ionised/neutral decomposition.** Drop 6.2 (no leverage at z<2, it
-   rails to −11…−60 and contaminates its neighbours), match the combined stack's
-   z-sampling to pooled's, and establish whether the two estimators can be made to
-   agree. Until they do, nothing else here is safe. *This is the gate.*
-2. **If it holds: measure d log(G₀/⟨U⟩)/d log M\* and its z-evolution.** The ionised/
-   neutral ratio is the G₀ proxy; the question is whether its mass slope changes sign or
-   magnitude between the z-slices the way the crossing does.
+1. ~~**Stabilise the ionised/neutral decomposition.**~~ **EXECUTED 2026-07-27 —
+   THE GATE DOES NOT OPEN** (`notebooks/build_g0_bandratio_stability.py`; full results
+   in `pah-interpretation-candidates.md`).
+   - The two estimators **never disagreed about the band ratio** (sd 0.058 across all 8
+     estimator×window variants, vs 0.100 / 0.070 for the ionised / neutral amplitudes).
+     They disagree about `A = α/C_m`, the known α-degenerate normalisation. z-sampling
+     is not the cause — matching pooled to combined's grid moves it the wrong way.
+   - **But the ratio is not a measurement at a redshift.** MIPS 24 reaches 12.7 µm at
+     z=0.89, 11.3 at z=1.12, 8.6 at z=1.79, and 7.7 at z=2.12 — *outside the window*.
+     Neutral leverage peaks at z≈0.95, ionised at z≈1.95; neither half of the window
+     constrains both. The fitted ratio compares the z≈0.95 flux to the z≈1.85 flux.
+   - **So it inherits the baseline's mass-dependent z-tilt.** Switching the cold
+     baseline smoothed→raw flips the sign (−0.227 → +0.153), and the smoothing's own
+     mass-dependent tilt between the two leverage epochs (−0.321 dex/dex) **accounts
+     for 84%** of that shift. The signal is largely manufactured.
+   - **Breaking it needs the two groups sampled at the same z — MIRI**, not more
+     stacking or dithering. MIPS 70 reaches 12.7 µm only at z≈4.5.
+2. ~~**If it holds: measure d log(G₀/⟨U⟩)/d log M\* and its z-evolution.**~~
+   **CLOSED 2026-07-27 for every proxy except the band ratio.** Inverting for the
+   required `d log G₀/d log M\*` (+0.053 / −0.289 / −0.739, change −0.791) and screening
+   `G₀ ∝ X^b`: Σ_SFR needs b = −7.8 (wrong sign), sSFR +12.5, Δ_MS +4.8, T_dust −15.9.
+   D6 applies to G₀ *proxies* even though it does not apply to G₀ itself — the escape in
+   "Why it could work" is only available to a **measured** radiation field.
 3. **Revisit the §3g bands.** They carry only **±0.10 dex/dex** for the G₀ correction,
    on the untested assumption that radiation-field factors "cancel to first order in the
    ratio". If G₀/⟨U⟩ varies by several tenths of a dex per dex of mass, the whole
@@ -56,6 +147,29 @@ redshift. It is the only candidate identified so far that is not excluded by D6.
    8.6σ swing result would need restating.
 4. **Convert L_PAH/L_IR → q_PAH** where possible, so the comparison is like-for-like
    with simulations. Needs a G₀ estimator per bin (ionised/neutral ratio, or T_dust).
+
+## Branch verdict (2026-07-27) — the G₀ hypothesis is not testable on this dataset
+
+Both halves are now closed. Step 0-bis killed every G₀ **proxy** (all are mean scaling
+relations, so D6 applies to them even though it does not apply to G₀ itself). Task 1
+killed the one **measured** G₀ estimator (with a single broad band the ionised/neutral
+ratio is degenerate with the baseline's mass-dependent z-tilt, which reproduces 84% of
+the signal). The branch's opening argument — "G₀/⟨U⟩ is not a scaling relation, so it
+escapes D6" — is correct in principle and unreachable in practice with MIPS 24.
+
+**What survives.** The crossing itself: −0.80 ± 0.17 (4.6σ) after the most aggressive
+⟨U⟩ correction available, with the z~1 positive arm carrying a stated dust-temperature
+systematic. And the specification, now proven on both sides: any viable mechanism needs
+a mass gradient growing ≈2.8× between z=2 and z=3, and no mean scaling relation —
+abundance or radiation — has that property.
+
+**§3h should be downgraded.** Its mass-invariant neutral band is the same measurement
+under a different name and carries the same baseline degeneracy; do not quote it in the
+letter as independent support for a radiation interpretation.
+
+**Next.** This is a MIRI proposal, not another stacking branch. The letter should report
+the crossing and the specification, and name the radiation-geometry interpretation as
+the leading untested candidate with the reason it is untestable here.
 
 ## What NOT to redo
 
