@@ -483,3 +483,63 @@ effect (the massive z~3 population being a different galaxy mix, not the same ga
 shifted along a scaling relation).
 
 Reproduce: `notebooks/build_threshold_fit.py`.
+
+## Direct Σ_SFR test + the G₀ hypothesis (2026-07-27) — the thread for branch 3
+
+**Direct test of the destruction trigger.** The 2-σ_SFR-bin dithered COMBINED stacks
+(`20260726_210408 / 203157 / 192719`, split at log Σ_SFR = −0.75) let us ask the
+threshold question *directly* rather than inferring Σ_crit from the (M\*, z) pattern:
+at fixed mass and z, is the PAH amplitude lower in the high-Σ_SFR half?
+
+**It is not.** The raw 24 µm excess *before any fitting* rises with Σ_SFR in both mass
+bins: f24/f24_cold = 1.01 → 1.64 (logM ≈ 10.28) and 0.96 → 2.13 (logM ≈ 10.91). Fitted
+amplitudes: A = 2.25 → 1.91 and 0.29 → 3.07. This is the **third** independent statement
+of the same thing (D4 first pass +1.2/+1.5 dex/dex; the 3-σ-bin run; this), and it is
+the opposite sign to destruction.
+
+*Caveat*: the low-σ cells have Tier-A fractions of 0.13–0.16 vs 0.38–0.51 for high-σ,
+so their `f24_cold` baseline is prior-dominated exactly where the excess vanishes — the
+same ambiguity as the 9.0–9.9 nuisance bin. And the split at −0.75 sits *below* the
+Σ_crit ≈ −0.30 the fit wanted, so the upper bin straddles rather than clears the
+threshold. **This constrains destruction below Σ_SFR ≈ 1 M☉/yr/kpc²; it does not
+exclude a threshold above the range COSMOSWeb's main-sequence sample reaches.**
+
+### The reframing this forces: are we measuring q_PAH at all?
+
+Narayanan+26's density term is **suppressed shattering** (a *production* channel), so
+their q_PAH *falls* with Σ_SFR — the opposite sign to what we measure. But they state
+explicitly that *"the physical q_PAH and the observed L_PAH/L_FIR do **not** evolve in
+lockstep"*, because L_PAH/M_PAH ∝ G₀ while q_PAH anti-correlates with Σ_SFR. So
+
+  **L_PAH/L_IR ∝ q_PAH × (G₀ / ⟨U⟩)**
+
+and our rising L_PAH/L_IR is *consistent* with their falling q_PAH provided the G₀ boost
+wins. **We have been fitting abundance mechanisms (metallicity supply, shattering
+suppression, destruction thresholds) to an observable that may be radiation-dominated.**
+
+This matters because G₀/⟨U⟩ is a **geometry** factor — how concentrated young stars are
+relative to the bulk dust — not a mean scaling relation. It therefore **escapes the D6
+argument entirely**: D6's force is that scaling-relation *exponents* barely evolve, so
+nothing built from the MS + sizes can flip a mass slope. A radiation-geometry term is
+not so constrained.
+
+### Evidence so far — promising, NOT established
+
+Mass slope of the ionised (7.7+8.6) vs neutral (11.3+12.7) luminosity per L_IR, z<2
+(the only window where the neutral group has leverage, §1b):
+
+| variant | pooled ion / neu | combined ion / neu |
+|---|---|---|
+| 3 groups (6.2 railed) | +0.224 / −0.040 | +0.296 / −0.048 |
+| 6.2 dropped, z<2 | +0.168 / −0.059 | **+0.070 / −0.175** |
+| 6.2 dropped, z<1.6 | +0.296 / +0.043 | +0.033 / −0.098 |
+| 6.2 dropped, z<2.4 | **+0.257 / +0.010** | +0.137 / −0.116 |
+
+**Pooled supports G₀** — the trend lives in the ionised bands, neutral flat, stable
+across every window and grouping — and it reproduces §3h's independent inference that
+d log(α·r_neutral)/d log M\* ≈ 0. **Combined inverts** once 6.2 is dropped (neutral slope
+exceeds ionised). The clean-looking 3-group agreement (−0.040 / −0.048) is suspect:
+r(6.2) railed to −11…−60 in those fits, and a railing column absorbs its neighbours'
+flux. **Two estimators disagree — this is not yet a result.**
+
+**→ Chased explicitly in `docs/pah-interpretation-3-brief.md`.**
