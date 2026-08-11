@@ -14,16 +14,71 @@ The canonical review. Single-photon heating physics; how band ratios (6.2/7.7/8.
 encode grain ionization state and size; ionization parameter U as the primary control
 variable for PAH abundance; physical basis of the PAH deficit. Read §1–4 first.
 
+**Li & Draine (2001)** — *Infrared Emission from Interstellar Dust. II. The Diffuse
+Interstellar Medium*
+ApJ 554, 778.
+[ADS](https://iopscience.iop.org/article/10.1086/323147)
+Quantitative dust/PAH IR emission model establishing that 6.2, 7.7, 8.6 μm (C–C stretch)
+scale with the ionized-PAH population and 11.3 μm (C–H out-of-plane bend) with the neutral
+population — the physical basis of the ionized/neutral band-ratio diagnostic used in
+Slide 7 (band ratio vs M*). Note: notebook code comments in this project cite this as
+"Draine & Li (2001)" — the correct author order is **Li & Draine**; worth fixing those
+comments if noticed in passing.
+
+**Hudgins & Allamandola (1999)** — *Interstellar PAH Emission in the 11–14 Micron Region:
+New Insights from Laboratory Data and a Tracer of Ionized PAHs*
+ApJ 516, L41.
+[ADS](https://ui.adsabs.harvard.edu/abs/1999ApJ...516L..41H/abstract)
+Laboratory (matrix-isolation) spectroscopy establishing 11.3 μm (and the 12.7 μm/[Ne II]-
+adjacent region) as neutral-PAH tracers, complementing Li & Draine (2001)'s modelling.
+Companion citation for the same band-ratio diagnostic.
+
 ---
 
 ## PAH deficit — local empirical anchors
 
 **Smith et al. (2007)** — *The mid-infrared spectral properties of normal, starburst, and
 active galaxies* (SINGS IRS survey)
-ApJ 656, 770.
+ApJ 656, 770. arXiv:astro-ph/0610913.
 [ADS](https://ui.adsabs.harvard.edu/abs/2007ApJ...656..770S/abstract)
 First systematic measurement of PAH EW vs sSFR/L_IR in z~0 resolved galaxies.
 The local benchmark slope that our α(M*) measurement at z~0.5–3.5 should be compared to.
+
+**READ DIRECTLY 2026-08-03 — Table 7, the local composition benchmark.** *"PAH Band
+Luminosity Ratios L(λ₁)/L(λ₂)"*, median with 10%–90% range. Two columns matter for the
+line bridges; encoded verbatim as `SMITH07_T7` in `notebooks/lim_via_pah_helpers.py`:
+
+| band | L/ΣPAH | L/L_TIR |
+|---|---|---|
+| 6.2 | 0.110 (0.086–0.150) | 0.0110 |
+| **7.7 complex** (7.42+7.60+7.85, **8.6 NOT included**) | **0.420 (0.180–0.450)** | 0.0410 |
+| 8.6 | 0.073 (0.049–0.088) | 0.0072 |
+| 11.3 | 0.120 (0.092–0.180) | 0.0110 |
+| 12.6 | 0.065 (0.047–0.087) | 0.0060 |
+| 17 | 0.059 (0.039–0.097) | 0.0062 |
+
+ΣPAH/L_TIR = 0.10. **ΣPAH is ALL dust features 5–19 µm, not just these six** — which is
+why the six L/ΣPAH values sum to 0.85, not 1. Table 3 defines the blended complexes.
+
+- **`F77 = 0.49` is NOT a Smith+2007 number.** The Table 7 median is **0.42**, and 0.49 is
+  above the 90th percentile (0.45). It appears to be the prose — *"can contribute nearly
+  one-half of the total PAH luminosity"* — which describes the top of the range.
+  `build_co_shivaei_section.py` carried 0.49 as "(Smith+2007)"; corrected 2026-08-03.
+- **Composition cross-check that our template passes.** Rescaled onto our 5-feature basis
+  (drop 17 µm and the minor features; the five sum to 0.788 of ΣPAH), Table 7 gives
+  L(7.7)/total = **0.533** and f_neutral = (0.120+0.065)/0.788 = **0.235**. Our fitted
+  templates give 0.557 — **4% agreement**, an independent confirmation of both the template
+  and the luminosity conversion.
+- **The [CII] bridge anchor.** L(11.3)+L(12.6) = **1.7% of L_TIR**, so with Smith+2017's
+  L_CII/L_TIR = 0.48±0.21% the *neutral-anchored* efficiency is
+  **ε_neu = 0.0048/0.0170 = 0.282**. Doing it in L_TIR units sidesteps the ΣPAH definition
+  entirely. Note the two routes to f_neutral,local disagree ~9% (0.170 via L_TIR, 0.185 via
+  the ΣPAH column) because **medians of ratios are not transitive** — carry as a systematic.
+- Smith's median 12.6/11.3 = **0.57** (10–90%: 0.31–0.65). Our welded template asserts
+  **0.377** (Hernán-Caballero+2020); inside their range but on the low side, which depresses
+  our f_neutral and therefore *overstates* the neutral-bridge correction.
+- Their §5.6 states the physics we rely on: 11.3 from neutral PAHs, 7.7 from cations
+  (citing Allamandola+1999, Li & Draine 2001), with harder fields also destroying grains.
 
 **Galliano et al. (2021)** — *The dust-to-stellar mass ratio as a function of star formation
 rate and stellar mass* (DustPedia)
@@ -183,6 +238,24 @@ A&A 609, A30.
 T_dust(z) = 32.9 + 4.6(z−2) linear relation. Used as the Schreiber temperature prior
 in `greybody.py`. Sets the FIR peak anchor that f₂₄/f_peak normalises against.
 
+## Methodological inspiration — line/feature excess hidden in broadband photometry (added 2026-07-27, lim-talk-figs-1)
+
+**Agrawal, Aguirre & Keenan (2026)** — *Far-infrared lines hidden in archival deep
+multi-wavelength surveys: Limits on [CII]-158 μm at z ∼ 0.3–2.9*
+A&A 705, A246.
+[A&A](https://www.aanda.org/10.1051/0004-6361/202556503)
+Tomographic stacking of archival FIR/submm survey data to constrain a hidden emission
+line via its imprint on broadband photometry — the same statistical philosophy as this
+project's PAH tomography. Direct inspiration slide-1/slide-3 acknowledgment.
+
+**Pullen, Serra, Chang, Doré & Ho (2018)** — *Search for C II emission on cosmological
+scales at redshift z ∼ 2.6*
+MNRAS 478, 1911.
+[ADS](https://ui.adsabs.harvard.edu/abs/2018MNRAS.478.1911P/abstract)
+Cross-correlates SDSS quasars/CMASS galaxies with Planck 545 GHz broadband maps to search
+for excess line emission statistically, without resolving individual sources. Companion
+inspiration citation alongside Agrawal+26 for "measure the excess in broadband photometry."
+
 ## Line-intensity mapping (LIM) — [CII]/CO forecasting (branch forecast-lim-via-pah-1, 2026-07-12)
 
 **Chiang et al. (2026)** *Cosmic CO and [CII] backgrounds and the fuelling of star
@@ -206,6 +279,17 @@ same line.
 **log L_CII = (1.4 − 0.07 z) log SFR + (7.1 − 0.07 z)**, σ = 0.5 dex. Computed [CII] model
 curve (steeper, evolves; near Chiang at low z).
 
+**Padmanabhan (2019)** MNRAS 488, 3014 — halo-mass-based [CII] model,
+L_CII(M,z) = (M/M₁)^β exp(−N₁/M) × [(1+z)^2.7/(1+((1+z)/2.9)^5.6)]^α. One of several
+published [CII] model curves overlaid on the Chiang comparison figure (Slide 9).
+
+**Yang, Popping, Somerville, Pullen & Maniyar (2022)** ApJ 929, 140 —
+empirical representation of a physical ISM model for [CII]/CO/[CI] at 1≤z≤9 (Popping SAM).
+Another comparison model curve on the same figure.
+
+**Silva et al. (2015)** ApJ 806, 209 — *Prospects for Detecting [CII] Emission during the
+Epoch of Reionization*; four model variants (m1–m4), **m2** used here as a comparison curve.
+
 **Li et al. (2016)** ApJ 817, 169 — COMAP CO(1-0) forecast model. SFR = δ_MF·10⁻¹⁰·L_IR
 (Kennicutt, δ_MF=1); **log L_IR = 1.37 log L'_CO − 1.74** (Carilli & Walter 2013); L_CO =
 4.9e-5 L'_CO. Computed CO model curve.
@@ -220,10 +304,84 @@ ApJ 933, 186 — CO(1-0) z~3 upper limit ⟨T_b⟩² < 50 μK²; also carries a 
 primarily z~4–8 (UniverseMachine galaxy–halo × SFR–[CII] correlation). A comparison [CII] model
 to add (grazes our z~1–4 only at z~4); digitize its L_CII prescription / intensity. Co-author MV.
 
+**CO real-data comparisons used in §3b of the LIM notebook (rebuilt 2026-07-25, each at its
+own transition/z — the earlier version mismatched transitions):**
+Keating et al. (2016) ApJ 830, 34 — COPSS II, CO(1–0) shot noise at z=2.8 (a 2σ detection in
+tension with COMAP's own limits — read the ~90× gap accordingly); Stutzer et al. (2024) —
+COMAP Season 2, CO(1–0) 95% upper limit at z=2.4–3.4; Decarli et al. (2020) ApJ 902, 110 —
+ASPECS LP, ρ(H₂) in 5 z-bins over 0.3–4.5, α_CO=3.6; Riechers et al. (2019) ApJ 872, 7 — COLDz,
+ρ(H₂) at z=2.0–2.8; Chung et al. (2024) — COMAP Season 2, ρ(H₂) and ⟨T_b⟩ upper limit at z~3;
+Riechers et al. (2020, VLASPECS) — CO excitation ladder r₃₁=L'_CO(3–2)/L'_CO(1–0)=0.84±0.26,
+used to convert our CO(1–0) model onto mmIME's higher-J transitions for a like-for-like check.
+
 **Bridge calibrations** (PAH ↔ line). **[CII]: use L_CII/TOTAL-PAH ≈ 0.05, NOT 0.1.** The
 Croxall+12 / Sutter+19 "L_CII/L_PAH ≈ 0.1" is L_CII/PAH-*subset* (their PAH ≈ the 7.7 µm
 complex, ≈49% of total PAH per Smith+07). The total-PAH bridge, from the same local galaxies,
 is (L_CII/L_TIR)/(L_PAH/L_TIR) = 0.48%/10% ≈ 0.05 — see **Herrera-Camus et al. (2015)** ApJ 800,
 1 (KINGFISH L_CII/L_TIR = 0.48±0.21%) and **Smith et al. (2007)** ApJ 656, 770 (L_PAH/L_TIR ≈
 10%; 7.7 complex ≈ 49% of total PAH). Applying 0.1 to a total-PAH template double-counts by ~2×.
-**CO:** Cortzen+19 & arXiv:2409.05710 for L_PAH–L'_CO; MS L_IR/L'_CO ≈ 70 (Sargent+14).
+**CO:** Cortzen+19 & **Shivaei & Boogaard (2024)** A&A 691, L2; arXiv:2409.05710 —
+*"The tight correlation between PAH and CO emission from z~0 to 4"* — 14 z=1–3
+main-sequence galaxies with CO detections + a z=0–4 literature compilation; L_PAH(7.7 µm)
+vs. L'_CO(1–0) holds with **0.21 dex scatter**. This is the direct measurement behind the
+"L_PAH tracks L'_CO" claim (previously cited here only by its bare arXiv number — same
+first author, unrelated topic, as the SMILES **Shivaei+24** metallicity paper above; do not
+conflate the two). MS L_IR/L'_CO ≈ 70 (Sargent+14).
+
+**READ DIRECTLY 2026-08-03 — the 7.7 definition, which the bridge depends on.** Verbatim:
+*"We first integrated the flux density from 6.9 to 9.7 µm, assuming the feature strength to
+be zero on either side... As the derived values are for the continuum-subtracted 7.7+8.6 µm
+PAH complex luminosity, we then applied a **15% correction for the 8.6 µm feature
+contamination**, to estimate the 7.7 µm luminosity alone."*
+So **their L(PAH 7.7) excludes 8.6** — any conversion from a total-PAH template must use the
+7.7-only share, not the welded 7.7+8.6 group. Our template puts **16.4%** of the complex in
+8.6, matching their 15% to 1.4 points, so the definitions are compatible.
+Table 1 (L(PAH₇.₇)–L′(CO), all sources): slope **1.07±0.04**, intercept **−0.52±0.36**,
+intrinsic scatter **0.21±0.02 dex**, median ratio **1.40±0.49**. Also tabulated for non-AGN
+and z>1 subsets, and for L(PAH₇.₇)–L(IR) and L′(CO)–L(IR).
+Their decomposition is **Draine & Li (2007) models inside PROSPECTOR**, not PAHFIT, though
+they describe the continuum treatment as closest to PAHFIT-style decomposition.
+
+## Cosmic infrared background — the closure test on n × L_IR (added 2026-07-28, lim-talk-figs-1)
+
+Used by §8 of `notebooks/2026-07-26-lim-via-pah.ipynb` (built by
+`notebooks/build_cib_closure_section.py`) to check that the (abundance × L_IR) product setting
+the absolute amplitude of the PAH-anchored [CII]/CO forecast also reproduces the measured CIB.
+
+**Viero et al. (2013)** ApJ 779, 32; arXiv:1304.0446 — *HerMES: The Contribution to the CIB from
+Galaxies Selected by Mass and Redshift*. **This is the like-for-like reference**, not the 2015
+letter: same technique (simultaneous stacking of a mass/z-binned catalog), reported as νI_ν split
+by redshift slice and mass bin. **Figure 7** is the figure §8 reproduces; **Table 3** is the
+number table. UDS, K_AB < 24, 0.63 deg², logM 9–12, z 0–4.
+
+Table 3 "Total Stacking" (catalogue-limited, nW m⁻² sr⁻¹) and the absolute CIB it adopts:
+
+| λ (µm) | 24 | 70 | 100 | 160 | 250 | 350 | 500 | 1100 |
+|---|---|---|---|---|---|---|---|---|
+| stacking | 1.84±0.05 | 3.31±0.20 | 8.74±0.38 | 9.43±0.63 | 7.00±0.34 | 4.38±0.22 | 1.84±0.10 | 0.06±0.01 |
+| absolute CIB | 2.86±0.17 | 6.60±0.70 | 12.60±4.00 | 13.60±2.50 | 10.40±2.30 | 6.50±1.60 | 2.60±0.60 | 0.19±0.04 |
+| recovered | 64% | 50% | 69% | 69% | 67% | 67% | 70% | 34% |
+
+Absolute-CIB references per band: **Béthermin et al. (2010)** at 24/70; **Berta et al. (2011)** at
+100/160 (note the 100 µm value carries a ±32% error — do not read a 100 µm "deficit" as physical);
+**Lagache et al. (2000)** at 250–1100. Tables 6/7/8 give the same split by z bin and by mass bin.
+
+**Viero et al. (2015)** ApJL 809, L22; arXiv:1505.06242 — *HerMES: Current CIB Estimates Can Be
+Explained by Known Galaxies and their Faint Companions at z < 4*. The **follow-up**: smooths the
+maps before stacking so faint sources clustered around catalogued ones are swept in, recovering
+9.82±0.78 / 5.77±0.43 / 2.32±0.19 nW m⁻² sr⁻¹ at 250/350/500 µm = 94/107/97% of the CIB.
+UltraVISTA K_S < 23.4, 1.62 deg² of COSMOS. **This is the upper reference line, not our analogue**
+— a catalogue-limited stack like ours should land near the 2013 numbers; the gap between the two
+papers *is* the below-catalogue population.
+
+**Fixsen et al. (1998)** ApJ 508, 123; arXiv:astro-ph/9803021 — COBE/FIRAS FIRB spectrum, the grey
+curve in the §8 figures. Analytic fit, valid ν = 5–80 cm⁻¹ (2000–125 µm):
+`I_ν = (1.3±0.4)e-5 (ν/ν₀)^(0.64±0.12) P_ν(18.5±1.2 K)`, ν₀ = 100 cm⁻¹ (λ₀ = 100 µm), P the Planck
+function. Evaluates to 10.28 / 5.63 / 2.37 nW m⁻² sr⁻¹ at 250/350/500 µm — reproduces the
+Lagache+2000 values Viero+13 adopts to within their errors. Total over the fit range: 14 nW m⁻² sr⁻¹.
+
+**Emissivity integral (the formula, since one factor of (1+z) is easy to lose):**
+`ν₀I_ν₀ = (c/4π) ∫dz  ν_e ε_ν(ν_e,z) / [(1+z)² H(z)]`, ν_e = (1+z)ν₀, ε **comoving**. Two powers of
+(1+z): photon-energy loss, plus a comoving shell subtending D_C²dD_C while flux falls as
+D_L⁻² = [(1+z)D_C]⁻². Getting it wrong by one power inflates the answer by ⟨1+z⟩ ≈ 2 — the size of
+the effect being tested. §8b validates it against a cosmology-free flux sum (agrees to <10%).

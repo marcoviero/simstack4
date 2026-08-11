@@ -30,6 +30,7 @@ The companion module pah_dither.py provides the simulator, dither-scheme
 abstraction, photo-z matrix builder, and Fisher/CRLB strategy evaluation.
 """
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
@@ -38,6 +39,12 @@ from numpy.typing import NDArray
 
 from .dust_evolution import _greybody_nu
 from .pah_bandpass import get_bandpass
+
+# Plain getLogger, NOT setup_logging(): the latter attaches its own stdout
+# handler at import time, which is the behaviour the notebooks have to work
+# around. This inherits whatever the "simstack4" logger is configured with, and
+# falls back to Python's last-resort stderr handler at WARNING when unconfigured.
+logger = logging.getLogger(__name__)
 
 _c_um_hz = 2.998e14  # speed of light [µm·Hz]
 
@@ -923,6 +930,36 @@ class PAHSpectrumModel:
         """
         from .pah_dither import compute_pz_matrix, make_dndz
 
+        # --- guard the sSFR driver, before anything is fit ------------------
+        # A missing `ssfr_col` does not raise: `_evolving_data` silently
+        # substitutes main_sequence_ssfr(z, M_bin) for EVERY point, so a whole
+        # analysis can be a main-sequence-proxy result with nothing to show for
+        # it. That is exactly what happened to the money-plot notebooks, whose
+        # DataFrames carry "log_ssfr_measured" while the default asks for
+        # "log_ssfr". The two are not interchangeable — measured sSFR has a
+        # 4-5x steeper mass gradient, so eta values differ by ~4x.
+        #
+        # Deliberate use of the proxy stays available and silent via
+        # ssfr_col=None (what fit_shared and the simulation tests pass).
+        if ssfr_col is not None and ssfr_col not in df.columns:
+            others = sorted(c for c in df.columns if "ssfr" in c.lower())
+            if others:
+                raise ValueError(
+                    f"ssfr_col={ssfr_col!r} is not a column of df, but "
+                    f"{others} {'is' if len(others) == 1 else 'are'}. The fit "
+                    "would have silently driven on main_sequence_ssfr(z, M_bin) "
+                    "for every point. Pass the column you mean (e.g. "
+                    f"ssfr_col={others[0]!r}), or ssfr_col=None to request the "
+                    "main-sequence proxy deliberately."
+                )
+            logger.warning(
+                "ssfr_col=%r is not a column of df and no sSFR-like column is "
+                "present: driving the evolving fit on main_sequence_ssfr(z, "
+                "M_bin) for all points. Pass ssfr_col=None to make that "
+                "explicit and silence this warning.",
+                ssfr_col,
+            )
+
         if scheme is None:
             scheme = _scheme_from_df(df)
         if dndz is None:
@@ -1753,6 +1790,12 @@ class PAHSpectrumModel:
         """
         bins = prep["bins"]
 
+        # Tally of points whose driver value came from the proxy rather than the
+        # data column, so a column that is present but largely NaN cannot be
+        # quietly backfilled into a proxy result (companion to the
+        # column-missing guard in _prepare).
+        fill = {"proxy": 0, "total": 0}
+
         if ssfr_fallback == "main_sequence":
             from .dust_evolution import main_sequence_ssfr
 
@@ -1764,7 +1807,10 @@ class PAHSpectrumModel:
                 if ls is None:
                     return ms
                 ls = np.asarray(ls, dtype=float)
-                return np.where(np.isfinite(ls), ls, ms)
+                bad = ~np.isfinite(ls)
+                fill["proxy"] += int(bad.sum())
+                fill["total"] += int(bad.size)
+                return np.where(bad, ms, ls)
 
         elif ssfr_fallback is None:
 
@@ -1809,6 +1855,22 @@ class PAHSpectrumModel:
                 all_ls.append(ls[ok])
         all_ls = np.concatenate(all_ls) if all_ls else np.array([0.0])
         s_pivot = float(np.median(all_ls))
+
+        # One pass over every bin is complete, so `fill` is now the true tally.
+        # (The second pass below re-runs _resolve_ssfr and doubles it; nothing
+        # reads it after this point.)
+        if fill["total"] and fill["proxy"]:
+            frac = fill["proxy"] / fill["total"]
+            if frac > 0.05:
+                logger.warning(
+                    "%.1f%% of driver values (%d/%d) were NaN and have been "
+                    "filled from main_sequence_ssfr(z, M_bin); the fitted eta "
+                    "slopes are that far toward being main-sequence-proxy "
+                    "slopes rather than data-driven ones.",
+                    100.0 * frac,
+                    fill["proxy"],
+                    fill["total"],
+                )
 
         # Second pass: build θ-independent band-stacked per-bin data.
         data = []
@@ -3050,8 +3112,8 @@ def feature_template_luminosity(
     feature_groups: list[list[int]] | None = None,
     profile: str = "drude",
     exclude: "frozenset[int] | set[int] | tuple[int, ...]" = NON_PAH_FEATURES,
-    lam_range: tuple[float, float] = (3.0, 20.0),
-    n_lam: int = 400,
+    lam_range: tuple[float, float] = (1.0, 60.0),
+    n_lam: int = 2000,
 ) -> float:
     """Bolometric L_sun of a unit-amplitude, ``r``-weighted feature template.
 
@@ -3072,7 +3134,35 @@ def feature_template_luminosity(
     which must shape the band response but not count toward L_PAH.
 
     The flux→luminosity normalization is preserved exactly from the notebook
-    implementation so existing L_PAH/L_IR numbers stay on the same scale.
+    implementation, so L_PAH/L_IR numbers stay on the same scale up to the
+    integration-range change noted next.
+
+    **Integration grid (changed 2026-08-03).** ``lam_range`` was ``(3.0, 20.0)``
+    with ``n_lam=400``. The grid *resolution* was never the problem — 400 points
+    is converged to 6 digits against 25600 — but truncating at 3 and 20 µm cut
+    the **Drude wings**, which fall only as 1/λ² and so carry real area. That
+    cost **−1.5%** of L_PAH against a (1, 60) µm integral, and it is the one
+    number in this module that is a pure, one-directional loss. The default is
+    now ``(1.0, 60.0)`` with ``n_lam=2000`` (converged to <1e-4 %; the wider
+    range needs more points because 3.3 and 16.4 µm are narrow, FWHM/λ ≈ 0.012–0.015).
+
+    The bias is **common-mode, not differential**: across the realistic range of
+    neutral-group ratios it moves only −1.434% → −1.537%, i.e. ~0.0004 dex over
+    a full mass range. So this shifts absolute L_PAH (and any LIM amplitude
+    built on it) up by 1.5% and leaves every published *mass slope* and the
+    crossing untouched. Pass ``lam_range=(3.0, 20.0), n_lam=400`` to reproduce
+    pre-2026-08-03 absolute numbers.
+
+    ``lam_range`` cannot be pushed to zero: a Drude treated as f_ν has wings
+    going as λ² blueward, and dν = c dλ/λ², so the blue tail contributes a
+    *constant per unit λ* and the integral keeps creeping as λ_min → 0
+    (−0.30% at (1, 60) vs (0.5, 200), −0.11% more at (0.2, 1000)). That is not a
+    convergence failure — it is the Drude form being extrapolated far outside
+    where it describes a real feature. So the range is a **convention**: (1, 60)
+    brackets the 3.3–17 µm features by a factor ~3.5 on each side, and every
+    defensible choice agrees to ≤0.3%. The 1.5% recovered from (3, 20) is the
+    part that was a genuine loss; the residual ≤0.3% is convention and should be
+    quoted as a systematic, not chased.
     """
     features = FEATURES_CALIBRATED if features is None else features
     feature_groups = PHYSICAL_GROUPS if feature_groups is None else feature_groups
