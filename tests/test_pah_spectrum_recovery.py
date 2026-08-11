@@ -286,6 +286,47 @@ class TestDrudeProfile:
         with pytest.raises(ValueError, match="profile"):
             feature_band_curves(np.array([1.0]), "MIPS_24", profile="lorentz")
 
+    def test_l_pah_integral_is_converged_and_untruncated(self):
+        """L_PAH must not lose Drude wings to the integration range.
+
+        Two failure modes, historically confused: grid *resolution* (never the
+        problem) and range *truncation* (the real -1.5% loss at the old
+        (3, 20) um default). Guard both against the defaults.
+        """
+        from simstack4 import pah_spectrum as ps
+
+        r = [1.0, 0.6, 0.4]
+        # A far-wider range is the reference. It is not "the truth" -- the Drude
+        # blue wing contributes a constant per unit lambda in nu-space, so the
+        # integral creeps as lam_min -> 0 -- but every defensible bracket of the
+        # 3.3-17 um features agrees to <=0.3%, so that is the tolerance.
+        ref = ps.feature_template_luminosity(
+            1.5, 1e4, r, n_lam=200_000, lam_range=(0.5, 200.0)
+        )
+        default = ps.feature_template_luminosity(1.5, 1e4, r)
+        assert default == pytest.approx(ref, rel=5e-3), "L_PAH integral truncated"
+
+        # Resolution alone is converged at the default n_lam.
+        fine = ps.feature_template_luminosity(1.5, 1e4, r, n_lam=50_000)
+        assert default == pytest.approx(fine, rel=1e-5)
+
+        # The old default is the -1.5% low value; keep it reproducible.
+        old = ps.feature_template_luminosity(
+            1.5, 1e4, r, lam_range=(3.0, 20.0), n_lam=400
+        )
+        assert old / ref == pytest.approx(0.985, abs=0.003)
+
+        # The loss is common-mode: it must not tilt the mass slope. Across the
+        # plausible spread of neutral-group ratios the bias varies <0.2%.
+        biases = [
+            ps.feature_template_luminosity(
+                1.5, 1e4, [1.0, 0.6, rn], lam_range=(3.0, 20.0), n_lam=400
+            )
+            / ps.feature_template_luminosity(1.5, 1e4, [1.0, 0.6, rn])
+            for rn in (0.15, 0.4, 0.9)
+        ]
+        assert max(biases) - min(biases) < 2e-3
+
     def test_drude_area_ratio(self):
         # Drude/Gaussian area at fixed peak+FWHM ≈ (π/2)/1.0645 ≈ 1.46
         for j in (0, 1, 4):  # 6.2, 7.7, 12.7

@@ -16,6 +16,8 @@ and (4) zero evolution reduces to the static shared-ratio result.
 Synthetic data only — no FITS/catalogs.
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -479,3 +481,70 @@ def test_evolving_data_sigma_sfr_requires_column_when_fallback_disabled():
     )
     with pytest.raises(ValueError, match="ssfr_fallback=None"):
         model._evolving_data(prep, bl, ssfr_fallback=None)
+
+
+# --- the sSFR-driver guard -------------------------------------------------
+# A missing ssfr_col used to fall back to main_sequence_ssfr(z, M_bin) for every
+# point with no error and no warning, so an analysis could silently be a
+# main-sequence-proxy result. That is how the money-plot notebooks -- whose
+# DataFrames carry "log_ssfr_measured" while the default asks for "log_ssfr" --
+# ran on the proxy for a whole branch. These pin the three behaviours.
+
+
+def test_missing_ssfr_col_raises_when_another_ssfr_column_exists():
+    """The real failure mode: the driver is present under a different name.
+    Falling back to the proxy here is never what the caller meant."""
+    model = PAHSpectrumModel(feature_groups=GROUPS, bands=BANDS)
+    df = _sigma_sfr_skeleton()
+    df["log_ssfr_measured"] = -9.4 + 0.4 * df["z_mid"].to_numpy()
+    bl = {b: _BASE[b] for b in model.bands}
+    with pytest.raises(ValueError, match="log_ssfr_measured"):
+        model._prepare(
+            df, None, None, None, None, None, baseline_cols=bl, ssfr_col="log_ssfr"
+        )
+
+
+def test_ssfr_col_none_opts_into_the_proxy_silently(caplog):
+    """Deliberate proxy use stays available and quiet -- fit_shared and every
+    simulation test rely on it."""
+    model = PAHSpectrumModel(feature_groups=GROUPS, bands=BANDS)
+    df = _sigma_sfr_skeleton()
+    df["log_ssfr_measured"] = -9.4 + 0.4 * df["z_mid"].to_numpy()
+    bl = {b: _BASE[b] for b in model.bands}
+    with caplog.at_level(logging.WARNING, logger="simstack4.pah_spectrum"):
+        prep = model._prepare(
+            df, None, None, None, None, None, baseline_cols=bl, ssfr_col=None
+        )
+        _, valid, _ = model._evolving_data(prep, bl)
+    assert valid
+    assert caplog.text == ""
+
+
+def test_missing_ssfr_col_warns_when_no_ssfr_column_exists(caplog):
+    """No sSFR-like column anywhere is the documented fallback path, so it must
+    keep working -- but say so rather than proceeding silently."""
+    model = PAHSpectrumModel(feature_groups=GROUPS, bands=BANDS)
+    df = _sigma_sfr_skeleton()
+    bl = {b: _BASE[b] for b in model.bands}
+    with caplog.at_level(logging.WARNING, logger="simstack4.pah_spectrum"):
+        prep = model._prepare(
+            df, None, None, None, None, None, baseline_cols=bl, ssfr_col="log_ssfr"
+        )
+    assert "main_sequence_ssfr" in caplog.text
+    _, valid, _ = model._evolving_data(prep, bl)
+    assert valid
+
+
+def test_mostly_nan_driver_warns_about_proxy_backfill(caplog):
+    """A column that exists but is largely NaN gets backfilled from the proxy --
+    the same silent failure, just partial."""
+    model = PAHSpectrumModel(feature_groups=GROUPS, bands=BANDS)
+    df = _sigma_sfr_skeleton()
+    df.loc[df.index[::2], "log_sigma_sfr"] = np.nan
+    bl = {b: _BASE[b] for b in model.bands}
+    prep = model._prepare(
+        df, None, None, None, None, None, baseline_cols=bl, ssfr_col="log_sigma_sfr"
+    )
+    with caplog.at_level(logging.WARNING, logger="simstack4.pah_spectrum"):
+        model._evolving_data(prep, bl, ssfr_fallback="main_sequence")
+    assert "filled from main_sequence_ssfr" in caplog.text
